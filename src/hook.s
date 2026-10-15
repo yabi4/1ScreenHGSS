@@ -29,7 +29,7 @@ SWAP_BIT    = 0x8000            @ bit 15: 1 = engine A -> top LCD
 @     +0x00  GFIntrCB vBlankIntr    each app installs its own, so it identifies
 @                                   the running app - what we call app_callback
 @     +0x38  int heldKeysRaw        the pad, before button-mode remapping
-@     +0x44  int newKeys            (unused here; we derive edges ourselves)
+@     +0x48  int newKeys            (unused here; we derive edges ourselves)
 @     +0x69  u8  screensFlipped     the game's OWN routing flag - see the note
 @                                   at the top of OneScreen_SetSwap
 DEF_PAD_HELD       = 0x021D1164 @ gSystem.heldKeysRaw
@@ -755,7 +755,7 @@ EVOLUTION_TASK_ORIG     = 0x02075D09 @ sub_02075D08, Thumb
     .global OneScreen_Signature
 OneScreen_Signature:
     .ascii  "1SGS"
-    .word   0x0000001B          @ payload version
+    .word   0x0000001C          @ payload version
 
 @ Filled in by the patcher from the ROM being patched. Defaults are French, so
 @ an unconfigured payload still works there. Keep the field order in step with
@@ -833,6 +833,14 @@ intro_hold_until: .word 0       @ tick the last intro sequence stops, 0 = idle
 cursor_cmd:
     .byte   0, 0, 0
     .byte   1, 3, 2
+    .align  2
+
+@ What each touch layout's start menu sets of SM_NORMAL_MASK (SAVE | 7 | RETIRE)
+@ in its inhibit flags - FieldSystem_GetStartMenuButtonInhibitFlags_* in
+@ src/start_menu.c: normal, Safari, Bug Contest, Pal Park, Union Room,
+@ Colosseum, Battle Tower partner room.
+sm_layout_class:
+    .hword  0x180, 0x090, 0x090, 0x090, 0x110, 0x190, 0x190
     .align  2
 
 
@@ -2567,6 +2575,18 @@ OneScreen_StartMenu:
     ands    r1, r2                  @ layout:4 (bits 1-4 of the word at +0x51C)
     cmp     r1, #SM_N_LAYOUTS
     bhs     57f
+    @ The touch app computed its layout when it was created; the start menu
+    @ computed its inhibit flags when X was pressed. They come from the same save
+    @ flags, so they agree - check it anyway, and trust neither if they do not.
+    lsls    r0, r1, #1
+    ldr     r2, =sm_layout_class
+    ldrh    r2, [r2, r0]
+    ldr     r0, =SM_INHIBIT_OFF
+    ldr     r0, [r4, r0]
+    ldr     r3, =SM_NORMAL_MASK
+    ands    r0, r3
+    cmp     r0, r2
+    bne     50f
     lsls    r1, r1, #3
     ldr     r0, =(OneScreen_Labels + SM_PLANS_OFF)
     adds    r0, r0, r1              @ -> this layout's eight cells
@@ -3986,8 +4006,23 @@ OneScreen_Poll:
     movs    r0, #0                  @ the panel is on engine A - hold it there,
     bl      OneScreen_SetSwap       @ so coming back from SAUVER returns here
     b       19f
-17: movs    r0, #1                  @ a grid we cannot reproduce (Safari, the Bug
-    bl      OneScreen_SetSwap       @ Contest), or the save box: show it
+    @ Not drawn. If the start menu itself is still the field's task, it is up
+    @ but showing something we do not draw - the save box, or a layout the
+    @ patcher could not label - so show the touch screen. If it is not, the menu
+    @ has handed the field to something else: RETIRE in the Safari Zone jumps
+    @ straight to the script runner, which prints its question on the world
+    @ before it takes the bottom screen. Keep the world for that, and take the
+    @ panel down.
+17: bl      OneScreen_TaskMan
+    bl      OneScreen_StartMenuEnv
+    cmp     r0, #0
+    beq     20f
+    movs    r0, #1
+    bl      OneScreen_SetSwap
+    b       19f
+20: bl      OneScreen_StartMenuWipe
+    movs    r0, #0
+    bl      OneScreen_SetSwap
     b       19f
 
     @ No menu of ours is up. If an app just handed the field back, the layout it

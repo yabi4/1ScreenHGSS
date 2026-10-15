@@ -30,6 +30,10 @@ and corrected a handful. `docs/DECOMP.md` has the cross-reference.
   menu's own data - which layout is up, which icons it shows and which is selected -
   rather than reconstructing it, so it matches the touch screen everywhere. The Union Room
   used to be drawn with the normal grid, without CHAT and with LOG labelled POKéGEAR.
+- **Choosing RETIRE keeps the world on top** for the question that follows, instead of
+  handing the screen to the touch menu. RETIRE jumps straight from the menu to a script, and
+  the screen is now only handed over while the menu itself is what is showing something
+  the patch cannot draw - the save box.
 - Every pointer the X menu walks is range-checked against the size of what it points at.
 
 ### Development

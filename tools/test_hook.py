@@ -508,6 +508,65 @@ def test_touch_menu_walk():
     assert h.call("OneScreen_TouchMenu", fs) == 0
 
 
+def test_startmenu_layout_must_agree_with_inhibit_flags():
+    h = Hook()
+    info = put_startmenu(h)
+    fs, _tm, _sm = field(h, inhibit=0x180)            # the start menu says normal
+    touch_menu(h, fs, layout=1)                        # a stale Safari touch app
+    assert h.call("OneScreen_StartMenu") == 1          # falls back to the flags
+    assert [k for k, _ in cells_drawn(h, info)] == [0, 1, 2, 11, 3, 4, 5, None]
+    h = Hook()
+    put_startmenu(h)
+    fs, _tm, _sm = field(h, inhibit=0x094)            # Bug Contest flags
+    touch_menu(h, fs, layout=0)                        # with a normal touch app
+    assert h.call("OneScreen_StartMenu") == 0
+
+
+POWCNT1, SWAP_BIT = 0x04000304, 0x8000
+
+
+def poll_in_field(h: Hook, fs):
+    """Run OneScreen_Poll as if a frame passed in the overworld, no keys."""
+    gsys = h.alloc(0x80)
+    field_cb = 0x021E5921
+    h.w32(gsys, field_cb)
+    h.w32(h.var("cfg_app_callback"), gsys)
+    h.w32(h.var("cfg_field_callback"), field_cb)
+    h.w32(h.var("pad_held"), 0)
+    h.w32(h.var("pad_new"), 0)
+    h.w32(fs + FS_SAVED_APP_ID, 0)
+    h.call("OneScreen_Poll")
+    return h.r16(POWCNT1) & SWAP_BIT
+
+
+def test_retire_keeps_the_world_on_top():
+    """RETIRE jumps from the menu to the script runner, an ARM9 task. The panel
+    goes, and the world stays up for the script's question."""
+    h = Hook()
+    put_startmenu(h)
+    fs, tm, _sm = field(h, inhibit=0x090)
+    touch_menu(h, fs, layout=1)
+    h.w32(h.var("menu_swapped"), 1)
+    h.w32(tm + TASK_FUNC, 0x0203F001)                  # not Task_StartMenu
+    h.w16(POWCNT1, 0)
+    assert poll_in_field(h, fs) == SWAP_BIT            # engine A, the world, on top
+    assert h.r32(h.var("sm_shown")) == 0
+
+
+def test_save_box_still_takes_the_screen():
+    h = Hook()
+    put_startmenu(h)
+    fs, _tm, sm = field(h)
+    touch_menu(h, fs)
+    h.w32(h.var("menu_swapped"), 1)
+    h.w16(sm + SM_STATE, 6)                            # START_MENU_STATE_SAVE
+    h.w16(POWCNT1, SWAP_BIT)
+    assert poll_in_field(h, fs) == 0                   # engine B, the save box
+    h.w16(sm + SM_STATE, 3)                            # back to the menu
+    assert poll_in_field(h, fs) == SWAP_BIT
+    assert h.r32(h.var("sm_shown")) == 1
+
+
 TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
 
 
