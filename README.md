@@ -182,9 +182,6 @@ Known gaps, in order of how likely you are to meet them:
 - **Three screens deliberately stay on the touch screen** because they genuinely need the
   stylus — the trainer-card signature, the Ruins of Alph puzzles and the Pokéathlon. These
   are not fixable: moving them up would make them visible but untappable.
-- **The Safari Zone, the Bug Contest and Pal Park** arrange the overworld menu differently,
-  in a way that cannot be reproduced from outside the touch overlay. The patch detects them
-  and swaps the screen there rather than drawing something wrong.
 - **Safari Zone, Bug Contest and first-rival battles** hand the command menu to the touch
   screen instead of drawing it, because their options are not FIGHT / BAG / POKéMON / RUN
   and the patch only has those four labels.

@@ -25,8 +25,11 @@ and corrected a handful. `docs/DECOMP.md` has the cross-reference.
 
 - **The Pokéathlon Dome's marts swap instead of showing the shop's words.** Their options
   are BUY / INFO / SEE YA; menus are now recognised by every entry, not just the first.
-- **The Union Room's X menu swaps instead of being drawn wrong.** It has CHAT and LOG in it,
-  which the drawn panel did not.
+- **The X menu is drawn in the Safari Zone, the Bug Contest, Pal Park and the Union Room**,
+  in each one's own arrangement, instead of taking the screen. The panel now reads the touch
+  menu's own data - which layout is up, which icons it shows and which is selected -
+  rather than reconstructing it, so it matches the touch screen everywhere. The Union Room
+  used to be drawn with the normal grid, without CHAT and with LOG labelled POKéGEAR.
 - Every pointer the X menu walks is range-checked against the size of what it points at.
 
 ### Development

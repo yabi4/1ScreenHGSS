@@ -150,9 +150,10 @@ screen — early in the game `SAC` sits alone in the left column with `DRESSEUR`
 `OPTIONS` down the right, and `POKéDEX`, `POKéMON` and `POKéMATOS` appear in their own
 places as you unlock them. The list never shuffles.
 
-**In the Safari Zone, the Bug Contest and Pal Park the menu still takes the screen.** Those
-use a different arrangement that this cannot reproduce, so the patch detects them and falls
-back to swapping rather than drawing something wrong.
+**The Safari Zone, the Bug Contest, Pal Park and the Union Room** have their own menus, with
+`ABANDON` first, or `CHAT` and `LOG` added, and it is drawn the way each of them arranges
+it. The ball counts and the contest Pokémon that the touch screen shows beside it are not
+drawn; they are not choices.
 
 One difference from the touch screen: the trainer-card row reads `DRESSEUR` rather than
 your name. The game fills that in at runtime from a placeholder, and the labels here are

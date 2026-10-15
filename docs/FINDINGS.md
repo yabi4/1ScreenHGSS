@@ -1467,13 +1467,32 @@ enabled ones*, which is what `+0xD3` counts.
 Watch the enums: they are different. `START_MENU_ACTION_POKEGEAR` is **11**, but
 `START_MENU_ACTION_DISABLE_POKEGEAR` is **9**.
 
-**The special zones cannot be reproduced, and are detected rather than drawn wrong.**
-Safari, the Bug Contest and Pal Park use different grids (`ov27_0225CFC8` rows 1-3) that
-put RETIRE in slot 0 and shift everything after it, and the active variant lives in
-overlay 27's own struct, out of reach. But all of them leave RETIRE **enabled**, while the
-normal layout always inhibits it (`src/start_menu.c:307`) — so bit 8 separates them. In
-those zones `OneScreen_StartMenu` returns 0 and the caller swaps the screen, exactly as the
-patch did before any of this.
+**The special zones were detected rather than drawn, until v0.3.** Safari, the Bug Contest
+and Pal Park use different grids (`ov27_0225CFC8` rows 1-3) that put RETIRE in slot 0 and
+shift everything after it, and the active variant lives in overlay 27's own struct, which
+this once called out of reach. The RETIRE bit separated them from the normal menu, and in
+those zones `OneScreen_StartMenu` returned 0 and the caller swapped.
+
+It is not out of reach. The full decompilation names the struct - `TouchscreenMenuData`,
+the touch app's own data - and the path to it is the one the field prompts already walk:
+`FieldSystem.bottomScreenTask` -> `BottomScreenAppManager` (app 0, running) -> the app's
+SysTask -> data. Everything the panel needs is in there, every offset confirmed in pret's
+retail assembly of overlay 27:
+
+| offset | field | what it gives the panel |
+|---|---|---|
+| `+0x10` | `fieldSystem` | the back-pointer that proves it is this field's menu |
+| `+0x14` | `selection` | the selected **slot** — no more counting enabled entries |
+| `+0x470` | `icons[7].shown`, stride 8 | which slots exist right now |
+| `+0x51C` | `layout:4` at bits 1-4 | which of the game's seven grids is up |
+
+So v0.3 draws the game's own grid for all seven layouts — normal, Safari, Bug Contest, Pal
+Park, the Union Room (with CHAT and LOG, `msg_0196` 34/35), the Colosseum and the Battle
+Tower partner room — from the game's own table, which the patcher first checks is really in
+the ROM's overlay 27. The inhibit-flag logic survives as the fallback for frames when the
+touch app is switching, and that test had to be tightened on the way: the RETIRE bit alone
+also passes in the Union Room, Colosseum and partner room, and drew the normal grid in the
+Union Room.
 
 ### Why it is a grid and not a list
 

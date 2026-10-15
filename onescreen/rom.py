@@ -177,7 +177,7 @@ def patch(rom_bytes: bytes, log=print, auto_battle=True,
         # them: the hook checks the blob's magic and simply draws nothing, which
         # costs the labels but leaves every other behaviour intact.
         try:
-            blob = labels.build(rom, log=log, theme=theme)
+            blob = labels.build(rom, log=log, theme=theme, overlays=overlays)
             payload = inject.fill_labels(payload,
                                          meta["symbols"]["OneScreen_Labels"],
                                          meta["load_addr"], blob)

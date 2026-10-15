@@ -82,6 +82,20 @@ the touch controllers:
 | `BSAPP_APP_OFF` | `+0x04` | `app`, the app's own SysTask |
 | `BSAPP_FS_OFF` | `+0x08` | `fieldSystem` |
 
+The touch menu app itself (`TouchscreenMenuData`, `src/touchscreen_menu.c`, overlay 27,
+`0x540` bytes), which the X-menu panel reads from v0.3 on. Every offset here is also in pret's
+retail assembly of overlay 27 (`ov27_02259F80`, `ov27_0225C170`, `ov27_0225C1AC`):
+
+| hook | offset | field |
+|---|---|---|
+| `TSM_FS_OFF` | `+0x10` | `fieldSystem` |
+| `TSM_SELECTION_OFF` | `+0x14` | `selection`, the selected slot 0..6 |
+| `TSM_ICONS_OFF` | `+0x470` | `icons[7]`, `{u8 shown; String *label}` |
+| `TSM_LAYOUT_OFF` | `+0x51C` | `layout:4`, bits 1-4 — gcc puts this unit a byte early; retail code reads `0x51C` |
+
+Its layouts are `sTouchscreenMenuLayouts` (US `0x0225CFC8`), embedded in `labels.py` as
+`TOUCH_LAYOUTS` and checked against the ROM's own overlay 27 at patch time.
+
 ### Script menus (`TouchscreenChoiceMenuData`, `src/touchscreen_choice_menu.c`; `ScriptMenu`, `src/field/script_menu.c`)
 
 | hook | offset | field | status |
@@ -123,10 +137,11 @@ pret labels this region of `BattleInput` with offsets that are `0x20` to `0x28` 
 - **Menu ids 5..8 are not the ordinary command menu.** 5/6 are the first rival battle (FIGHT
   only) and 7/8 the Safari Zone (BALL / BAIT / MUD / RUN), which were drawn as
   FIGHT / BAG / POKéMON / RUN. They now swap, like the Bug Contest's 19/20 already did.
-- **The X menu's "normal layout" test** used the RETIRE bit alone, which the Union Room,
-  Colosseum and Battle Tower partner room also set. The Union Room's menu was drawn with
-  POKéGEAR where LOG is and without CHAT. The test is now the exact flag pattern the normal
-  menu uses.
+- **The X menu in the special zones** was thought unreachable: the layout lives in the touch
+  app's own data. The decompilation names that data and the path to it, so the panel now
+  draws the game's own grid in all seven layouts, and its "normal layout" test - the RETIRE
+  bit alone, which also passed in the Union Room, Colosseum and Battle Tower partner room -
+  is only a fallback, and an exact one.
 - **The Pokéathlon Dome's marts** (BUY / INFO / SEE YA) matched the shop's first-entry key and
   were drawn as the shop. Menus are now matched on every predictable entry.
 - **The list menu pointer** is `+0x0C`, the menu's own slot; `+0x3A0` is a callback argument

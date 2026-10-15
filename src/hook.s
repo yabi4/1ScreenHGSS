@@ -411,6 +411,37 @@ SM_INHIBIT_OFF = 0x34C          @ StartMenuTaskData.inhibitIconFlags
 SM_NORMAL_MASK = 0x190          @ DISABLE_RETIRE | DISABLE_7 | DISABLE_SAVE
 SM_NORMAL_BITS = 0x180          @ what the normal layout sets of those three
 
+@ The touch menu app's own data, TouchscreenMenuData (src/touchscreen_menu.c,
+@ overlay 27, 0x540 bytes). It is the menu: the start menu task only handles A
+@ and B, and every D-pad move goes through TouchscreenMenu_HandleDpadInput,
+@ which writes `selection` and then FieldSystem.startMenuCursorPos together.
+@ All four offsets are confirmed in pret's retail assembly of overlay 27 as
+@ well as computed from the decompilation:
+@
+@     +0x10  FieldSystem *fieldSystem     ldr r1,[r4,#0x10] in TouchscreenMenu_Create
+@     +0x14  int selection, a slot 0..6   str r0,[r4,#0x14] after the slot lookup
+@     +0x470 TouchscreenMenuIcon icons[7] {u8 shown; String *label}, stride 8
+@     +0x51C u32 flags                    layout is bits 1-4: `lsl #27; lsr #28`
+@
+@ layout, from TouchscreenMenu_GetLayout: 0 normal, 1 Safari, 2 Bug Contest,
+@ 3 Pal Park, 4 Union Room, 5 Colosseum, 6 Battle Tower partner room.
+BSAPP_TOUCH_MENU   = 0          @ BOTTOM_SCREEN_APP_TOUCHSCREEN_MENU
+TOUCH_MENU_SIZE    = 0x540
+TSM_FS_OFF         = 0x10
+TSM_SELECTION_OFF  = 0x14
+TSM_ICONS_OFF      = 0x470
+TSM_N_ICONS        = 7
+TSM_LAYOUT_OFF     = 0x51C
+TSM_LAYOUT_SHIFT   = 1
+TSM_LAYOUT_MASK    = 0xF
+SM_N_LAYOUTS       = 7
+SM_PLANS_OFF       = 528        @ in the label blob: u8 strip[8] per layout
+SM_PLAN_UNDRAWABLE = 0xFE       @ cell 0 of a layout the patcher cannot label
+SM_CELLS           = 8
+SM_SP_CELLS        = 16         @ OneScreen_StartMenu's frame: the cell plan,
+SM_SP_HI           = 24         @ the highlighted cell,
+SM_FRAME_SP        = 28         @ and the frame's size
+
 @ The panel's record in the label blob, and the offsets inside it. Written by
 @ onescreen/labels.py::_startmenu; the layout is documented there.
 SM_RECORD_OFF = 148
@@ -658,6 +689,9 @@ OAK_IGNORE_CONTROL  = 0x0209
 FS_SAVED_APP_ID_OFF = 0x1C      @ FieldSystem.savedBottomScreenAppId
 @ Mode 3 is refined at runtime: binary states stay on the world, list states swap.
 FS_BOTTOM_TASK_OFF = 0xD8       @ FieldSystem.bottomScreenTask
+FS_BOTTOM_TYPE_OFF = 0x18       @ FieldSystem.bottomScreenType
+FS_BOTTOM_TYPE_FIELD = 1        @ the overworld, Safari and friends
+FS_BOTTOM_TYPE_UNION = 3        @ the Union Room
 SYS_TASK_DATA_OFF = 0x10        @ SysTask.data
 
 @ The bottom-screen app manager (src/field/bottom_screen_app.c), the SysTask
@@ -721,7 +755,7 @@ EVOLUTION_TASK_ORIG     = 0x02075D09 @ sub_02075D08, Thumb
     .global OneScreen_Signature
 OneScreen_Signature:
     .ascii  "1SGS"
-    .word   0x0000001A          @ payload version
+    .word   0x0000001B          @ payload version
 
 @ Filled in by the patcher from the ROM being patched. Defaults are French, so
 @ an unconfigured payload still works there. Keep the field order in step with
@@ -2305,6 +2339,80 @@ OneScreen_FieldSys:
     .align  2
     .pool
 
+@ void *OneScreen_BottomApp(r0 = FieldSystem *, r1 = app id)
+@   -> that bottom-screen app's own data, if it is the one up and RUNNING, or 0.
+@
+@ FieldSystem.bottomScreenTask -> SysTask.data is the BottomScreenAppManager,
+@ whose `app` is the app's own SysTask. bottomScreenTask only holds a manager
+@ while bottomScreenType is 1 (the overworld and its special zones) or 3 (the
+@ Union Room) - type 6 parks a photo viewer there - and the manager must point
+@ back at this FieldSystem. Every link is range-checked. A switching manager
+@ returns 0: its `app` may be the outgoing one.
+    .thumb_func
+OneScreen_BottomApp:
+    push    {r4, r5, r6, lr}
+    movs    r4, r0                  @ FieldSystem
+    movs    r6, r1                  @ wanted app id
+    ldr     r0, [r4, #FS_BOTTOM_TYPE_OFF]
+    cmp     r0, #FS_BOTTOM_TYPE_FIELD
+    beq     91f
+    cmp     r0, #FS_BOTTOM_TYPE_UNION
+    bne     99f
+91: movs    r0, #FS_BOTTOM_TASK_OFF
+    ldr     r5, [r4, r0]
+    movs    r0, r5
+    movs    r1, #(SYS_TASK_DATA_OFF + 4)
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     99f
+    ldr     r5, [r5, #SYS_TASK_DATA_OFF]    @ -> BottomScreenAppManager
+    movs    r0, r5
+    movs    r1, #(BSAPP_LAST_OFF + 4)
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     99f
+    ldr     r0, [r5, #BSAPP_FS_OFF]
+    cmp     r0, r4
+    bne     99f                     @ not this FieldSystem's manager
+    ldrb    r0, [r5, #BSAPP_STATE_OFF]
+    cmp     r0, #BSAPP_RUNNING
+    bne     99f
+    ldrb    r0, [r5, #BSAPP_ID_OFF]
+    cmp     r0, r6
+    bne     99f
+    ldr     r5, [r5, #BSAPP_APP_OFF]        @ -> the app's SysTask
+    movs    r0, r5
+    movs    r1, #(SYS_TASK_DATA_OFF + 4)
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     99f
+    ldr     r0, [r5, #SYS_TASK_DATA_OFF]
+    pop     {r4, r5, r6, pc}
+99: movs    r0, #0
+    pop     {r4, r5, r6, pc}
+
+@ TouchscreenMenuData *OneScreen_TouchMenu(r0 = FieldSystem *) -> it, or 0.
+    .thumb_func
+OneScreen_TouchMenu:
+    push    {r4, r5, r6, lr}
+    movs    r4, r0
+    movs    r1, #BSAPP_TOUCH_MENU
+    bl      OneScreen_BottomApp
+    movs    r5, r0
+    ldr     r1, =TOUCH_MENU_SIZE
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     98f
+    ldr     r0, [r5, #TSM_FS_OFF]
+    cmp     r0, r4
+    bne     98f                     @ a stale menu from another field
+    movs    r0, r5
+    pop     {r4, r5, r6, pc}
+98: movs    r0, #0
+    pop     {r4, r5, r6, pc}
+    .align  2
+    .pool
+
 @ StartMenuTaskData *OneScreen_StartMenuEnv(r0 = TaskManager *, or 0)
 @   -> the start menu's own data if that task is Task_StartMenu, else 0.
     .thumb_func
@@ -2401,7 +2509,7 @@ OneScreen_MenuGone:
     .thumb_func
 OneScreen_StartMenu:
     push    {r4, r5, r6, r7, lr}
-    sub     sp, #16
+    sub     sp, #SM_FRAME_SP
     ldr     r7, =OneScreen_Labels
     ldr     r0, [r7]
     ldr     r1, =LABEL_MAGIC
@@ -2436,12 +2544,60 @@ OneScreen_StartMenu:
 
     movs    r0, #SM_RECORD_OFF
     adds    r7, r7, r0              @ -> the panel's record
-    movs    r0, #FS_START_MENU_CURSOR_OFF      @ 0xD3 is out of reach of ldrb's immediate
-    ldrb    r5, [r6, r0]            @ the live cursor
 
-    @ Only the ordinary overworld grid is reproduced. The game picks the
-    @ inhibit flags with one function per variant (src/start_menu.c), and they
-    @ separate cleanly:
+    @ Decide what every cell holds BEFORE drawing anything: a strip index per
+    @ cell in sp[SM_SP_CELLS..+8] (0xFF = leave it empty) and the highlighted
+    @ cell in sp[SM_SP_HI]. Two ways to get there.
+    @
+    @ The live one. The touch app on the bottom screen IS the menu - the start
+    @ menu task only takes A and B - and its data says everything directly:
+    @ which of the game's layouts it is (normal, Safari, Bug Contest, Pal Park,
+    @ Union Room, Colosseum, Battle Tower), which icons it shows, and which slot
+    @ is selected. Cells are its slots, so the panel matches the touch screen
+    @ in every context, including the ones that used to swap.
+    movs    r0, r6
+    bl      OneScreen_TouchMenu
+    cmp     r0, #0
+    beq     50f                     @ not reachable this frame: fall back
+    movs    r5, r0                  @ -> TouchscreenMenuData
+    ldr     r1, =TSM_LAYOUT_OFF
+    ldrb    r1, [r5, r1]
+    lsrs    r1, r1, #TSM_LAYOUT_SHIFT
+    movs    r2, #TSM_LAYOUT_MASK
+    ands    r1, r2                  @ layout:4 (bits 1-4 of the word at +0x51C)
+    cmp     r1, #SM_N_LAYOUTS
+    bhs     57f
+    lsls    r1, r1, #3
+    ldr     r0, =(OneScreen_Labels + SM_PLANS_OFF)
+    adds    r0, r0, r1              @ -> this layout's eight cells
+    ldrb    r1, [r0]
+    cmp     r1, #SM_PLAN_UNDRAWABLE
+    beq     57f                     @ a layout the patcher could not label
+    ldr     r4, =TSM_ICONS_OFF
+    adds    r4, r5, r4              @ -> icons[0].shown, stride 8
+    movs    r2, #0
+51: ldrb    r1, [r0, r2]
+    cmp     r2, #TSM_N_ICONS
+    bhs     52f                     @ past the last icon: nothing lives here
+    lsls    r3, r2, #3
+    ldrb    r3, [r4, r3]
+    cmp     r3, #0
+    bne     53f                     @ shown: keep its label
+52: movs    r1, #0xFF
+53: add     r3, sp, #SM_SP_CELLS
+    strb    r1, [r3, r2]
+    adds    r2, #1
+    cmp     r2, #SM_CELLS
+    blo     51b
+    ldr     r0, [r5, #TSM_SELECTION_OFF]
+    str     r0, [sp, #SM_SP_HI]     @ the selected slot is the selected cell
+    b       56f
+
+    @ The fallback, for the frames when the touch app is switching and its data
+    @ cannot be vouched for: the normal layout from the start menu's own
+    @ inhibit flags, as every build before v0.3 did. The game picks those flags
+    @ with one function per variant (src/start_menu.c), and they separate
+    @ cleanly:
     @
     @     Normal      always DISABLE_7 | DISABLE_RETIRE, never DISABLE_SAVE
     @     Safari      SAVE | 7                        0x090
@@ -2449,18 +2605,58 @@ OneScreen_StartMenu:
     @     Union Room  RETIRE | 4 (SAVE)               0x110
     @     Colosseum, Battle Tower partner room        0x391 / 0x395
     @
-    @ Testing RETIRE alone also let the last three through, and drew the normal
-    @ grid in the Union Room, whose real menu has CHAT and LOG in it. Normal is
-    @ exactly (flags & (SAVE | 7 | RETIRE)) == (7 | RETIRE). Anywhere else this
-    @ returns 0 and the caller swaps instead, which is what the patch always did.
-    ldr     r0, =SM_INHIBIT_OFF
+    @ so normal is exactly (flags & (SAVE | 7 | RETIRE)) == (7 | RETIRE); anything
+    @ else returns 0 here and the caller swaps for that frame.
+50: ldr     r0, =SM_INHIBIT_OFF
     ldr     r0, [r4, r0]
     str     r0, [sp, #8]
     ldr     r1, =SM_NORMAL_MASK
     ands    r1, r0
     ldr     r2, =SM_NORMAL_BITS
     cmp     r1, r2
-    beq     56f
+    bne     57f
+    movs    r0, #FS_START_MENU_CURSOR_OFF      @ 0xD3 is out of reach of ldrb's immediate
+    ldrb    r5, [r6, r0]            @ the live cursor
+    movs    r0, #0xFF
+    str     r0, [sp, #SM_SP_HI]
+    movs    r0, #0
+    str     r0, [sp, #12]           @ enabled cells seen so far
+    movs    r6, #0                  @ cell index
+    @ What belongs in this cell, and have you earned it? A cell you have not is
+    @ left EMPTY rather than closing the list up, because that is what the touch
+    @ menu does - the slots are fixed and missing entries leave gaps.
+65: movs    r0, #SM_CELL_LABEL
+    adds    r0, r7, r0
+    ldrb    r0, [r0, r6]
+    cmp     r0, #0xFF
+    beq     67f                     @ nothing ever lives here
+    movs    r1, #SM_CELL_BIT
+    adds    r1, r7, r1
+    ldrb    r1, [r1, r6]
+    cmp     r1, #0xFF
+    beq     66f                     @ never inhibited
+    ldr     r2, [sp, #8]
+    lsrs    r2, r2, r1
+    movs    r1, #1
+    ands    r2, r1
+    cmp     r2, #0
+    beq     66f
+    movs    r0, #0xFF               @ not earned yet: leave the gap
+    b       67f
+    @ The cursor counts only the entries you have, so its index is this cell's
+    @ position among the enabled ones - not the cell number.
+66: ldr     r1, [sp, #12]
+    adds    r2, r1, #1
+    str     r2, [sp, #12]
+    cmp     r1, r5
+    bne     67f
+    str     r6, [sp, #SM_SP_HI]
+67: add     r1, sp, #SM_SP_CELLS
+    strb    r0, [r1, r6]
+    adds    r6, #1
+    cmp     r6, #SM_CELLS
+    blo     65b
+    b       56f
 57: b       79f                     @ trampoline: the exit is past a conditional
 56:                                 @ branch's 256-byte reach from the checks
     ldr     r0, =sm_drawn
@@ -2517,43 +2713,20 @@ OneScreen_StartMenu:
     b       64b
 
 63: movs    r6, #0                  @ cell index
-    movs    r0, #0
-    str     r0, [sp, #12]           @ enabled cells seen so far
 75: ldrb    r0, [r7, #SM_N_CELLS]
     cmp     r6, r0
     bhs     59f
-
-    @ What belongs in this cell, and have you earned it? A cell you have not is
-    @ left EMPTY rather than closing the list up, because that is what the touch
-    @ menu does - the slots are fixed and missing entries leave gaps.
     ldrb    r3, [r7, #SM_BLANK]     @ assume empty
-    movs    r4, #0                  @ and not highlighted
-    movs    r0, #SM_CELL_LABEL
-    adds    r0, r7, r0
+    add     r0, sp, #SM_SP_CELLS
     ldrb    r0, [r0, r6]
     cmp     r0, #0xFF
-    beq     77f                     @ nothing ever lives here
-    movs    r1, #SM_CELL_BIT
-    adds    r1, r7, r1
-    ldrb    r1, [r1, r6]
-    cmp     r1, #0xFF
-    beq     76f                     @ never inhibited
-    ldr     r2, [sp, #8]
-    lsrs    r2, r2, r1
-    movs    r1, #1
-    ands    r2, r1
-    cmp     r2, #0
-    bne     77f                     @ not earned yet: leave the gap
-76: movs    r3, r0                  @ draw this label
-
-    @ The cursor counts only the entries you have, so its index is this cell's
-    @ position among the enabled ones - not the cell number.
-    ldr     r0, [sp, #12]
-    adds    r1, r0, #1
-    str     r1, [sp, #12]
-    cmp     r0, r5
+    beq     76f
+    movs    r3, r0                  @ draw this label
+76: movs    r4, #0
+    ldr     r0, [sp, #SM_SP_HI]
+    cmp     r0, r6
     bne     77f
-    movs    r4, #1
+    movs    r4, #1                  @ the highlighted cell
 
 77: ldrb    r0, [r7, #SM_STRIP_TILES]
     muls    r3, r0
@@ -2601,7 +2774,7 @@ OneScreen_StartMenu:
     movs    r0, #1                  @ drawn: the caller leaves the screen alone
     b       58f
 79: movs    r0, #0                  @ not a layout we can reproduce
-58: add     sp, #16
+58: add     sp, #SM_FRAME_SP
     pop     {r4, r5, r6, r7, pc}
     .align  2
     .pool

@@ -209,9 +209,47 @@ SM_CELL_PLAN = (
     (None, None),               # cell 7  empty in this layout
 )
 
-# This plan is only the NORMAL layout's. The hook tells the normal menu from the
-# special ones by its inhibit flags (SM_NORMAL_MASK in src/hook.s) and hands
-# the screen back to the old swap behaviour for anything else.
+# This plan is the NORMAL layout's, and it is now only the fallback: the hook
+# uses it for the few frames the touch app cannot be read, telling the normal
+# menu apart by its inhibit flags (SM_NORMAL_MASK in src/hook.s).
+#
+# Normally the hook reads the touch menu app itself (TouchscreenMenuData,
+# src/touchscreen_menu.c), which knows which of the game's seven layouts is up,
+# which icons it shows and which slot is selected. The layouts are the game's
+# own table, sTouchscreenMenuLayouts - overlay 27 at 0x0225CFC8 in the US ROM -
+# one icon per slot, slots 0-3 down the left column and 4-6 down the right:
+#
+#     0 normal        POKEDEX POKEMON BAG POKEGEAR | TRAINER SAVE OPTIONS
+#     1 Safari        RETIRE POKEDEX POKEMON BAG | POKEGEAR TRAINER OPTIONS
+#     2 Bug Contest   RETIRE POKEDEX POKEMON POKEGEAR | TRAINER OPTIONS (mon)
+#     3 Pal Park      RETIRE POKEDEX POKEMON POKEGEAR | TRAINER OPTIONS (ball)
+#     4 Union Room    CHAT POKEDEX POKEMON BAG | LOG TRAINER OPTIONS
+#     5 Colosseum     POKEMON BAG TRAINER OPTIONS
+#     6 Tower room    POKEMON TRAINER OPTIONS
+#
+# The patcher checks the table against the ROM's own overlay 27 before using
+# it; if it is not there, only the normal layout is drawn.
+TOUCH_LAYOUTS = (
+    (0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x0D),
+    (0x07, 0x00, 0x01, 0x02, 0x03, 0x04, 0x06, 0x08),
+    (0x07, 0x00, 0x01, 0x03, 0x04, 0x06, 0x0A, 0x0D),
+    (0x07, 0x00, 0x01, 0x03, 0x04, 0x06, 0x09, 0x0D),
+    (0x0B, 0x00, 0x01, 0x02, 0x0C, 0x04, 0x06, 0x0D),
+    (0x01, 0x02, 0x04, 0x06, 0x0D, 0x0D, 0x0D, 0x0D),
+    (0x01, 0x04, 0x06, 0x0D, 0x0D, 0x0D, 0x0D, 0x0D),
+)
+TOUCH_N_ICONS = 7               # slots that hold a selectable icon
+# Touch icon (sTouchscreenMenuIcons) -> the strip that labels it. The icons the
+# table marks disabled - the two ball counters and the contest Pokemon - are
+# not selectable and get no cell. 11 and 12 are the Union Room's CHAT and LOG.
+TOUCH_ICON_LABEL = {0: 0, 1: 1, 2: 2, 3: 11, 4: 3, 5: 4, 6: 5, 7: 8,
+                    11: "chat", 12: "log"}
+# Labels only the Union Room needs: drawn if they fit the cells the other
+# labels already sized, otherwise that one layout swaps instead.
+OPTIONAL_LABELS = (("chat", STARTMENU_MSGDATA_FILE, 34),
+                   ("log", STARTMENU_MSGDATA_FILE, 35))
+SM_N_LAYOUTS = len(TOUCH_LAYOUTS)
+SM_PLAN_UNDRAWABLE = 0xFE
 
 # Two columns of four, because that is the grid the D-pad walks: ov27_0225D0B4
 # navigates slots 0-3 as the left column and 4-6 as the right, with up/down
@@ -403,7 +441,8 @@ OAK_IMAGES = 3                  # yes/no pair, wipe
 GENDER_IMAGES = 3               # the two options, wipe
 GEO_RECORD = 28                 # data_off, image_bytes, row_bytes, images, 4 row addrs
 GEO_COUNT = 5                   # command, battle yes/no, Oak, gender, field yes/no
-BLOB_HEADER = 528               # magic, five geometry records, start menu, lists
+SM_PLANS_OFF = 528              # u8 strip[8] per touch layout; see _startmenu
+BLOB_HEADER = SM_PLANS_OFF + 8 * len(TOUCH_LAYOUTS)
 
 # The start menu's record does not fit the shape above - it describes a pool of
 # tiles and a tilemap rather than finished images - so it gets its own block at a
@@ -876,8 +915,63 @@ def _startmenu_cell_w(font: Font, labels) -> int:
     return cell_w
 
 
-def _startmenu(font: Font, archive, off: int):
-    """Return (record, payload) for the overworld menu panel.
+def _optional_labels(font: Font, archive, cell_w: int):
+    """The Union Room's CHAT / LOG, each only if it fits a cell as already sized.
+
+    They are never allowed to widen the panel - the cells are sized by the
+    labels every menu shows - and a missing one simply leaves the Union Room to
+    swap, which is what it did before.
+    """
+    out = []
+    for key, file_id, msg in OPTIONAL_LABELS:
+        if file_id >= len(archive):
+            continue
+        try:
+            codes = _decode_message(archive[file_id], msg)
+        except LabelError:
+            continue
+        if codes and (_text_width(font, codes) + 8 + 7) // 8 <= cell_w:
+            out.append((key, codes))
+    return out
+
+
+def _touch_plans(labels, layouts_ok: bool) -> bytes:
+    """One row of eight strip indices per touch layout, for OneScreen_StartMenu.
+
+    0xFF leaves a cell empty. A layout whose labels are not all available - or
+    every special layout, when the ROM's own table could not be confirmed - is
+    marked SM_PLAN_UNDRAWABLE in its first cell, and the hook swaps for it.
+    """
+    strip_of = {key: i for i, (key, _codes) in enumerate(labels)}
+    out = bytearray()
+    for layout, icons in enumerate(TOUCH_LAYOUTS):
+        row = bytearray([0xFF]) * SM_CELLS
+        ok = layouts_ok or layout == 0
+        for slot, icon in enumerate(icons[:TOUCH_N_ICONS]):
+            key = TOUCH_ICON_LABEL.get(icon)
+            if key is None:
+                continue
+            if key not in strip_of:
+                ok = False
+                break
+            row[slot] = strip_of[key]
+        if not ok:
+            row = bytearray([SM_PLAN_UNDRAWABLE]) + bytearray([0xFF]) * (SM_CELLS - 1)
+        out += row
+    return bytes(out)
+
+
+def touch_layouts_in(overlays) -> bool:
+    """Is the game's own layout table in this ROM's overlay 27, as expected?"""
+    try:
+        data = bytes(overlays[27].data)
+    except Exception:                                   # noqa: BLE001
+        return False
+    return bytes(b for row in TOUCH_LAYOUTS for b in row) in data
+
+
+def _startmenu(font: Font, archive, off: int, layouts_ok: bool = True):
+    """Return (record, payload, plans) for the overworld menu panel.
 
     One tile strip per label rather than one finished panel image, because the
     entry list is dynamic - POKEDEX and POKEGEAR only appear once you own them.
@@ -888,6 +982,13 @@ def _startmenu(font: Font, archive, off: int):
     labels = _startmenu_labels(archive)
     cell_w = _startmenu_cell_w(font, labels)
     strip_tiles = cell_w * SM_CELL_H
+    # The Union Room's two only if the tile budget below 0x197 still holds with
+    # them: the base strips, the blank one, the frame, and these.
+    optional = _optional_labels(font, archive, cell_w)
+    budget = (0x197 - SM_BASE_TILE - len(FRAME_SHAPES)) // strip_tiles
+    if len(labels) + len(optional) + 1 > budget:
+        optional = []
+    labels = labels + optional
     strip_bytes = strip_tiles * 32
 
     frame_cols = SM_COLS * cell_w + 2 * SM_FRAME
@@ -965,7 +1066,8 @@ def _startmenu(font: Font, archive, off: int):
     if last > 0x197:
         raise LabelError(
             f"the panel would end at tile {last:#x}, past the map-name window at 0x197")
-    return bytes(record), packed + pals + bytes(frame_map)
+    return (bytes(record), packed + pals + bytes(frame_map),
+            _touch_plans(labels, layouts_ok))
 
 
 def _self_pc_codes(archive, region: str):
@@ -1106,7 +1208,7 @@ def _listmenu(font: Font, archive, off: int, region: str = ""):
 # Entry point
 # ---------------------------------------------------------------------------
 
-def build(rom, log=print, theme=themes.DEFAULT_THEME) -> bytes:
+def build(rom, log=print, theme=themes.DEFAULT_THEME, overlays=None) -> bytes:
     """Return the label blob for this ROM.
 
     `rom` is an ndspy NintendoDSRom. Raises LabelError if anything about the
@@ -1208,7 +1310,8 @@ def build(rom, log=print, theme=themes.DEFAULT_THEME) -> bytes:
 
     # `off` now points past the last image, which is where the panel's own data
     # goes, so the record can carry absolute blob offsets like the others.
-    sm_record, sm_payload = _startmenu(font, archive, off)
+    layouts_ok = overlays is not None and touch_layouts_in(overlays)
+    sm_record, sm_payload, sm_plans = _startmenu(font, archive, off, layouts_ok)
     # The fourth letter of the game code is the region, which is the only thing
     # that decides your own PC's row - the one label not taken from the ROM.
     try:
@@ -1221,6 +1324,11 @@ def build(rom, log=print, theme=themes.DEFAULT_THEME) -> bytes:
     blob += sm_record
     blob += b"\0" * (LIST_RECORD_OFF - len(blob))
     blob += list_record
+    if len(blob) > SM_PLANS_OFF:
+        raise LabelError(f"the list records reach {len(blob)}, over the layout "
+                         f"plans at {SM_PLANS_OFF}")
+    blob += b"\0" * (SM_PLANS_OFF - len(blob))
+    blob += sm_plans
     blob += b"\0" * (BLOB_HEADER - len(blob))
     if len(blob) != BLOB_HEADER:
         raise LabelError(f"header is {len(blob)} bytes, expected {BLOB_HEADER}")
@@ -1247,6 +1355,11 @@ def build(rom, log=print, theme=themes.DEFAULT_THEME) -> bytes:
     log(f"  X menu   : {len(sm_labels)} labels, widest "
         f"{max(_text_width(font, c) for _a, c in sm_labels)} px, "
         f"{_startmenu_cell_w(font, sm_labels)}x{SM_CELL_H} tile cells")
+    drawn = [i for i in range(SM_N_LAYOUTS)
+             if sm_plans[i * SM_CELLS] != SM_PLAN_UNDRAWABLE]
+    log(f"  X menu   : touch layouts "
+        + ("confirmed in overlay 27" if layouts_ok else "NOT found - normal menu only")
+        + f", drawn for {drawn}")
     return bytes(blob)
 
 
