@@ -75,7 +75,8 @@ TOGGLE_MASK = (KEY_L | KEY_R)   @ L+R together; unused by HGSS gameplay
 @
 @ and specifically main-region slot 3's overlay id. The battle loads a different
 @ overlay for each phase, so that one word tracks the phase:
-@     0x0A  overlay 10 - the command menu / move list
+@     0x0A  overlay 10 - the trainer AI, which the battle loads for exactly
+@           the command-selection phase (BattleSystem_SetTrainerAIOverlayLoaded)
 @     0x08  overlay 8  - a sub-screen (bag category, item list, party)
 @     0x07  overlay 7  - the turn is executing
 @     0x1B  a stale id left over from before the battle; the slot is inactive
@@ -97,77 +98,73 @@ BATTLE_STATE_SUB  = 0x08        @ bag category, item list, party
 
 @ --- The top-screen command menu -------------------------------------------
 @ Offsets into the live battle structs, all reached from the BattleSystem the
-@ battle app's exec trampoline hands us. Taken from pret's headers, and the ones
-@ that matter are pinned by fields the decomp named after their own offsets:
+@ battle app's exec trampoline hands us. Every one is now fixed by the full
+@ decompilation (include/battle/battle.h, include/battle/battle_input.h; see
+@ docs/DECOMP.md), and each agrees with what was measured from the retail ROM:
 @
-@   struct BattleSystem (include/battle/battle.h:527)
-@       +0x04 BgConfig *bgConfig      \ both confirmed independently in the retail
-@       +0x08 Window   *window        / ov12: `ldr r0,[r4,#4]` / `ldr r1,[r4,#8]`
-@       +0x19C BattleInput *battleInput   (unk17C[2] before it, unk1A0 after)
+@   struct BattleSystem
+@       +0x04   BgConfig *bgConfig      \ both confirmed independently in the retail
+@       +0x08   Window   *window        / ov12: `ldr r0,[r4,#4]` / `ldr r1,[r4,#8]`
+@       +0x19C  BattleInput *battleInput
+@       +0x23FD u8 graphicsMode         0 normal; 3 while the bag or party owns
+@                                       engine B; 1/2 around the catch naming
+@                                       screen. battleInput is FREED unless 0.
 @
-@   struct BattleInput (include/battle/battle_input.h:169)
-@       +0x66B s8 curMenuId       (unused_668, unused_669 before; unk66F after)
-@       +0x6B4 BattleMenuCursor { u8 enabled; s8 menuY; s8 menuX; u8 unused; }
+@   struct BattleInput                  (sizeof 0x6F8)
+@       +0x68B  s8 curMenuId
+@       +0x6D8  BattleCursor *cursor    the sprite cursor
+@       +0x6DC  BattleMenuCursor menuCursor { u8 enabled; s8 menuY; s8 menuX; }
 @
-@ Both offsets are 0x20 HIGHER than walking pret's struct suggests, which is the
-@ drift battle_input.h:168 warns about ("at some point here my counting was off
-@ so some of the listed offsets may be wrong"). Reading the computed 0x66B gave a
-@ zero byte, and a 160-byte window around it contained no menu id at all.
-@
-@ The real values were measured out of the ROM instead of guessed. Offsets this
-@ large cannot be reached by a Thumb immediate, so every access to these fields
-@ has to load the offset from a literal pool - which makes the pool a census of
-@ the struct. Scanning ov12's word-aligned literals in [0x500,0x800) shows:
+@ pret's battle_input.h names its fields after offsets that are 0x20 to 0x28
+@ low in this region ("my counting was off"), which is why both of these were
+@ first measured out of the ROM rather than read off the header. The measuring
+@ was right; only pret's labels drifted. Offsets this large cannot be reached by
+@ a Thumb immediate, so every access loads the offset from a literal pool, and a
+@ census of ov12's word-aligned literals in [0x500,0x800) reads:
 @
 @     0x68a x9   0x68b x6   0x68c x5   0x68d x1   0x68e x3   0x68f x2
 @
-@ six consecutive single-byte offsets, which is exactly pret's run of six u8
-@ fields - battlerType, curMenuId, monTargetType, gender, isTouchDisabled,
-@ unk66F. What confirms the alignment rather than merely fitting it: 0x688 and
-@ 0x689 are absent from the pool entirely, and those are the two pret calls
-@ unused_668 / unused_669. Unreferenced fields leave no literals.
+@ six consecutive single-byte fields, battlerType .. cancelShown, with 0x688 and
+@ 0x689 (two unused bytes) absent. The census also showed 0x6d8 x8 and 0x6dc x7,
+@ which are `cursor` and `&menuCursor`.
 @
-@ The same +0x20 lands the cursor on 0x6d4, and the fields after it corroborate:
-@ 0x6d8 (keyPressed, x8), 0x6dc (tutorial.finger, x7), 0x6e4/0x6e8/0x6ec (the
-@ three ManagedSprite pointers that close the struct, x5/x1/x2). Two fields
-@ agreeing on one delta, with the gaps in the right places.
+@ The cursor used to be LEARNED at runtime from a starting guess of 0x6D4 -
+@ which is BattleInput.scrollXEnd - by watching which byte moved on UP/DOWN. The
+@ decompilation settles it at 0x6DC, the same place the learner's own test (an
+@ `enabled` byte of 1, then menuY 0/1, then menuX <= 2) converges on. Fixing it
+@ also removes a hazard: the learner kept running while the bag was open, when
+@ battleInput is freed and the window it diffed was reused heap.
 @
 @ Identical in IPGF, IPKF and IPKE - these are code-derived, so unlike data they
 @ do not move between regions.
-BATTLE_INPUT_OFF  = 0x19C
-BI_CURMENU_OFF    = 0x68B
-BI_CURSOR_OFF     = 0x6D4
+BATTLE_INPUT_OFF  = 0x19C       @ BattleSystem.battleInput
+BS_GRAPHICS_MODE_OFF = 0x23FD   @ BattleSystem.graphicsMode
+BI_CURMENU_OFF    = 0x68B       @ BattleInput.curMenuId
+BI_MENU_CURSOR_OFF = 0x6DC      @ BattleInput.menuCursor
+BATTLE_INPUT_SIZE = 0x6F8       @ sizeof(BattleInput), for the range check
+BSTATE_BATTLE_MAIN = 9          @ Battle_Run's state while BattleSystem lives
 
-@ The cursor offset is the one value here that the literal census cannot settle.
-@ curMenuId was pinned by a run of six consecutive byte offsets with the two
-@ unused ones missing; menuCursor has no such signature, and three candidates
-@ (0x6d4, 0x6d8, 0x6dc) all have plausible reference counts and plausible
-@ neighbours. Picking one and shipping it is how the highlight ended up welded to
-@ ATTAQUE: a wrong offset reads bytes that clamp to menuY 0, which is the whole
-@ top row.
+@ enum BattleMenuID (include/constants/battle_menu.h). sBattleMenuTemplates
+@ (src/battle/battle_input.c) gives the main-menu cursor to ten ids, but only
+@ four of them show FIGHT / BAG / POKEMON / RUN:
 @
-@ So BI_CURSOR_OFF is only a starting guess, and the hook corrects it from the
-@ game itself - see OneScreen_BattleLearn. The window it watches has to contain
-@ every candidate.
-BI_WIN_BASE  = 0x680
-BI_WIN_SIZE  = 128              @ 0x680..0x700
-KEY_UPDOWN   = 0x0C0            @ up | down
-
-@ enum BattleMenuID (include/constants/battle_menu.h:58). Ids 1..8 are ALL the
-@ root command menu, not just the two the enum bothers to name: sBattleMenuTemplates
-@ (src/battle/battle_input.c:581) gives every one of them
-@ sTouchscreenRectMainMenuButtons and BattleInput_CursorMove_MainMenu, and 3 and 4
-@ differ from 1 and 2 only in calling BattleInput_CreateMainMenuObjects instead of
-@ ...Initial - which is to say they are the "put the menu back up" states you land
-@ on after backing out of the move list or the bag. 5 and 6 get named outright in
-@ the cursor mover's own switch.
+@     1 MAIN_INITIAL, 2 MAIN      the first opening this battle (1 for the
+@                                 first battler, 2 for the second in a double)
+@     3, 4                        every later opening - backing out of the move
+@                                 list or the bag lands here
+@     5, 6                        the first rival battle: FIGHT alone, a 1x1
+@                                 cursor
+@     7, 8                        the Safari Zone: BALL / BAIT / MUD / RUN
+@     19, 20                      the Bug Contest: BALL in place of BAG
 @
-@ Testing only 1 and 2 is what made backing out of a submenu leave the screens
-@ swapped with no labels: the menu was up, we just did not recognise the id.
-@ 9/10 are Pal Park, 11+ are the move list, target select and the prompts.
-@ -1 is BATTLE_MENU_NONE, which is live while the battle intro text plays.
+@ The patch only has FIGHT/BAG/POKEMON/RUN pixels, and drawing them over a
+@ Safari or first-rival menu would label choices the game is not offering -
+@ worse than swapping. So 5..8 and 19/20 swap like any other menu. 9/10 are
+@ Pal Park (BALL / RUN), 11 the move list and 12 target select. 0 is
+@ BATTLE_MENU_0, the blank menu that is up while the intro text plays and while
+@ the turn runs; -1 (NONE) only exists inside the game's own menu change.
 BATTLE_MENU_ROOT_LO = 1
-BATTLE_MENU_ROOT_HI = 8
+BATTLE_MENU_ROOT_HI = 4
 
 @ 13..17 are the binary prompts - YES_NO, KEEP_FORGET_MOVE, GIVE_UP_ON_MOVE,
 @ SWITCH_OR_FLEE, SWITCH_OR_KEEP. sBattleMenuTemplates gives all five
@@ -362,6 +359,9 @@ MAP_PENDING_FRAMES = 180        @ ~3 s, far longer than the handover needs
 FS_TASKMAN_OFF = 0x10           @ FieldSystem.taskman
 TASK_FUNC_OFF = 0x04            @ TaskManager.func
 TASK_ENV_OFF = 0x0C             @ TaskManager.env
+FIELD_SYSTEM_SIZE = 0x128       @ sizeof(FieldSystem)
+TASK_MANAGER_SIZE = 0x20        @ sizeof(TaskManager)
+START_MENU_DATA_SIZE = 0x38C    @ sizeof(StartMenuTaskData)
 
 @ StartMenuTaskData.state (include/start_menu.h), the menu's own state machine.
 @ Its exit path is what shows the menu for a moment after choosing Dig or an
@@ -408,7 +408,8 @@ STARTMENU_SAVE_HI = 7
 @                       zeros, which read as POKEDEX and drew that word twice.
 FS_START_MENU_CURSOR_OFF = 0xD3 @ FieldSystem.startMenuCursorPos
 SM_INHIBIT_OFF = 0x34C          @ StartMenuTaskData.inhibitIconFlags
-SM_NORMAL_BIT = 8               @ DISABLE_RETIRE; see OneScreen_StartMenu
+SM_NORMAL_MASK = 0x190          @ DISABLE_RETIRE | DISABLE_7 | DISABLE_SAVE
+SM_NORMAL_BITS = 0x180          @ what the normal layout sets of those three
 
 @ The panel's record in the label blob, and the offsets inside it. Written by
 @ onescreen/labels.py::_startmenu; the layout is documented there.
@@ -461,6 +462,7 @@ SM_SCREEN_BASE = 0x06001000     @ MAIN_3's tilemap, from sBgTemplate_3
 @ reads [299,301,306,303,318,303,316] in both places, which is what makes
 @ identifying a menu by its text sound.
 LIST_CURSOR_OFF = 0x394         @ TouchscreenChoiceMenuData.selection
+CHOICE_MENU_OFF = 0x0C          @ TouchscreenChoiceMenuData.menu, the menu's own slot
 CHOICE_CALLBACK_ARG_OFF = 0x3A0 @ TouchscreenChoiceMenuData.selectionCallbackArg
 SCRIPT_MENU_COUNT_OFF = 0x9B    @ ScriptMenu.count
 SCRIPT_MENU_STRBUFS_OFF = 0x1C  @ ScriptMenu.strbufs
@@ -479,7 +481,7 @@ LIST_N_MENUS = 22               @ u8
 LIST_PAL_NORM = 23
 LIST_PAL_HI = 24
 LIST_MENUS_OFF = 0x1C           @ first per-menu record
-LIST_MENU_RECORD = 52
+LIST_MENU_RECORD = 56
 LIST_M_STRIP_OFF = 0            @ u16, byte offset of its strips in the pool
 LIST_M_STRIP_TILES = 2          @ u16
 LIST_M_ENTRIES = 4              @ u8
@@ -493,6 +495,9 @@ LIST_M_COLS = 8
 LIST_M_ROWS = 9
 LIST_M_KEY = 10                 @ u16 key[16]
 LIST_M_POS = 42                 @ u8 pos[8], (row << 4) | column per entry
+LIST_M_HASH = 50                @ u16 hash of every entry not in the skip mask
+LIST_M_SKIP = 52                @ u8, bit i = entry i is left out of the hash
+LIST_MAX_ENTRIES = 8
 LIST_KEY_MAX = 16
 LIST_FRAME_TILES = 9
 LIST_HOLD_FRAMES = 8            @ ~0.13s; long enough to bridge a reprint, short
@@ -716,7 +721,7 @@ EVOLUTION_TASK_ORIG     = 0x02075D09 @ sub_02075D08, Thumb
     .global OneScreen_Signature
 OneScreen_Signature:
     .ascii  "1SGS"
-    .word   0x00000019          @ payload version
+    .word   0x0000001A          @ payload version
 
 @ Filled in by the patcher from the ROM being patched. Defaults are French, so
 @ an unconfigured payload still works there. Keep the field order in step with
@@ -755,8 +760,6 @@ bt_menu_last:   .word NO_STATE  @ last menu id acted on, for edge detection
 bt_manual:      .word 0         @ 1 while an L+R override is holding, in battle
 bt_system:      .word 0         @ live BattleSystem*, or 0 outside a battle
 bt_drawn:       .word -1        @ label image currently blitted, -1 = nothing
-bt_cursor_off:  .word BI_CURSOR_OFF  @ learned; see OneScreen_BattleLearn
-bt_have_prev:   .word 0         @ 1 once bt_prev holds last frame's window
 bt_lock:        .word -1        @ image frozen at the moment A was pressed, -1 = free
 oak_drawn:      .word -1        @ prompt image in Oak's dialog box, -1 = none
 oak_data:       .word 0         @ diagnostics: OakSpeechData, its state,
@@ -797,9 +800,6 @@ cursor_cmd:
     .byte   0, 0, 0
     .byte   1, 3, 2
     .align  2
-
-@ Last frame's copy of the window OneScreen_BattleLearn watches.
-bt_prev:        .space BI_WIN_SIZE
 
 
 
@@ -938,10 +938,10 @@ OneScreen_UpdatePad:
 @ picked something and the game needs a screen we cannot draw on.
 @
 @   turn executing              -> battle scene on top
-@   root command menu (1..8)    -> battle scene on top, commands drawn over it
+@   root command menu (1..4)    -> battle scene on top, commands drawn over it
 @   a yes/no prompt (13..17)    -> battle scene on top, Oui/Non drawn over it
 @   bag or party (overlay 8)    -> hand the screen over, every frame
-@   any other menu (11, 12, ..) -> hand the screen over, every frame
+@   any other menu (5..12, 19..) -> hand the screen over, every frame
 @   no menu yet (-1 / 0)        -> leave the scene alone; the intro is playing
 @
 @ What this replaces: the menu used to come up on a D-pad or A press and step
@@ -1018,7 +1018,7 @@ OneScreen_AutoBattle:
     @ Reading the menu id also retires the battle-intro problem for free. The
     @ phase proxy reads "awaiting a command" from the moment overlay 10 loads,
     @ which is while the intro text is still playing - but curMenuId is
-    @ BATTLE_MENU_NONE until the menu actually opens, so mashing A through the
+    @ BATTLE_MENU_0 until the menu actually opens, so mashing A through the
     @ intro now does nothing instead of pinning the menu for the rest of the
     @ fight.
     bl      OneScreen_BattleMenuId
@@ -1052,7 +1052,7 @@ OneScreen_AutoBattle:
 
     subs    r0, r5, #BATTLE_MENU_ROOT_LO
     cmp     r0, #(BATTLE_MENU_ROOT_HI - BATTLE_MENU_ROOT_LO)
-    bls     26f                     @ 1..8: the root command menu
+    bls     26f                     @ 1..4: the root command menu
     movs    r0, r5                  @ 3-bit immediate cannot reach 13
     subs    r0, #BATTLE_MENU_TWO_LO
     cmp     r0, #(BATTLE_MENU_TWO_HI - BATTLE_MENU_TWO_LO)
@@ -1085,37 +1085,71 @@ OneScreen_AutoBattle:
     .pool
 
 @ ---------------------------------------------------------------------------
+@ BattleInput *OneScreen_BattleInput(void) -> the live BattleInput, or 0.
+@
+@ The one place the battle structs are dereferenced, so every reader gets the
+@ same checks. battleInput is only valid while BattleSystem.graphicsMode is 0:
+@ the bag and the party (3) and the catch naming screen (1/2) free it and leave
+@ the pointer behind, and the hook used to read curMenuId out of that freed
+@ block - which is why the bag appeared to "leave curMenuId on the root menu".
+@ bt_system itself is only published while Battle_Run is in BSTATE_BATTLE_MAIN;
+@ see OneScreen_BattleExec.
+@ ---------------------------------------------------------------------------
+    .thumb_func
+OneScreen_BattleInput:
+    push    {r4, lr}
+    ldr     r0, =bt_system
+    ldr     r4, [r0]
+    movs    r0, r4
+    ldr     r1, =(BS_GRAPHICS_MODE_OFF + 1)
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     31f
+    ldr     r0, =BS_GRAPHICS_MODE_OFF
+    ldrb    r0, [r4, r0]
+    cmp     r0, #0
+    bne     31f                     @ a sub-screen owns the input: freed
+    ldr     r1, =BATTLE_INPUT_OFF
+    ldr     r4, [r4, r1]
+    movs    r0, r4
+    ldr     r1, =BATTLE_INPUT_SIZE
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     31f
+    movs    r0, r4
+    pop     {r4, pc}
+31: movs    r0, #0
+    pop     {r4, pc}
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
 @ int OneScreen_BattleMenuId(void)
 @   -> r0 = battleInput->curMenuId, or BATTLE_MENU_NONE (-1) if there is no
 @      live battle to read it from.
 @
-@ Returning -1 for "cannot tell" is deliberate: -1 is already the game's own
-@ "no menu is up" value, and both cases want the same treatment - leave the
-@ battle scene alone and draw nothing.
+@ Returning -1 for "cannot tell" is deliberate: the caller treats every id <= 0
+@ as "no menu is up" - leave the battle scene alone and draw nothing.
 @ ---------------------------------------------------------------------------
     .thumb_func
 OneScreen_BattleMenuId:
-    ldr     r0, =bt_system
-    ldr     r0, [r0]
-    cmp     r0, #0
-    beq     31f
-    ldr     r1, =BATTLE_INPUT_OFF
-    ldr     r0, [r0, r1]
+    push    {r3, lr}
+    bl      OneScreen_BattleInput
     cmp     r0, #0
     beq     31f
     ldr     r1, =BI_CURMENU_OFF
     ldrsb   r0, [r0, r1]
-    bx      lr
+    pop     {r3, pc}
 31: movs    r0, #0
     mvns    r0, r0                  @ -1
-    bx      lr
+    pop     {r3, pc}
     .align  2
     .pool
 
 @ int OneScreen_BattleSubOpen(void) -> 1 while a battle sub-screen owns engine B
 @ (bag category, item list, party). This is the overlay id, not the menu id: the
-@ bag and party run as overlay 8 and leave curMenuId sitting on the root menu, so
-@ the menu id cannot see them.
+@ bag and party run as overlay 8, and the BattleInput the menu id lives in is
+@ freed while they are up.
     .thumb_func
 OneScreen_BattleSubOpen:
     ldr     r0, =cfg_battle_state
@@ -1134,110 +1168,18 @@ OneScreen_BattleSubOpen:
 @ One column, two rows, so menuY alone is the answer.
     .thumb_func
 OneScreen_BattleYesNo:
-    ldr     r0, =bt_system
-    ldr     r0, [r0]
+    push    {r3, lr}
+    bl      OneScreen_BattleInput
     cmp     r0, #0
     beq     64f
-    ldr     r1, =BATTLE_INPUT_OFF
-    ldr     r0, [r0, r1]
-    cmp     r0, #0
-    beq     64f
-    ldr     r1, =bt_cursor_off
-    ldr     r1, [r1]
+    ldr     r1, =BI_MENU_CURSOR_OFF
     adds    r0, r0, r1
     ldrb    r0, [r0, #1]            @ menuY
     cmp     r0, #1
     bls     65f
 64: movs    r0, #0
 65: adds    r0, #(LABEL_GEO_YN << 4)
-    bx      lr
-    .align  2
-    .pool
-
-@ ---------------------------------------------------------------------------
-@ void OneScreen_BattleLearn(BattleInput *bi)
-@
-@ Work out where BattleMenuCursor really is, by watching the game move it.
-@
-@ pret's offsets drift in this part of the struct (battle_input.h:168) and the
-@ literal census that pinned curMenuId cannot separate the cursor from its
-@ neighbours. Rather than ship a guess, watch what actually changes: on a frame
-@ where UP or DOWN was pressed on the root menu, the game has already run and
-@ menuY is the byte that moved. UP/DOWN only, never LEFT/RIGHT - the mover has a
-@ special case where LEFT or RIGHT off FIGHT writes menuX *and* menuY
-@ (battle_input.c:3778), so those frames cannot tell the two apart.
-@
-@ The candidate has to look like a BattleMenuCursor and not merely like a byte
-@ that changed: menuY only ever holds 0 or 1, the byte before it is `enabled`
-@ which is 1 while the cursor is live, and the byte after is menuX, at most 2.
-@ Requiring exactly one match in the window means an ambiguous frame is skipped
-@ rather than guessed at; the next press tries again.
-@
-@ Learned once and kept - it is a property of the ROM, not of the battle.
-@ ---------------------------------------------------------------------------
-    .thumb_func
-OneScreen_BattleLearn:
-    push    {r4, r5, r6, r7, lr}
-    movs    r6, r0                  @ battleInput
-    ldr     r7, =BI_WIN_BASE
-    adds    r6, r6, r7              @ &bi[BI_WIN_BASE]
-    ldr     r7, =bt_prev
-
-    ldr     r0, =bt_have_prev
-    ldr     r0, [r0]
-    cmp     r0, #0
-    beq     47f                     @ nothing to compare against yet
-
-    ldr     r0, =pad_new
-    ldr     r0, [r0]
-    movs    r1, #KEY_UPDOWN
-    ands    r0, r1
-    cmp     r0, #0
-    beq     47f
-
-    movs    r2, #1                  @ offset; 0 has no byte before it
-    movs    r4, #0                  @ candidate
-    movs    r5, #0                  @ count
-46: ldrb    r0, [r7, r2]            @ was
-    ldrb    r1, [r6, r2]            @ is
-    cmp     r0, r1
-    beq     48f
-    cmp     r0, #1
-    bhi     48f                     @ menuY is 0 or 1, before and after
-    cmp     r1, #1
-    bhi     48f
-    subs    r3, r2, #1
-    ldrb    r0, [r6, r3]
-    cmp     r0, #1
-    bne     48f                     @ preceded by enabled == 1
-    adds    r3, r2, #1
-    ldrb    r0, [r6, r3]
-    cmp     r0, #2
-    bhi     48f                     @ followed by menuX <= 2
-    movs    r4, r2
-    adds    r5, #1
-48: adds    r2, #1
-    cmp     r2, #(BI_WIN_SIZE - 1)
-    blo     46b
-
-    cmp     r5, #1                  @ exactly one match, or leave it alone
-    bne     47f
-    ldr     r0, =BI_WIN_BASE
-    adds    r0, r0, r4
-    subs    r0, #1                  @ menuY is at +1 from the struct base
-    ldr     r1, =bt_cursor_off
-    str     r0, [r1]
-
-47: movs    r2, #0                  @ remember this frame's window
-49: ldrb    r0, [r6, r2]
-    strb    r0, [r7, r2]
-    adds    r2, #1
-    cmp     r2, #BI_WIN_SIZE
-    blo     49b
-    ldr     r0, =bt_have_prev
-    movs    r1, #1
-    str     r1, [r0]
-    pop     {r4, r5, r6, r7, pc}
+    pop     {r3, pc}
     .align  2
     .pool
 
@@ -1250,22 +1192,16 @@ OneScreen_BattleLearn:
 @ per battler between turns, and applies its own wrap rules at the edges; keeping
 @ a second copy in the hook would only be a second thing to drift.
 @
-@ menuY/menuX are clamped rather than trusted. If BI_CURSOR_OFF turns out to be
-@ pointing at the wrong bytes, a clamp keeps this returning a valid image instead
-@ of indexing off the end of a six-byte table.
+@ menuY/menuX are clamped rather than trusted, so a surprise in the struct still
+@ returns a valid image instead of indexing off the end of a six-byte table.
 @ ---------------------------------------------------------------------------
     .thumb_func
 OneScreen_BattleCursor:
-    ldr     r0, =bt_system
-    ldr     r0, [r0]
+    push    {r3, lr}
+    bl      OneScreen_BattleInput
     cmp     r0, #0
     beq     34f
-    ldr     r1, =BATTLE_INPUT_OFF
-    ldr     r0, [r0, r1]
-    cmp     r0, #0
-    beq     34f
-    ldr     r1, =bt_cursor_off
-    ldr     r1, [r1]
+    ldr     r1, =BI_MENU_CURSOR_OFF
     adds    r0, r0, r1
     ldrb    r1, [r0, #1]            @ menuY
     ldrb    r2, [r0, #2]            @ menuX
@@ -1280,9 +1216,9 @@ OneScreen_BattleCursor:
     adds    r0, r0, r2
     ldr     r1, =cursor_cmd
     ldrb    r0, [r1, r0]
-    bx      lr
+    pop     {r3, pc}
 34: movs    r0, #0                  @ no cursor to read: show FIGHT selected
-    bx      lr
+    pop     {r3, pc}
     .align  2
     .pool
 
@@ -1503,9 +1439,7 @@ OneScreen_ResetBattleUi:
     movs    r1, #0
     ldr     r0, =bt_manual
     str     r1, [r0]
-    ldr     r0, =bt_have_prev       @ the window belongs to a battle that is over
-    str     r1, [r0]
-    movs    r1, #0                  @ and the frozen highlight to the last turn
+    movs    r1, #0                  @ the frozen highlight belongs to the last turn
     mvns    r1, r1
     ldr     r0, =bt_lock
     str     r1, [r0]
@@ -1537,8 +1471,11 @@ OneScreen_ResetBattleUi:
 @ the frame, or it gets painted over. `docs/AUDIT.md:133` calls that failure
 @ class 4, and it is the reason the PC box needed a hold.
 @
-@ Nothing is drawn yet; this only captures the pointer, so the build is
-@ behaviourally identical until the renderer lands.
+@ manager->data is only a BattleSystem while Battle_Run is in
+@ BSTATE_BATTLE_MAIN (src/battle/battle_022378C0.c): during the link stages it
+@ is the link work area, and once the battle ends it is freed while the same
+@ application runs the evolution and the move it teaches. So the pointer is
+@ published only in that state, read after the real exec has had its say.
 @ ---------------------------------------------------------------------------
 BATTLE_DATA_OFF = 0x08          @ manager->data, from &proc_state (+0x14)
 
@@ -1551,8 +1488,13 @@ OneScreen_BattleExec:
     ldr     r3, [r3]
     blx     r3
     movs    r5, r0                  @ keep its return value
+    ldr     r0, [r4]                @ proc_state, after this frame's transition
+    cmp     r0, #BSTATE_BATTLE_MAIN
+    bne     44f
     ldr     r4, [r4, #BATTLE_DATA_OFF]
-    ldr     r0, =bt_system
+    b       46f
+44: movs    r4, #0                  @ no BattleSystem to speak of
+46: ldr     r0, =bt_system
     str     r4, [r0]
 
     @ Draw here rather than from the main-loop hook, because here we are AFTER
@@ -1562,18 +1504,7 @@ OneScreen_BattleExec:
     @ PC box a hold.
     cmp     r4, #0
     beq     45f
-
     bl      OneScreen_BattleMenuId
-    push    {r0}
-    subs    r1, r0, #BATTLE_MENU_ROOT_LO
-    cmp     r1, #(BATTLE_MENU_ROOT_HI - BATTLE_MENU_ROOT_LO)
-    bhi     43f                     @ only learn while the root menu is up
-    ldr     r1, =BATTLE_INPUT_OFF
-    ldr     r0, [r4, r1]
-    cmp     r0, #0
-    beq     43f
-    bl      OneScreen_BattleLearn
-43: pop     {r0}
     bl      OneScreen_BattleDraw
 45: movs    r0, r5
     pop     {r4, r5, pc}
@@ -2334,17 +2265,70 @@ OneScreen_OakExec:
 @ ---------------------------------------------------------------------------
     .thumb_func
 OneScreen_TaskMan:                  @ -> r0 = fieldSystem->taskman, or 0
+    push    {r4, lr}
+    bl      OneScreen_FieldSys
+    cmp     r0, #0
+    beq     55f
+    ldr     r4, [r0, #FS_TASKMAN_OFF]
+    movs    r0, r4
+    movs    r1, #TASK_MANAGER_SIZE
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     55f
+    movs    r0, r4
+    pop     {r4, pc}
+55: movs    r0, #0
+    pop     {r4, pc}
+    .align  2
+    .pool
+
+@ FieldSystem *OneScreen_FieldSys(void) -> *sFieldSysPtr if it points at a whole
+@ FieldSystem in main RAM, else 0. Every walk that starts at the field starts
+@ here, so a stale or half-built pointer fails closed in one place.
+    .thumb_func
+OneScreen_FieldSys:
+    push    {r4, lr}
     ldr     r0, =cfg_field_sys
     ldr     r0, [r0]
     cmp     r0, #0
-    beq     55f
-    ldr     r0, [r0]                @ sFieldSysPtr
+    beq     54f
+    ldr     r4, [r0]                @ sFieldSysPtr
+    movs    r0, r4
+    ldr     r1, =FIELD_SYSTEM_SIZE
+    bl      OneScreen_MainRamRange
     cmp     r0, #0
-    beq     55f
-    ldr     r0, [r0, #FS_TASKMAN_OFF]
-    bx      lr
-55: movs    r0, #0
-    bx      lr
+    beq     54f
+    movs    r0, r4
+    pop     {r4, pc}
+54: movs    r0, #0
+    pop     {r4, pc}
+    .align  2
+    .pool
+
+@ StartMenuTaskData *OneScreen_StartMenuEnv(r0 = TaskManager *, or 0)
+@   -> the start menu's own data if that task is Task_StartMenu, else 0.
+    .thumb_func
+OneScreen_StartMenuEnv:
+    push    {r4, lr}
+    cmp     r0, #0
+    beq     53f
+    ldr     r1, [r0, #TASK_FUNC_OFF]
+    ldr     r2, =cfg_start_menu_task
+    ldr     r2, [r2]
+    cmp     r2, #0
+    beq     53f                     @ the patcher could not vouch for the task
+    cmp     r1, r2
+    bne     53f                     @ something else owns the field right now
+    ldr     r4, [r0, #TASK_ENV_OFF]
+    movs    r0, r4
+    ldr     r1, =START_MENU_DATA_SIZE
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     53f
+    movs    r0, r4
+    pop     {r4, pc}
+53: movs    r0, #0
+    pop     {r4, pc}
     .align  2
     .pool
 
@@ -2373,13 +2357,8 @@ OneScreen_MenuGone:
     @ It is an ARM9 task, so we cannot tell from the address alone. But if it is
     @ Task_StartMenu we can ask the menu itself, and its exit states say it is
     @ leaving even though it is still on screen - the Dig / Escape Rope flash.
-    ldr     r1, =cfg_start_menu_task
-    ldr     r1, [r1]
-    cmp     r1, #0
-    beq     57f                     @ the patcher could not vouch for it
-    cmp     r0, r1
-    bne     57f
-    ldr     r0, [r4, #TASK_ENV_OFF] @ the StartMenuTaskData
+    movs    r0, r4
+    bl      OneScreen_StartMenuEnv  @ the StartMenuTaskData, if it is the menu
     cmp     r0, #0
     beq     57f
     ldrh    r0, [r0, #STARTMENU_STATE_OFF]
@@ -2404,7 +2383,7 @@ OneScreen_MenuGone:
 @
 @ It needs no display registers touched at all: MAIN_3 is priority 0 and the 3D
 @ world is BG0 at priority 1 (initializeSimple3DVramManager, gf_3d_render.c:46),
-@ so the panel is already in front. The strips sit at tile 0x90 - clear of the
+@ so the panel is already in front. The strips sit at tile 0x84 - clear of the
 @ 130 tiles the menu loads for itself at tile 0, and far below the map-name
 @ window at 0x197, the only permanently allocated window on this layer.
 @
@@ -2429,28 +2408,15 @@ OneScreen_StartMenu:
     cmp     r0, r1
     bne     57f                     @ blob never filled in: draw nothing at all
 
-    @ Every pointer checked. A stale one reaching the IPC FIFO at 0x04100000 is
-    @ what hung the ARM9 during the field-prompt attempt, and this walks the same
-    @ kind of chain.
-    ldr     r0, =cfg_field_sys
-    ldr     r0, [r0]
-    cmp     r0, #0
+    @ Every pointer checked, against the size of what it points at. A stale one
+    @ reaching the IPC FIFO at 0x04100000 is what hung the ARM9 during the
+    @ field-prompt attempt, and this walks the same kind of chain.
+    bl      OneScreen_FieldSys
+    movs    r6, r0                  @ -> FieldSystem
     beq     57f
-    ldr     r6, [r0]                @ sFieldSysPtr -> FieldSystem
-    cmp     r6, #0
-    beq     57f
-    ldr     r4, [r6, #FS_TASKMAN_OFF]
-    cmp     r4, #0
-    beq     57f
-    ldr     r0, [r4, #TASK_FUNC_OFF]
-    ldr     r1, =cfg_start_menu_task
-    ldr     r1, [r1]
-    cmp     r1, #0
-    beq     57f                     @ the patcher could not vouch for the task
-    cmp     r0, r1
-    bne     57f                     @ something else owns the field right now
-    ldr     r4, [r4, #TASK_ENV_OFF] @ -> StartMenuTaskData
-    cmp     r4, #0
+    bl      OneScreen_TaskMan
+    bl      OneScreen_StartMenuEnv
+    movs    r4, r0                  @ -> StartMenuTaskData
     beq     57f
     ldrh    r0, [r4, #STARTMENU_STATE_OFF]
     subs    r0, #STARTMENU_SAVE_LO
@@ -2473,20 +2439,28 @@ OneScreen_StartMenu:
     movs    r0, #FS_START_MENU_CURSOR_OFF      @ 0xD3 is out of reach of ldrb's immediate
     ldrb    r5, [r6, r0]            @ the live cursor
 
-    @ Only the ordinary overworld grid is reproduced. Safari, the Bug Contest and
-    @ Pal Park use different ones (ov27_0225CFC8 rows 1-3) that put RETIRE first
-    @ and shift everything after it, and the variant lives in the touch overlay's
-    @ own struct where this cannot reach. All of them leave RETIRE ENABLED, while
-    @ the normal layout always inhibits it (src/start_menu.c:307) - so that bit
-    @ separates them. Anywhere else this returns 0 and the caller swaps instead,
-    @ which is what the patch always did.
+    @ Only the ordinary overworld grid is reproduced. The game picks the
+    @ inhibit flags with one function per variant (src/start_menu.c), and they
+    @ separate cleanly:
+    @
+    @     Normal      always DISABLE_7 | DISABLE_RETIRE, never DISABLE_SAVE
+    @     Safari      SAVE | 7                        0x090
+    @     Bug Contest, Pal Park   BAG | SAVE | 7      0x094
+    @     Union Room  RETIRE | 4 (SAVE)               0x110
+    @     Colosseum, Battle Tower partner room        0x391 / 0x395
+    @
+    @ Testing RETIRE alone also let the last three through, and drew the normal
+    @ grid in the Union Room, whose real menu has CHAT and LOG in it. Normal is
+    @ exactly (flags & (SAVE | 7 | RETIRE)) == (7 | RETIRE). Anywhere else this
+    @ returns 0 and the caller swaps instead, which is what the patch always did.
     ldr     r0, =SM_INHIBIT_OFF
     ldr     r0, [r4, r0]
     str     r0, [sp, #8]
-    movs    r1, #1
-    lsls    r1, r1, #SM_NORMAL_BIT
-    tst     r0, r1
-    bne     56f
+    ldr     r1, =SM_NORMAL_MASK
+    ands    r1, r0
+    ldr     r2, =SM_NORMAL_BITS
+    cmp     r1, r2
+    beq     56f
 57: b       79f                     @ trampoline: the exit is past a conditional
 56:                                 @ branch's 256-byte reach from the checks
     ldr     r0, =sm_drawn
@@ -2804,12 +2778,9 @@ OneScreen_Unpack:
 @ is sized here rather than by the patcher: the entry count is not known until a
 @ menu opens, so the frame is built a tile at a time from the nine border tiles.
 @
-@ Which menu is this? The message ids are gone by now - ov01_021EDD68 reads each
-@ into a string and discards it - so a menu is recognised by its entry COUNT and
-@ the CHARACTERS of its first entry, both read live and compared against text
-@ rasterised at patch time. Anything unrecognised returns 0 and the caller swaps
-@ the screen, exactly as before, so an NPC choice this knows nothing about is
-@ never drawn with the wrong words.
+@ Which menu this is is OneScreen_ListMatch's question. Anything unrecognised
+@ returns 0 and the caller swaps the screen, exactly as before, so an NPC choice
+@ this knows nothing about is never drawn with the wrong words.
 @ ---------------------------------------------------------------------------
     .global OneScreen_ListMenu
     .thumb_func
@@ -2841,79 +2812,19 @@ OneScreen_ListMenu:
     cmp     r4, #0
     beq     29f                     @ no validated controller this frame
     movs    r0, r4                  @ FieldMode3 only vouched for it as far as
-    ldr     r1, =CHOICE_CALLBACK_ARG_OFF      @ +0x394; the menu pointer sits past that
+    ldr     r1, =(LIST_CURSOR_OFF + 4)  @ its back-pointer; the cursor sits past that
     bl      OneScreen_MainRamRange
     cmp     r0, #0
     beq     29f
     ldr     r0, =LIST_CURSOR_OFF
     ldr     r0, [r4, r0]
     str     r0, [sp, #8]            @ the live cursor
-    ldr     r0, =CHOICE_CALLBACK_ARG_OFF
-    ldr     r5, [r4, r0]
-    movs    r0, r5
-    movs    r1, #SCRIPT_MENU_COUNT_OFF
-    bl      OneScreen_MainRamRange
+    ldr     r0, [r4, #CHOICE_MENU_OFF]
+    bl      OneScreen_ListMatch
     cmp     r0, #0
-    beq     29f                     @ never dereference a stale menu pointer
-    str     r5, [sp]
-    movs    r0, #SCRIPT_MENU_COUNT_OFF
-    ldrb    r0, [r5, r0]
-    str     r0, [sp, #4]            @ entry count
-
-    ldr     r0, [r5, #SCRIPT_MENU_STRBUFS_OFF]     @ the first entry's String
-    movs    r1, #STRING_DATA_OFF
-    bl      OneScreen_MainRamRange
-    cmp     r0, #0
-    beq     29f
-    ldr     r0, [r5, #SCRIPT_MENU_STRBUFS_OFF]
-    str     r0, [sp, #20]
-
-    @ Find the menu whose count and first entry both match.
-    movs    r0, #0
-    str     r0, [sp, #12]
-20: ldr     r0, [sp, #12]
-    ldrb    r1, [r7, #LIST_N_MENUS]
-    cmp     r0, r1
-    bhs     29f                     @ nothing we know: let the caller swap
-    movs    r1, #LIST_MENU_RECORD
-    muls    r1, r0
-    movs    r2, #LIST_MENUS_OFF
-    adds    r1, r1, r2
-    adds    r1, r7, r1              @ -> this menu's record
-    ldrb    r2, [r1, #LIST_M_ENTRIES]
-    ldr     r3, [sp, #4]
-    cmp     r2, r3
-    bne     23f
-    ldr     r2, [sp, #20]
-    ldrh    r3, [r2, #STRING_SIZE_OFF]
-    ldrb    r4, [r1, #LIST_M_KEY_FULL]
-    cmp     r3, r4
-    bne     23f
-    cmp     r4, #LIST_KEY_MAX       @ only the first 16 are stored; the full
-    bls     24f                     @ length above has already been checked
-    movs    r4, #LIST_KEY_MAX
-24: movs    r3, #0
-21: cmp     r3, r4
-    bhs     22f
-    lsls    r5, r3, #1
-    movs    r6, #STRING_DATA_OFF
-    adds    r6, r2, r6
-    ldrh    r6, [r6, r5]
-    movs    r0, #LIST_M_KEY
-    adds    r0, r1, r0
-    ldrh    r0, [r0, r5]
-    cmp     r6, r0
-    bne     23f
-    adds    r3, #1
-    b       21b
-22: movs    r0, r1                  @ matched
-    ldr     r1, [sp, #8]
+    beq     29f                     @ nothing we know: let the caller swap
     str     r0, [sp, #16]
     b       26f
-23: ldr     r0, [sp, #12]
-    adds    r0, #1
-    str     r0, [sp, #12]
-    b       20b
 
 29: movs    r0, #0
     b       28f
@@ -2974,6 +2885,190 @@ OneScreen_ListMenu:
     bl      OneScreen_ListDraw
 36: movs    r0, #1
 28: add     sp, #24
+    pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ void *OneScreen_ListMatch(r0 = ScriptMenu *) -> r0 = its panel record, or 0
+@
+@ The message ids are gone by the time a menu is up - ScriptMenu_AppendListItem
+@ reads each into a string and keeps only the text - so a menu is recognised by
+@ what survives, read live and compared against text rasterised at patch time:
+@
+@   * its entry COUNT (ScriptMenu.count)
+@   * the CHARACTERS of its first entry, up to 16, and that entry's full length
+@   * a 16-bit hash over every other entry the patcher could know in advance
+@
+@ The hash is what the first entry alone was missing. The Pokeathlon Dome's
+@ marts are ACHETER / INFOS / QUITTER - three entries, the same first entry as
+@ the shop - and used to be drawn as the shop. Entries the patcher cannot
+@ predict (your own PC's row, which holds your name) are left out of the hash
+@ by the record's skip mask rather than written out.
+@
+@ Also called from OneScreen_MenuExec, so the menus drawn here and the menus left
+@ to the game's own top-screen list are decided by one test.
+@ ---------------------------------------------------------------------------
+    .thumb_func
+OneScreen_ListMatch:
+    push    {r4, r5, r6, r7, lr}
+    sub     sp, #16
+    movs    r5, r0                  @ menu
+    ldr     r7, =OneScreen_Labels
+    ldr     r0, [r7]
+    ldr     r1, =LABEL_MAGIC
+    cmp     r0, r1
+    bne     39f
+    ldr     r0, =LIST_RECORD_OFF
+    adds    r7, r7, r0              @ -> the list header
+    movs    r0, r5
+    movs    r1, #(SCRIPT_MENU_COUNT_OFF + 1)
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     39f                     @ never dereference a stale menu pointer
+    movs    r0, #SCRIPT_MENU_COUNT_OFF
+    ldrb    r0, [r5, r0]
+    cmp     r0, #0
+    beq     39f
+    cmp     r0, #LIST_MAX_ENTRIES
+    bhi     39f                     @ longer than any menu we draw
+    str     r0, [sp]                @ entry count
+    ldr     r0, [r5, #SCRIPT_MENU_STRBUFS_OFF]  @ the first entry's String
+    str     r0, [sp, #4]
+    movs    r1, #STRING_DATA_OFF
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     39f
+    ldr     r0, [sp, #4]
+    ldrh    r1, [r0, #STRING_SIZE_OFF]
+    lsls    r1, r1, #1
+    adds    r1, #STRING_DATA_OFF
+    bl      OneScreen_MainRamRange  @ and all of its characters
+    cmp     r0, #0
+    beq     39f
+
+    movs    r6, #0                  @ record index
+30: ldrb    r1, [r7, #LIST_N_MENUS]
+    cmp     r6, r1
+    bhs     39f
+    movs    r4, #LIST_MENU_RECORD
+    muls    r4, r6
+    adds    r4, #LIST_MENUS_OFF
+    adds    r4, r7, r4              @ -> this menu's record
+    ldrb    r0, [r4, #LIST_M_ENTRIES]
+    ldr     r1, [sp]
+    cmp     r0, r1
+    bne     38f
+    ldr     r2, [sp, #4]
+    ldrh    r3, [r2, #STRING_SIZE_OFF]
+    ldrb    r0, [r4, #LIST_M_KEY_FULL]
+    cmp     r3, r0
+    bne     38f
+    cmp     r0, #LIST_KEY_MAX       @ only the first 16 are stored; the full
+    bls     31f                     @ length above has already been checked
+    movs    r0, #LIST_KEY_MAX
+31: str     r0, [sp, #8]
+    movs    r3, #0
+32: ldr     r0, [sp, #8]
+    cmp     r3, r0
+    bhs     33f
+    lsls    r1, r3, #1
+    adds    r0, r2, r1
+    ldrh    r0, [r0, #STRING_DATA_OFF]
+    adds    r1, #LIST_M_KEY
+    ldrh    r1, [r4, r1]
+    cmp     r0, r1
+    bne     38f
+    adds    r3, #1
+    b       32b
+33: movs    r0, r5                  @ the first entry matches; now the rest
+    ldr     r1, [sp]
+    movs    r2, #LIST_M_SKIP        @ past ldrb's immediate reach
+    ldrb    r2, [r4, r2]
+    bl      OneScreen_ListHash
+    adds    r1, r0, #1
+    beq     39f                     @ an entry pointer was bad: no match at all
+    ldrh    r1, [r4, #LIST_M_HASH]
+    cmp     r0, r1
+    bne     38f
+    movs    r0, r4                  @ matched
+    b       37f
+38: adds    r6, #1
+    b       30b
+39: movs    r0, #0
+37: add     sp, #16
+    pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ int OneScreen_ListHash(r0 = ScriptMenu *, r1 = count, r2 = skip mask)
+@   -> r0 = the menu's hash, or -1 if any entry's String is not in main RAM.
+@
+@ h = h * 31 + code over each entry's characters, then once more with 0xFFFF
+@ between entries, all kept to 16 bits. onescreen/labels.py::_menu_hash is the
+@ same function, applied to the ROM's own messages.
+    .thumb_func
+OneScreen_ListHash:
+    push    {r4, r5, r6, r7, lr}
+    sub     sp, #8
+    movs    r4, r0                  @ menu
+    movs    r5, r1                  @ count
+    movs    r6, r2                  @ skip mask
+    movs    r7, #0                  @ h
+    movs    r0, #0
+    str     r0, [sp]                @ entry index
+40: ldr     r0, [sp]
+    cmp     r0, r5
+    bhs     48f
+    movs    r1, r6
+    lsrs    r1, r0
+    movs    r2, #1
+    tst     r1, r2
+    bne     46f                     @ left out on purpose
+    lsls    r1, r0, #2
+    adds    r1, r4, r1
+    ldr     r0, [r1, #SCRIPT_MENU_STRBUFS_OFF]
+    str     r0, [sp, #4]
+    movs    r1, #STRING_DATA_OFF
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     49f
+    ldr     r0, [sp, #4]
+    ldrh    r1, [r0, #STRING_SIZE_OFF]
+    lsls    r1, r1, #1
+    adds    r1, #STRING_DATA_OFF
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     49f
+    ldr     r2, [sp, #4]
+    ldrh    r3, [r2, #STRING_SIZE_OFF]
+    adds    r2, #STRING_DATA_OFF
+42: cmp     r3, #0
+    beq     45f
+    ldrh    r0, [r2]
+    adds    r2, #2
+    lsls    r1, r7, #5
+    subs    r1, r1, r7              @ h * 31
+    adds    r7, r1, r0
+    lsls    r7, r7, #16
+    lsrs    r7, r7, #16
+    subs    r3, #1
+    b       42b
+45: lsls    r1, r7, #5              @ the separator
+    subs    r1, r1, r7
+    ldr     r0, =0xFFFF
+    adds    r7, r1, r0
+    lsls    r7, r7, #16
+    lsrs    r7, r7, #16
+46: ldr     r0, [sp]
+    adds    r0, #1
+    str     r0, [sp]
+    b       40b
+48: movs    r0, r7
+    b       47f
+49: movs    r0, #0
+    mvns    r0, r0
+47: add     sp, #8
     pop     {r4, r5, r6, r7, pc}
     .align  2
     .pool
@@ -3412,17 +3507,7 @@ OneScreen_FieldYesNoWipe:
 OneScreen_MenuTaking:
     push    {r4, lr}
     bl      OneScreen_TaskMan
-    cmp     r0, #0
-    beq     86f
-    movs    r4, r0
-    ldr     r0, [r4, #TASK_FUNC_OFF]
-    ldr     r1, =cfg_start_menu_task
-    ldr     r1, [r1]
-    cmp     r1, #0
-    beq     86f
-    cmp     r0, r1
-    bne     86f
-    ldr     r0, [r4, #TASK_ENV_OFF]
+    bl      OneScreen_StartMenuEnv
     cmp     r0, #0
     beq     86f
     ldrh    r0, [r0, #STARTMENU_STATE_OFF]
@@ -3919,8 +4004,9 @@ OneScreen_Frame:
 @ time by onescreen/labels.py and written in here by inject.fill_labels. Kept
 @ last in the payload so adding to it never moves any code.
 @
-@ A 272-byte header holds five geometry records plus the start-menu record. Four
-@ unique localized 4bpp image sets follow it; the field-dialog geometry aliases
+@ The header (BLOB_HEADER in labels.py) holds five geometry records, the
+@ start-menu record and the list-menu records. Four unique localized 4bpp image
+@ sets follow it; the field-dialog geometry aliases
 @ the battle Yes/No pixels. The hook reads the recorded geometry rather than
 @ repeating it, so the layout cannot drift away from the rasteriser's.
 @

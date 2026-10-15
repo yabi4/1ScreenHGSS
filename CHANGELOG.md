@@ -1,6 +1,44 @@
 # Changelog
 
-## Unreleased — `V0.2b`
+## Unreleased — `V0.3`
+
+Built against the full decompilation of HeartGold/SoulSilver
+([ctrl-cheeb-del/pokeheartgold](https://github.com/ctrl-cheeb-del/pokeheartgold)), which
+appeared after v0.2b. It confirmed almost every offset this patch had measured from the game,
+and corrected a handful. `docs/DECOMP.md` has the cross-reference.
+
+### Battles
+
+- **Safari Zone and first-rival battles swap instead of mislabelling.** Their command menus
+  are BALL / BAIT / MUD / RUN and FIGHT alone, and were drawn as FIGHT / BAG / POKéMON /
+  RUN. Until there are labels for them they get the touch screen, as the Bug Contest's
+  already did.
+- **The highlight's position is fixed, not learned.** The hook used to discover where the
+  game keeps its cursor by watching it move, starting from a wrong guess. The decompilation
+  says where it is, so the guess and the learning are gone.
+- **No more reads from freed memory.** The bag, the party and the catch naming screen free
+  the structure the command menu lives in; the hook now checks the game's own
+  `graphicsMode` before reading it, and only uses the battle's data while the battle proper
+  is running.
+
+### Menus
+
+- **The Pokéathlon Dome's marts swap instead of showing the shop's words.** Their options
+  are BUY / INFO / SEE YA; menus are now recognised by every entry, not just the first.
+- **The Union Room's X menu swaps instead of being drawn wrong.** It has CHAT and LOG in it,
+  which the drawn panel did not.
+- Every pointer the X menu walks is range-checked against the size of what it points at.
+
+### Development
+
+- `tools/test_hook.py` runs routines from the assembled hook against synthetic game
+  structures under an ARM emulator (`pip install unicorn`).
+- `tools/make_payload.py` finds `arm-none-eabi` binutils on `PATH` or `$DEVKITARM`, and
+  refuses a payload that would not fit in ITCM.
+- `docs/AUDIT.md` corrects overlay 5 (the link battle screens, not the party menu) and names
+  the overlays pret left unnamed.
+
+## `V0.2b`
 
 ### Colour themes
 

@@ -211,6 +211,11 @@ HP bars, input, cursors", so the action-select menu lives *inside* ov12 and ther
 overlay boundary to hook. ov10 merely happens to be resident across the turn, which made
 it look like a usable signal. It is not.
 
+*Later, with the full decompilation:* it is a usable signal after all, just not a hook
+point. `BattleSystem_SetTrainerAIOverlayLoaded` swaps ov7 out for ov10 exactly when
+command selection starts and back when every battler has chosen, which is why the
+overlay-slot proxy described below tracks the phase so well.
+
 What shipped instead: `OneScreen_Frame` in ITCM, reached by replacing the main loop's
 `bl 0x0200110C` at **`0x02000DB0`** with a call to our code, which runs the original and
 then polls the pad. **L+R toggles POWCNT1 bit 15.**
@@ -578,7 +583,8 @@ static PMiLoadedOverlay sOverlayRegions[OVY_REGION_NUM][OVY_MAX_PER_REGION];
 
 So `0x021D0E28` is `sOverlayRegions[OVY_REGION_MAIN][3].id` — the overlay id occupying
 main-region slot 3. The battle loads a different overlay per phase, which is why it tracks
-the phase: `10` = the command menu, `8` = a sub-screen, `7` = the turn executing. `27` is
+the phase: `10` = the trainer AI, loaded for exactly the command-selection phase, `8` = a
+sub-screen, `7` = the turn executing. `27` is
 just a stale id in an inactive slot, which is what "outside battle" was really measuring.
 
 **This closes the US gap.** The array is BSS so it cannot be found by shape, but exactly
@@ -1044,7 +1050,7 @@ needed an `arm9_resident` shape — exactly one match per ROM (FR `0x020FA468`, 
 |---|---|---|
 | `battleInput` | `BattleSystem + 0x19C` | a scan for a word pointing back at `BattleSystem` found `0x19C` at runtime |
 | `curMenuId` | `BattleInput + 0x68B` | literal census (below) |
-| `menuCursor` | `BattleInput + 0x6D4` | same +0x20 shift; learned from the D-pad at runtime as a check |
+| `menuCursor` | `BattleInput + 0x6DC` | the full decompilation; earlier builds learned it at runtime from a wrong 0x6D4 start (see below) |
 
 **The literal census.** pret warns at `battle_input.h:168` that its offsets in this struct
 drift, and they do — by `0x20`. Offsets that large cannot be a Thumb immediate, so every
@@ -1056,14 +1062,27 @@ Scanning ov12's word-aligned literals in `[0x500,0x800)` shows
 six consecutive single-byte offsets — pret's run of six `u8` fields. What confirms the
 alignment rather than merely fitting it is the *gap*: `0x688` and `0x689` are absent
 entirely, and those are the two fields pret calls `unused_668`/`unused_669`. Unreferenced
-fields leave no literals. The same +0x20 lands the cursor on `0x6d4`, corroborated by
-`keyPressed` (`0x6d8`), `tutorial.finger` (`0x6dc`) and the three closing sprite pointers
-(`0x6e4/0x6e8/0x6ec`).
+fields leave no literals.
 
-**Menu ids 1..8 are all the root menu**, not just the two the enum names —
-`sBattleMenuTemplates` gives every one of them `BattleInput_CursorMove_MainMenu`, and 3
-and 4 are the "put the menu back up" states you land on after backing out of a submenu.
-Testing only 1 and 2 left the screens swapped with no labels after a trip into the bag.
+**The cursor was the one thing the census got wrong.** Extending the same +0x20 put
+`menuCursor` on `0x6d4`, with `0x6d8` and `0x6dc` read as `keyPressed` and
+`tutorial.finger`. The full decompilation (ctrl-cheeb-del/pokeheartgold, byte-matching, so
+its layout is the compiler's) gives `0x6d4` `scrollXEnd`, `0x6d8` `BattleCursor *cursor`
+and `0x6dc` **`menuCursor`** — and that reading explains the census counts better: `0x6d8`
+x8 and `0x6dc` x7 are the eight functions that touch the sprite cursor and the seven that
+take `&menuCursor`. pret's labels drift by `0x20` to `0x28` here, not by a constant.
+Earlier builds recovered from the wrong start by learning the offset at runtime
+(`OneScreen_BattleLearn`), which converged on `0x6dc`; v0.3 uses the fixed value and drops
+the learner, which had also been diffing freed memory whenever the bag was open.
+
+**Menu ids 1..4 are the root menu**, not just the two the enum names — 3 and 4 are the
+"put the menu back up" states you land on after backing out of a submenu. Testing only 1
+and 2 left the screens swapped with no labels after a trip into the bag. v0.2b drew 1..8,
+which the full decompilation shows was too wide: `sBattleMenuTemplates` gives the
+main-menu cursor to ten ids, but 5/6 are the first rival battle (FIGHT alone, a 1x1
+cursor), 7/8 the Safari Zone (BALL / BAIT / MUD / RUN) and 19/20 the Bug Contest (BALL in
+place of BAG). Drawing FIGHT / BAG / POKéMON / RUN over those labels choices the game is
+not offering, so from v0.3 they swap like any other menu.
 
 **Two things the menu id cannot see**, both found by playing:
 
@@ -1391,7 +1410,7 @@ The only permanently allocated window on the layer is the map-name card at `0x19
 
 Everything between is scratch belonging to script list menus (`0x3D`, `0xDD`), the mart,
 and the comm club — none of which can be open while the start menu is. Parking the panel at
-`0x90` is therefore safe, and it is exactly what the game does to itself: script yes/no
+`0x84` (first `0x90`; moved down so the PC box menu fits) is therefore safe, and it is exactly what the game does to itself: script yes/no
 sits at baseTile `0x21F` (`src/scrcmd_c.c:131`), *inside* the map-name window's range,
 because the two never coexist.
 
@@ -1544,14 +1563,31 @@ When a script passes no msgdata (`ScrCmd_064`), `ov01_021EDAFC` loads
 321/322/323 for the shop, 62/63/64/75 for the PC list, 73/74/65/66 for the PC's
 item menu, 67-72 for the box menu.
 
-### Why only the shop is drawn
+### Why the shop was drawn alone at first
 
-Storage, not difficulty. The four label sets need **15.3 KB** together; after the
-shop there are about 3.6 KB left between free ITCM and the blob reservation. The
-PC box alone needs 8.3 KB and 269 VRAM tiles against the 263 free below the
-map-name window, because its entries are two lines tall. The remaining menus need
-the tile pool compressed - it is almost all paper and would RLE well - rather
-than any new reverse engineering. Everything they need is in this section.
+Storage, not difficulty. The four label sets needed **15.3 KB** together; after the
+shop there were about 3.6 KB left between free ITCM and the blob reservation. The
+PC box alone needed 8.3 KB and 269 VRAM tiles against the 263 free below the
+map-name window, because its entries are two lines tall. Compressing the tile
+pool (it is almost all paper) and moving the strips down to tile `0x84` is what
+let all four in.
+
+### The first entry is not enough (v0.3)
+
+The full decompilation's script corpus turned up a menu the key could not tell
+apart: the Pokéathlon Dome's marts are `msg_0191` 321 / 324 / 323 - BUY / INFO /
+SEE YA - three entries with the shop's first entry, so they were drawn as
+ACHETER / VENDRE / QUITTER. Each record now also carries a 16-bit hash of every
+other entry the patcher can know in advance (`_menu_hash` in `labels.py`,
+`OneScreen_ListHash` in the hook - the same function, tested against each other
+under emulation in `tools/test_hook.py`). Entries it cannot know, such as your own
+PC's row, are left out by a per-record skip mask.
+
+The menu pointer is read from `TouchscreenChoiceMenuData.menu` (`+0x0C`) rather
+than `+0x3A0`. Both held the same pointer in every savestate, but `+0x3A0` is
+really `selectionCallbackArg`, which `ScrCmd_MenuExec` fills in - and the move
+tutor's list (`ScrCmd_MoveTutorChooseMove`) enters the list state without setting
+it, leaving whatever the previous menu put there.
 
 
 ## Who owns the VRAM you just drew into

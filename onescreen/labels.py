@@ -209,12 +209,9 @@ SM_CELL_PLAN = (
     (None, None),               # cell 7  empty in this layout
 )
 
-# DISABLE_RETIRE. The normal layout always sets it (src/start_menu.c:307) while
-# Safari, the Bug Contest and Pal Park all leave RETIRE enabled - and those use
-# different grids that this cannot reproduce, since the variant lives in the
-# touch overlay's own struct. So the bit doubles as "is this the normal menu?",
-# and the hook hands the screen back to the old swap behaviour when it is clear.
-SM_NORMAL_BIT = 8
+# This plan is only the NORMAL layout's. The hook tells the normal menu from the
+# special ones by its inhibit flags (SM_NORMAL_MASK in src/hook.s) and hands
+# the screen back to the old swap behaviour for anything else.
 
 # Two columns of four, because that is the grid the D-pad walks: ov27_0225D0B4
 # navigates slots 0-3 as the left column and 4-6 as the right, with up/down
@@ -275,16 +272,19 @@ def _use_theme(name):
 # the controller keeps a pointer straight back to it. Verified across five
 # savestates - the shop, both PC lists and the PC box menu all arrive here.
 #
-# The menu cannot be recognised by message id: ov01_021EDD68 reads each id into a
-# string and throws the id away. What survives is the expanded text, so a menu is
-# identified by its entry COUNT plus the characters of its FIRST entry, both read
-# live. Every menu here has a first entry free of placeholders, which matters -
-# the player's own PC row expands to their name and could never be matched.
+# The menu cannot be recognised by message id: ScriptMenu_AppendListItem reads
+# each id into a string and throws the id away. What survives is the expanded
+# text, so a menu is identified by its entry COUNT, the characters of its FIRST
+# entry, and a hash of the rest (see OneScreen_ListMatch). Every menu here has a
+# first entry free of placeholders, which matters - the player's own PC row
+# expands to their name and could never be matched, so it is left out of the
+# hash. The first entry alone was not enough: the Pokeathlon Dome's marts read
+# BUY / INFO / SEE YA and were drawn as the shop.
 LIST_MSGDATA_FILE = 191
 LIST_KEY_MAX = 16               # codes COMPARED; the full length is checked too,
                                 # so a longer first entry still identifies exactly
 LIST_MAX_ENTRIES = 8
-LIST_MENU_RECORD = 52
+LIST_MENU_RECORD = 56
 LIST_CELL_H = 2                 # tiles per entry - one glyph row
 LIST_FRAME_TILES = 9            # the border, shared with the X menu's frame
 
@@ -311,6 +311,22 @@ def _ascii_codes(text: str):
         else:
             raise LabelError(f"{ch!r} has no code in this charmap")
     return out
+
+
+def _menu_hash(entries, skip: int) -> int:
+    """The hash OneScreen_ListHash computes over a live menu's Strings.
+
+    h = h * 31 + code per character, then once more with 0xFFFF between entries,
+    kept to 16 bits, over every entry whose bit in `skip` is clear.
+    """
+    h = 0
+    for i, codes in enumerate(entries):
+        if skip >> i & 1:
+            continue
+        for code in codes:
+            h = (h * 31 + code) & 0xFFFF
+        h = (h * 31 + 0xFFFF) & 0xFFFF
+    return h
 
 
 # Each menu: a name, its entries as (msgdata file, index) in screen order, and
@@ -387,7 +403,7 @@ OAK_IMAGES = 3                  # yes/no pair, wipe
 GENDER_IMAGES = 3               # the two options, wipe
 GEO_RECORD = 28                 # data_off, image_bytes, row_bytes, images, 4 row addrs
 GEO_COUNT = 5                   # command, battle yes/no, Oak, gender, field yes/no
-BLOB_HEADER = 512               # magic, five geometry records, start menu, lists
+BLOB_HEADER = 528               # magic, five geometry records, start menu, lists
 
 # The start menu's record does not fit the shape above - it describes a pool of
 # tiles and a tilemap rather than finished images - so it gets its own block at a
@@ -438,7 +454,11 @@ SM_RECORD_SIZE = 0x7C
 #                +0x05 u8  cell_w
 #                +0x06 u8  cell_h
 #                +0x07 u8  key_len      codes in the identifying first entry
-#                +0x08 u16 key[LIST_KEY_MAX]
+#                +0x08 u8  n_cols, +0x09 u8 n_rows
+#                +0x0A u16 key[LIST_KEY_MAX]
+#                +0x2A u8  pos[LIST_MAX_ENTRIES]
+#                +0x32 u16 hash         _menu_hash over the entries not skipped
+#                +0x34 u8  skip         bit i = entry i is not in the hash
 LIST_RECORD_OFF = 272
 LIST_RECORD_HEAD = 0x1C
 CMD_ROW_BYTES = GRID_COLS * 32
@@ -486,8 +506,9 @@ def _narc_files(data: bytes):
 NEWLINE = 0xE000                # the line break inside a two-line menu entry
 
 
-def _decode_message(archive: bytes, index: int, keep_break: bool = False):
-    """Return one message from a Gen-IV .gmm as raw character codes."""
+def _decode_raw(archive: bytes, index: int):
+    """Return one message from a Gen-IV .gmm exactly as stored, control codes
+    and terminator included."""
     count, key = struct.unpack_from("<HH", archive, 0)
     if not 0 <= index < count:
         raise LabelError(f"message {index} out of range (archive holds {count})")
@@ -503,6 +524,12 @@ def _decode_message(archive: bytes, index: int, keep_break: bool = False):
     for j in range(length):
         out.append(struct.unpack_from("<H", archive, off + j * 2)[0] ^ k2)
         k2 = (k2 + 0x493D) & 0xFFFF
+    return out
+
+
+def _decode_message(archive: bytes, index: int, keep_break: bool = False):
+    """Return one message from a Gen-IV .gmm as raw character codes."""
+    out = _decode_raw(archive, index)
     # Messages are terminated by 0xFFFF; control codes start at 0xE000. Most
     # labels contain none, but the PC box menu's entries are two lines and the
     # break between them is 0xE000 itself, so that one asks to keep it.
@@ -853,11 +880,10 @@ def _startmenu(font: Font, archive, off: int):
     """Return (record, payload) for the overworld menu panel.
 
     One tile strip per label rather than one finished panel image, because the
-    entry list is dynamic - POKEDEX and POKEGEAR only appear once you own them,
-    and Safari, the Bug Contest and Pal Park each substitute their own. The hook
-    reads the game's own selectionToAction[] and points each cell's tilemap
-    entries at the matching strip, so every context comes out right without the
-    patcher knowing which one it is.
+    entry list is dynamic - POKEDEX and POKEGEAR only appear once you own them.
+    The hook reads the game's own inhibitIconFlags and points each cell's
+    tilemap entries at the matching strip, leaving a gap where the touch menu
+    leaves one.
     """
     labels = _startmenu_labels(archive)
     cell_w = _startmenu_cell_w(font, labels)
@@ -950,6 +976,27 @@ def _self_pc_codes(archive, region: str):
     return _decode_message(archive[TRAINER_MSGDATA_FILE], TRAINER_MSG)
 
 
+def _list_menu_record(strip_off, strip_tiles, n, cell_w, cell_h, n_cols, n_rows,
+                      layout, key, key_full, menu_hash, skip) -> bytes:
+    """One LIST_MENU_RECORD, in the layout OneScreen_ListMatch reads."""
+    if key_full > 0xFF:
+        raise LabelError("a first entry longer than 255 characters cannot be keyed")
+    key = list(key)[:LIST_KEY_MAX]
+    # key_full is the WHOLE length; the hook compares only the first
+    # LIST_KEY_MAX codes but checks this too, so a 17-character entry is
+    # still identified exactly rather than failing to match at all.
+    rec = struct.pack("<HHBBBBBB", strip_off, strip_tiles, n, cell_w,
+                      cell_h, key_full, n_cols, n_rows)
+    rec += struct.pack(f"<{LIST_KEY_MAX}H", *(key + [0] * (LIST_KEY_MAX - len(key))))
+    pos = [(r << 4) | c for r, c in layout]
+    rec += bytes(pos + [0] * (LIST_MAX_ENTRIES - len(pos)))
+    rec += struct.pack("<HB", menu_hash, skip)
+    rec += b"\0" * (LIST_MENU_RECORD - len(rec))
+    if len(rec) != LIST_MENU_RECORD:
+        raise LabelError(f"list menu record is {len(rec)}, expected {LIST_MENU_RECORD}")
+    return rec
+
+
 def _listmenu(font: Font, archive, off: int, region: str = ""):
     """Return (record, payload) for the script list menus.
 
@@ -984,15 +1031,27 @@ def _listmenu(font: Font, archive, off: int, region: str = ""):
         n_rows = max(r for r, _c in layout) + 1
         n_cols = max(c for _r, c in layout) + 1
         entries = []
-        for file_id, msg in msgs:
+        # Entries whose live text the patcher cannot know are left out of the
+        # identifying hash: your own PC's row (your name), and any message with
+        # a control code the game expands at runtime. The line break of a
+        # two-line entry is kept in the String as-is, so it is not one of them.
+        skip = 0
+        for i, (file_id, msg) in enumerate(msgs):
             if file_id is SELF_PC:
                 entries.append(_self_pc_codes(archive, region))
+                skip |= 1 << i
                 continue
             if file_id >= len(archive):
                 raise LabelError(f"{MSGDATA_NARC} has no file {file_id}")
             codes = _decode_message(archive[file_id], msg, keep_break=lines > 1)
             if not codes:
                 raise LabelError(f"list menu {name}: message {msg} decoded to nothing")
+            raw = [c for c in _decode_raw(archive[file_id], msg) if c != 0xFFFF]
+            if any(c >= 0xE000 and not (lines > 1 and c == NEWLINE) for c in raw):
+                if i == 0:
+                    raise LabelError(f"list menu {name}: its first entry holds a "
+                                     "control code and cannot identify it")
+                skip |= 1 << i
             entries.append(codes)
         # A two-line entry is only as wide as its widest line, not the whole run.
         widest = 0
@@ -1019,7 +1078,7 @@ def _listmenu(font: Font, archive, off: int, region: str = ""):
         pool += b"\0" * (-len(pool) % 4)
         menus.append((name, strip_off, cell_w * cell_h, len(entries), cell_w, cell_h,
                       n_cols, n_rows, layout,
-                      key, len(entries[0])))
+                      key, len(entries[0]), _menu_hash(entries, skip), skip))
 
     pals = _palette(SM_PAL_NORM_RGB) + _palette(SM_PAL_HI_RGB)
     record = struct.pack(
@@ -1029,22 +1088,10 @@ def _listmenu(font: Font, archive, off: int, region: str = ""):
     if len(record) != LIST_RECORD_HEAD:
         raise LabelError(f"list header is {len(record)} bytes, expected {LIST_RECORD_HEAD}")
     for (_name, strip_off, strip_tiles, n, cell_w, cell_h, n_cols, n_rows,
-         layout, key, key_full) in menus:
-        if key_full > 0xFF:
-            raise LabelError("a first entry longer than 255 characters cannot be keyed")
-        # key_full is the WHOLE length; the hook compares only the first
-        # LIST_KEY_MAX codes but checks this too, so a 17-character entry is
-        # still identified exactly rather than failing to match at all.
-        rec = struct.pack("<HHBBBBBB", strip_off, strip_tiles, n, cell_w,
-                          cell_h, key_full, n_cols, n_rows)
-        rec += struct.pack(f"<{LIST_KEY_MAX}H",
-                           *(list(key) + [0] * (LIST_KEY_MAX - len(key))))
-        pos = [(r << 4) | c for r, c in layout]
-        rec += bytes(pos + [0] * (LIST_MAX_ENTRIES - len(pos)))
-        rec += b"\0" * (LIST_MENU_RECORD - len(rec))
-        if len(rec) != LIST_MENU_RECORD:
-            raise LabelError(f"list menu record is {len(rec)}, expected {LIST_MENU_RECORD}")
-        record += rec
+         layout, key, key_full, menu_hash, skip) in menus:
+        record += _list_menu_record(strip_off, strip_tiles, n, cell_w, cell_h,
+                                    n_cols, n_rows, layout, key, key_full,
+                                    menu_hash, skip)
 
     # Every menu loads at the same base, so only the largest has to fit.
     worst = LIST_FRAME_TILES + max(m[3] * m[2] for m in menus)

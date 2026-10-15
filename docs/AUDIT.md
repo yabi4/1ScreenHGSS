@@ -91,12 +91,11 @@ make them visible but untappable.
 
 ## What this method cannot clear
 
-**75 of 119 overlays are still raw assembly in the decomp** (34 fully decompiled, 10
-partly). The gap includes several of the most-used screens:
+**75 of 119 overlays were still raw assembly in pret** when this audit was done (34 fully
+decompiled, 10 partly). The gap included several of the most-used screens:
 
-| overlay | app | decomp coverage |
+| overlay | app | pret coverage |
 |---|---|---|
-| 5 | party menu | **asm only** |
 | 14 | PC box storage | **asm only** |
 | 15 | bag | **asm only** |
 | 52 | trainer card signature | not in `main.lsf` as src |
@@ -104,9 +103,20 @@ partly). The gap includes several of the most-used screens:
 | 18 | Pokédex | partial |
 | 96 | Pokéathlon | partial |
 
+This table first listed overlay 5 as the party menu. It is not: overlay 5 is the link
+battle's party preview / VS / result screens (`link_battle_screen.c`), and the party menu
+is ARM9 static code (`party_menu.c`). The audit result for it stands — it was cleared in
+play.
+
 So the source audit above is a *lower bound*: it proves the Alph puzzle is stylus-only and
 clears the apps it covers, but it cannot vouch for the bag, the party menu or the PC box.
 **Those have since been play-tested and all pass** — see the checklist below.
+
+Since then a full, byte-matching decompilation has appeared
+([ctrl-cheeb-del/pokeheartgold](https://github.com/ctrl-cheeb-del/pokeheartgold), US only,
+every overlay in C). It names everything this audit had to leave blank; see
+[DECOMP.md](DECOMP.md). Re-running the touch/key census over it is the obvious next step for
+the apps still marked untested below.
 
 ## The five ways this breaks
 
@@ -146,14 +156,27 @@ stranded on the bottom. That makes them the risk list:
 
 | overlay | what it is |
 |---|---|
-| 16 | berry pots |
+| 16 | berry pots - the outer app; it runs the UI in overlay 17 as a child |
 | 43 | Pal Pad |
+| 45 | Wi-Fi Plaza |
+| 50 | trainer card (the outer app; the signature is 52) |
 | 53 | Oak's speech (intro) |
+| 55 | mail - a wrapper that runs the mail viewer (56) or Easy Chat (102) |
 | 58 | apricorn box |
 | 61 | choose starter |
 | 69 | Geonet globe |
+| 76 | credits |
+| 78 | certificates |
+| 91, 92, 93 | Wi-Fi Plaza games (Swalot Plop, Mime Jr. top, Wobbuffet Pop) |
+| 95 | egg hatching |
 | 96 | Pokéathlon course |
-| 45, 50, 55, 76, 78, 91, 92, 93, 95, 104, 105, 121 | unnamed in the decomp |
+| 104 | a cutscene launched by the Magnet Train (the decomp's name is a guess) |
+| 105 | ship departure cutscene |
+| 121 | view rankings |
+
+The names in the second half come from the full decompilation's `main.lsf`; pret left
+them as overlay numbers. `onescreen/table.py` lists berry pots as overlay 17 and this table
+as 16 — both are right, for different halves of the same app.
 
 An inheriting app is not necessarily wrong — it is right whenever the routing it inherits
 happens to suit it. But it is the population where a wrong screen is most likely, and it

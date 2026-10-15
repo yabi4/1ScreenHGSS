@@ -155,7 +155,7 @@ def check_app_table(arm9: bytes, overlays=None):
 # two of them show on the wrong screen. They are found the same way the move
 # relearner is - by masked search inside the overlay, because overlay code moves
 # between regions: US loads overlay 60 0x20 lower and both functions shift with
-# it (A 0x021E7A05 -> 0x021E79E5, B 0x021E8C39 -> 0x021E8C59).
+# it (A 0x021E7A05 -> 0x021E79E5, B 0x021E8C39 -> 0x021E8C19).
 #
 # The prologues are mostly BL instructions, whose encodings are target-relative,
 # so a 28-byte window leaves too few fixed bytes to be unique - scene B matched

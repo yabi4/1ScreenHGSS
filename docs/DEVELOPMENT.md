@@ -2,7 +2,8 @@
 
 Everything needed to rebuild, extend or debug the patch. Read
 [FINDINGS.md](FINDINGS.md) alongside this — it holds the reverse-engineering results
-(addresses, what each one is, and the dead ends).
+(addresses, what each one is, and the dead ends) — and [DECOMP.md](DECOMP.md), which maps
+every offset the hook uses onto the full decompilation.
 
 ## Layout
 
@@ -34,7 +35,7 @@ loaded the payload to the wrong place.
 ### The config block
 
 The hook does not hardcode the addresses it reads. `OneScreen_Config` at the top of
-`src/hook.s` holds fourteen of them, and the patcher fills it in from the ROM being patched
+`src/hook.s` holds them, and the patcher fills it in from the ROM being patched
 (`onescreen/regions.py` → `inject.fill_config`). The defaults compiled into the payload
 are the French values, so an unconfigured payload still works there.
 
@@ -58,16 +59,30 @@ powershell -File tools/probe.ps1 -Addrs "0x01FF8628:14w"
 | tool | why |
 |---|---|
 | Python 3.9+ and `ndspy` | ROM/overlay handling, BLZ (de)compression |
-| [devkitARM](https://devkitpro.org/) | assembling `src/hook.s` |
+| [devkitARM](https://devkitpro.org/), or any `arm-none-eabi` binutils | assembling `src/hook.s` |
+| [unicorn](https://www.unicorn-engine.org/) (`pip install unicorn`) | `tools/test_hook.py`, the emulated tests |
 | [melonDS](https://melonds.kuribo64.net/) | testing, and its GDB stub for live probing |
 
-`tools/*.ps1` are Windows PowerShell helpers; the Python tools are portable. Paths to
-devkitARM are hardcoded near the top of `tools/make_payload.py` and `tools/inject.py`.
+`tools/*.ps1` are Windows PowerShell helpers; the Python tools are portable.
+`tools/make_payload.py` uses `$DEVKITARM/bin` if set, then `arm-none-eabi-*` on `PATH`, then
+the default Windows devkitPro location, and refuses a payload that would overrun ITCM.
 
 ## Verifying a change
 
-The patcher is deterministic, so the strongest check is that it reproduces a known-good
-build byte-for-byte:
+Without a ROM, the emulated tests are the first check. They build the game structures a
+routine walks in emulated RAM - at the offsets in [DECOMP.md](DECOMP.md) - call the
+routine out of the assembled payload, and check what it returns:
+
+```bash
+python tools/make_payload.py
+python tools/test_hook.py
+```
+
+A change that only renames or re-comments must leave `onescreen/payload/hook.bin`
+byte-identical; compare it before committing.
+
+With a ROM, the patcher is deterministic, so the strongest check is that it reproduces a
+known-good build byte-for-byte:
 
 ```bash
 python patch.py roms/ipgf.nds -o build/check.nds
@@ -93,6 +108,7 @@ python tools/unpack.py roms/ipgf.nds     # -> build/ipgf/{arm9_dec.bin,overlays/
 | `peek.py` / `whichov.py` | read words by RAM address; identify which overlay is resident |
 | `savestate.py` | **read and diff melonDS savestates** — see below |
 | `compare_modules.py` | diff every module between two ROMs (how HG/SS similarity was measured) |
+| `emu_hook.py`, `test_hook.py` | run routines from the assembled payload under an ARM emulator; the tests |
 | `freespace.py`, `deadcode.py`, `checkfree.py` | free-space hunting (kept for the record; ITCM made them moot) |
 | `find_template.py`, `find_loader.py` | OverlayManager templates, overlay loader hunting |
 | `melonds_config.py` | bind melonDS keys, screen sizing, enable the GDB stub |

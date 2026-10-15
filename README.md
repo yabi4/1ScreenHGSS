@@ -185,6 +185,9 @@ Known gaps, in order of how likely you are to meet them:
 - **The Safari Zone, the Bug Contest and Pal Park** arrange the overworld menu differently,
   in a way that cannot be reproduced from outside the touch overlay. The patch detects them
   and swaps the screen there rather than drawing something wrong.
+- **Safari Zone, Bug Contest and first-rival battles** hand the command menu to the touch
+  screen instead of drawing it, because their options are not FIGHT / BAG / POKéMON / RUN
+  and the patch only has those four labels.
 - **Oak's two questions flicker.** The band behind the selected choice alternates with the
   game's own highlight for the few seconds those prompts are up. Cosmetic, understood, and
   written up in [docs/FINDINGS.md](docs/FINDINGS.md); fixing it needs more invasive work
@@ -226,6 +229,9 @@ Tooling is MIT licensed — see [LICENSE](LICENSE).
 ## Credits
 
 Overlay identities come from [pret/pokeheartgold](https://github.com/pret/pokeheartgold),
-whose overlay numbering matches the retail ROM. ROM handling uses
+whose overlay numbering matches the retail ROM. Struct layouts and the names in
+[docs/DECOMP.md](docs/DECOMP.md) were checked against the full decompilation at
+[ctrl-cheeb-del/pokeheartgold](https://github.com/ctrl-cheeb-del/pokeheartgold); it is used
+as a reference only, and nothing from it is copied here. ROM handling uses
 [ndspy](https://github.com/RoadrunnerWMC/ndspy). Built and tested against
 [melonDS](https://melonds.kuribo64.net/).
