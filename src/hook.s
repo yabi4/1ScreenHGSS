@@ -359,9 +359,9 @@ MAP_LAPSE_FRAMES = 2
 MAP_PENDING_FRAMES = 180        @ ~3 s, far longer than the handover needs
 
 @ FieldSystem.taskman - the field's running task, see OneScreen_MenuGone.
-TASKMAN_OFF = 0x10
-TASK_FUNC_OFF = 0x04
-TASK_ENV_OFF = 0x0C
+FS_TASKMAN_OFF = 0x10           @ FieldSystem.taskman
+TASK_FUNC_OFF = 0x04            @ TaskManager.func
+TASK_ENV_OFF = 0x0C             @ TaskManager.env
 
 @ StartMenuTaskData.state (include/start_menu.h), the menu's own state machine.
 @ Its exit path is what shows the menu for a moment after choosing Dig or an
@@ -393,9 +393,11 @@ STARTMENU_SAVE_HI = 7
 @ everything needed, and all three were read out of a live savestate with the
 @ menu open (out/beta-ui.ml1) rather than trusted from the decomp alone:
 @
-@   FieldSystem +0xD3   the cursor. NOT in StartMenuTaskData - the touch overlay
-@                       owns it (ov27_0225B404 writes it on every D-pad move) and
-@                       start_menu.c only reads it. Read 0 with POKEDEX lit. It
+@   FieldSystem +0xD3   the cursor, FieldSystem.startMenuCursorPos. NOT in
+@                       StartMenuTaskData - the touch overlay owns it
+@                       (TouchscreenMenu_HandleDpadInput, ov27_0225B404 in pret,
+@                       writes it on every D-pad move); start_menu.c reads it, and
+@                       writes it only for a touch. Read 0 with POKEDEX lit. It
 @                       counts only the entries you HAVE, so it is an index into
 @                       the compacted list, not a grid slot.
 @   StartMenuTaskData +0x34C  inhibitIconFlags, the game's own answer to which
@@ -404,7 +406,7 @@ STARTMENU_SAVE_HI = 7
 @                       from. selectionToAction[] at +0x3A looks like the obvious
 @                       source and is a trap: past the real entries it holds
 @                       zeros, which read as POKEDEX and drew that word twice.
-SM_CURSOR_OFF = 0xD3
+FS_START_MENU_CURSOR_OFF = 0xD3 @ FieldSystem.startMenuCursorPos
 SM_INHIBIT_OFF = 0x34C          @ StartMenuTaskData.inhibitIconFlags
 SM_NORMAL_BIT = 8               @ DISABLE_RETIRE; see OneScreen_StartMenu
 
@@ -440,25 +442,28 @@ SM_SCREEN_BASE = 0x06001000     @ MAIN_3's tilemap, from sBgTemplate_3
 @ controller renders it, and the controller points straight back at it. Every
 @ offset below was read out of evolution-oak-ipgf.ml1..ml5 rather than inferred.
 @
-@   controller +0x394  the cursor. Already known here as FIELD_CHILD_CHOICE_OFF,
+@   controller +0x394  the cursor. Already known here as CHOICE_SELECTION_OFF,
 @                      which was thought to be the binary-prompt choice only -
 @                      it is the list cursor too, proved by ml1 vs ml2 reading
 @                      0 then 1 as the shop cursor moved ACHETER -> VENDRE.
 @   controller +0x3A0  the menu itself. NOT +0x39C, which holds an ARM9 code
 @                      address - reading the count through that gave 255 and the
-@                      panel silently never matched.
+@                      panel silently never matched. The decompilation explains
+@                      both: +0x39C is selectionCallback, which ScrCmd_MenuExec
+@                      sets to MenuExec_PrintItemHelp, and +0x3A0 its argument,
+@                      the menu. The menu's own slot is +0x0C.
 @       +0x9B  u8   entry count. Read 3 / 4 / 4 / 5 for the shop, both PC lists
-@                   and the PC box menu.
-@       +0x1C  String* per entry, stride 4.
+@                   and the PC box menu. ScriptMenu.count.
+@       +0x1C  String* per entry, stride 4. ScriptMenu.strbufs[28].
 @
 @ A String is {u16 maxsize, u16 size, u32 magic, u16 codes[]}. The codes are the
 @ game's own character set, the same numbers labels.py rasterises from - ACHETER
 @ reads [299,301,306,303,318,303,316] in both places, which is what makes
 @ identifying a menu by its text sound.
-LIST_CURSOR_OFF = 0x394
-LIST_MENU_OFF = 0x3A0
-LIST_COUNT_OFF = 0x9B
-LIST_ENTRIES_OFF = 0x1C
+LIST_CURSOR_OFF = 0x394         @ TouchscreenChoiceMenuData.selection
+CHOICE_CALLBACK_ARG_OFF = 0x3A0 @ TouchscreenChoiceMenuData.selectionCallbackArg
+SCRIPT_MENU_COUNT_OFF = 0x9B    @ ScriptMenu.count
+SCRIPT_MENU_STRBUFS_OFF = 0x1C  @ ScriptMenu.strbufs
 STRING_SIZE_OFF = 2
 STRING_DATA_OFF = 8
 
@@ -626,14 +631,15 @@ OAK_IGNORE_CONTROL  = 0x0209
 @ Field script menus - the PC option list, shop lists, NPC yes/no choices. All
 @ of these are drawn on the touch screen by the running script, inside the field
 @ app, so there is no app transition to detect and no POWCNT1 write of our own
-@ to catch. The signal is in pret's FieldSystem (include/field_system.h):
+@ to catch. The signal is in FieldSystem (include/field_system.h):
 @
 @     struct FieldSystem { FieldProcessManager *processManager;  // +0x00
 @                          ... ; int bottomScreenType;           // +0x18
-@                          int unk1C; ... };                     // +0x1C
+@                          int savedBottomScreenAppId; ... };    // +0x1C
 @
-@ ScrCmd_TouchscreenMenuHide sets unk1C = 3 when a script takes the bottom
-@ screen; ScrCmd_TouchscreenMenuShow sets it back to 0 for the normal icon bar.
+@ ScrCmd_TouchscreenMenuHide parks the bottom screen on app 3 (the choice menu)
+@ and leaves 3 here; ScrCmd_TouchscreenMenuShow puts 0 back for the icon bar.
+@ pret called this unk1C; the full decompilation names it - see docs/DECOMP.md.
 @ Read through sFieldSysPtr, the file-static in field_system.c.
 @
 @ Confirmed on both sides, which is the rule that caught every bad candidate
@@ -644,35 +650,43 @@ OAK_IGNORE_CONTROL  = 0x0209
 @
 @ Tested non-zero rather than == 3: any non-default mode means a script has put
 @ something on the bottom screen that the player needs to see.
-FIELD_MENU_OFF = 0x1C
+FS_SAVED_APP_ID_OFF = 0x1C      @ FieldSystem.savedBottomScreenAppId
 @ Mode 3 is refined at runtime: binary states stay on the world, list states swap.
-FIELD_TOUCH_TASK_OFF = 0xD8     @ FieldSystem -> outer bottom-screen SysTask
+FS_BOTTOM_TASK_OFF = 0xD8       @ FieldSystem.bottomScreenTask
 SYS_TASK_DATA_OFF = 0x10        @ SysTask.data
 
-@ The outer task owns transitions between bottom-screen modes. Its 16-byte data
-@ block is known from ov01_021F68DC/ov01_021F69C0.
-FIELD_OUTER_MODE_OFF  = 0x00
-FIELD_OUTER_STATE_OFF = 0x01
-FIELD_OUTER_NEXT_OFF  = 0x02
-FIELD_OUTER_CHILD_OFF = 0x04
-FIELD_OUTER_FS_OFF    = 0x08
-FIELD_OUTER_LAST_OFF  = 0x0C
-FIELD_OUTER_IDLE      = 1
-FIELD_OUTER_TRANS_LO  = 2
-FIELD_OUTER_TRANS_HI  = 7
-FIELD_TOUCH_MODE      = 3
+@ The bottom-screen app manager (src/field/bottom_screen_app.c), the SysTask
+@ that owns which touch app is up and the fades between them:
+@
+@     struct BottomScreenAppManager { u8 appId; u8 state; u8 nextAppId;
+@                                     void *app; FieldSystem *fieldSystem;
+@                                     void *args; };
+@
+@ For the apps this hook reads, `app` is the app's own SysTask and its data is
+@ at SysTask.data. App 0 is the icon bar / X menu, app 3 the choice menu.
+BSAPP_ID_OFF  = 0x00            @ .appId
+BSAPP_STATE_OFF = 0x01          @ .state
+BSAPP_NEXT_ID_OFF  = 0x02       @ .nextAppId
+BSAPP_APP_OFF = 0x04            @ .app
+BSAPP_FS_OFF    = 0x08          @ .fieldSystem
+BSAPP_LAST_OFF  = 0x0C          @ .args, the last field in the block
+BSAPP_RUNNING      = 1
+BSAPP_SWITCH_REQUESTED  = 2     @ 2..7 are the switch and its fades
+BSAPP_FADE_IN  = 7
+BSAPP_CHOICE_MENU      = 3      @ BOTTOM_SCREEN_APP_CHOICE_MENU
 
-@ Mode 3 is overlay 27's green touch controller. GetMenuChoice selects state 3;
-@ MenuExec selects state 7. The live choice is a word, not the ListMenu2D field
-@ the abandoned experiment followed.
-FIELD_CHILD_STATE_OFF = 0x00
-FIELD_CHILD_FS_OFF    = 0x24
-FIELD_CHILD_CHOICE_OFF = 0x394
-FIELD_CHILD_BINARY_LO = 3
-FIELD_CHILD_BINARY_HI = 5
-FIELD_CHILD_BINARY_DONE = 6
-FIELD_CHILD_LIST_LO   = 7
-FIELD_CHILD_STATE_HI  = 11
+@ App 3's data is TouchscreenChoiceMenuData (src/touchscreen_choice_menu.c),
+@ the green Yes/No and list controller. GetMenuChoice selects state 3
+@ (SHOW_YES_NO); MenuExec selects state 7 (SHOW_LIST). The live choice is its
+@ `selection` word, not the ListMenu2D field the abandoned experiment followed.
+CHOICE_STATE_OFF = 0x00         @ .state
+CHOICE_FS_OFF    = 0x24         @ .fieldSystem
+CHOICE_SELECTION_OFF = 0x394    @ .selection
+CHOICE_SHOW_YES_NO = 3          @ 3..5 SHOW_YES_NO, YES_NO_INPUT, YES_NO_END
+CHOICE_YES_NO_END = 5
+CHOICE_DONE = 6                 @ DONE: hides the cursor, back to IDLE (1)
+CHOICE_SHOW_LIST   = 7          @ 7..10 SHOW_LIST .. LIST_WRITE_RESULT
+CHOICE_STATE_LAST  = 11         @ CANCEL_YES_NO, the last state
 
 @ Evolution's post-scene move-learning prompt. sub_02075A7C allocates a 0xBC-byte
 @ task data block and installs sub_02077270 as VBlank with that block as its
@@ -2327,7 +2341,7 @@ OneScreen_TaskMan:                  @ -> r0 = fieldSystem->taskman, or 0
     ldr     r0, [r0]                @ sFieldSysPtr
     cmp     r0, #0
     beq     55f
-    ldr     r0, [r0, #TASKMAN_OFF]
+    ldr     r0, [r0, #FS_TASKMAN_OFF]
     bx      lr
 55: movs    r0, #0
     bx      lr
@@ -2425,7 +2439,7 @@ OneScreen_StartMenu:
     ldr     r6, [r0]                @ sFieldSysPtr -> FieldSystem
     cmp     r6, #0
     beq     57f
-    ldr     r4, [r6, #TASKMAN_OFF]
+    ldr     r4, [r6, #FS_TASKMAN_OFF]
     cmp     r4, #0
     beq     57f
     ldr     r0, [r4, #TASK_FUNC_OFF]
@@ -2456,7 +2470,7 @@ OneScreen_StartMenu:
 
     movs    r0, #SM_RECORD_OFF
     adds    r7, r7, r0              @ -> the panel's record
-    movs    r0, #SM_CURSOR_OFF      @ 0xD3 is out of reach of ldrb's immediate
+    movs    r0, #FS_START_MENU_CURSOR_OFF      @ 0xD3 is out of reach of ldrb's immediate
     ldrb    r5, [r6, r0]            @ the live cursor
 
     @ Only the ordinary overworld grid is reproduced. Safari, the Bug Contest and
@@ -2827,31 +2841,31 @@ OneScreen_ListMenu:
     cmp     r4, #0
     beq     29f                     @ no validated controller this frame
     movs    r0, r4                  @ FieldMode3 only vouched for it as far as
-    ldr     r1, =LIST_MENU_OFF      @ +0x394; the menu pointer sits past that
+    ldr     r1, =CHOICE_CALLBACK_ARG_OFF      @ +0x394; the menu pointer sits past that
     bl      OneScreen_MainRamRange
     cmp     r0, #0
     beq     29f
     ldr     r0, =LIST_CURSOR_OFF
     ldr     r0, [r4, r0]
     str     r0, [sp, #8]            @ the live cursor
-    ldr     r0, =LIST_MENU_OFF
+    ldr     r0, =CHOICE_CALLBACK_ARG_OFF
     ldr     r5, [r4, r0]
     movs    r0, r5
-    movs    r1, #LIST_COUNT_OFF
+    movs    r1, #SCRIPT_MENU_COUNT_OFF
     bl      OneScreen_MainRamRange
     cmp     r0, #0
     beq     29f                     @ never dereference a stale menu pointer
     str     r5, [sp]
-    movs    r0, #LIST_COUNT_OFF
+    movs    r0, #SCRIPT_MENU_COUNT_OFF
     ldrb    r0, [r5, r0]
     str     r0, [sp, #4]            @ entry count
 
-    ldr     r0, [r5, #LIST_ENTRIES_OFF]     @ the first entry's String
+    ldr     r0, [r5, #SCRIPT_MENU_STRBUFS_OFF]     @ the first entry's String
     movs    r1, #STRING_DATA_OFF
     bl      OneScreen_MainRamRange
     cmp     r0, #0
     beq     29f
-    ldr     r0, [r5, #LIST_ENTRIES_OFF]
+    ldr     r0, [r5, #SCRIPT_MENU_STRBUFS_OFF]
     str     r0, [sp, #20]
 
     @ Find the menu whose count and first entry both match.
@@ -3280,11 +3294,11 @@ OneScreen_FieldMode3:
     str     r0, [r1]
     movs    r0, r4
 
-    movs    r1, #FIELD_TOUCH_TASK_OFF
+    movs    r1, #FS_BOTTOM_TASK_OFF
     bl      OneScreen_MainRamRange
     cmp     r0, #0
     beq     49f
-    movs    r0, #FIELD_TOUCH_TASK_OFF
+    movs    r0, #FS_BOTTOM_TASK_OFF
     ldr     r5, [r4, r0]
     movs    r0, r5
     movs    r1, #SYS_TASK_DATA_OFF
@@ -3293,34 +3307,34 @@ OneScreen_FieldMode3:
     beq     49f
     ldr     r6, [r5, #SYS_TASK_DATA_OFF]
     movs    r0, r6
-    movs    r1, #FIELD_OUTER_LAST_OFF
+    movs    r1, #BSAPP_LAST_OFF
     bl      OneScreen_MainRamRange
     cmp     r0, #0
     beq     49f
-    ldr     r0, [r6, #FIELD_OUTER_FS_OFF]
+    ldr     r0, [r6, #BSAPP_FS_OFF]
     cmp     r0, r4
     bne     49f                     @ not this FieldSystem's manager
 
-    ldrb    r0, [r6, #FIELD_OUTER_STATE_OFF]
-    cmp     r0, #FIELD_OUTER_IDLE
+    ldrb    r0, [r6, #BSAPP_STATE_OFF]
+    cmp     r0, #BSAPP_RUNNING
     beq     43f
 
     @ While the outer manager changes modes, its child can still be the outgoing
     @ task. Validate the transition but deliberately do not follow that pointer.
-    cmp     r0, #FIELD_OUTER_TRANS_LO
+    cmp     r0, #BSAPP_SWITCH_REQUESTED
     blo     49f
-    cmp     r0, #FIELD_OUTER_TRANS_HI
+    cmp     r0, #BSAPP_FADE_IN
     bhi     49f
-    ldrb    r0, [r6, #FIELD_OUTER_NEXT_OFF]
-    cmp     r0, #FIELD_TOUCH_MODE
+    ldrb    r0, [r6, #BSAPP_NEXT_ID_OFF]
+    cmp     r0, #BSAPP_CHOICE_MENU
     bne     49f
     movs    r0, #1
     b       48f
 
-43: ldrb    r0, [r6, #FIELD_OUTER_MODE_OFF]
-    cmp     r0, #FIELD_TOUCH_MODE
+43: ldrb    r0, [r6, #BSAPP_ID_OFF]
+    cmp     r0, #BSAPP_CHOICE_MENU
     bne     49f
-    ldr     r5, [r6, #FIELD_OUTER_CHILD_OFF]
+    ldr     r5, [r6, #BSAPP_APP_OFF]
     movs    r0, r5
     movs    r1, #SYS_TASK_DATA_OFF
     bl      OneScreen_MainRamRange
@@ -3328,32 +3342,32 @@ OneScreen_FieldMode3:
     beq     49f
     ldr     r7, [r5, #SYS_TASK_DATA_OFF]
     movs    r0, r7
-    ldr     r1, =FIELD_CHILD_CHOICE_OFF
+    ldr     r1, =CHOICE_SELECTION_OFF
     bl      OneScreen_MainRamRange
     cmp     r0, #0
     beq     49f
-    ldr     r0, [r7, #FIELD_CHILD_FS_OFF]
+    ldr     r0, [r7, #CHOICE_FS_OFF]
     cmp     r0, r4
     bne     49f                     @ stale controller from another field
     ldr     r0, =list_ctrl          @ fully validated: OneScreen_ListMenu can use it
     str     r7, [r0]
 
-    ldr     r5, [r7, #FIELD_CHILD_STATE_OFF]
-    cmp     r5, #FIELD_CHILD_STATE_HI
+    ldr     r5, [r7, #CHOICE_STATE_OFF]
+    cmp     r5, #CHOICE_STATE_LAST
     bhi     49f
-    cmp     r5, #FIELD_CHILD_LIST_LO
+    cmp     r5, #CHOICE_SHOW_LIST
     blo     44f
     movs    r0, #4                  @ native list/cleanup state
     b       48f
-44: cmp     r5, #FIELD_CHILD_BINARY_LO
+44: cmp     r5, #CHOICE_SHOW_YES_NO
     blo     47f                     @ setup/idle
-    cmp     r5, #FIELD_CHILD_BINARY_DONE
+    cmp     r5, #CHOICE_DONE
     beq     47f                     @ result delivered
-    cmp     r5, #FIELD_CHILD_BINARY_LO
+    cmp     r5, #CHOICE_SHOW_YES_NO
     bne     45f
     movs    r0, #2                  @ state 3 initializes Yes
     b       48f
-45: ldr     r1, =FIELD_CHILD_CHOICE_OFF
+45: ldr     r1, =CHOICE_SELECTION_OFF
     ldr     r0, [r7, r1]
     cmp     r0, #1
     bhi     49f
@@ -3438,14 +3452,14 @@ OneScreen_ScriptMenu:
     cmp     r4, #0
     beq     59f                     @ no field system yet (boot, menus)
     movs    r0, r4
-    movs    r1, #FIELD_TOUCH_TASK_OFF
+    movs    r1, #FS_BOTTOM_TASK_OFF
     bl      OneScreen_MainRamRange
     cmp     r0, #0
     beq     59f                     @ do not dereference a stale FieldSystem
-    ldr     r5, [r4, #FIELD_MENU_OFF]
+    ldr     r5, [r4, #FS_SAVED_APP_ID_OFF]
     cmp     r5, #0
     beq     57f
-    cmp     r5, #FIELD_TOUCH_MODE
+    cmp     r5, #BSAPP_CHOICE_MENU
     bne     56f                     @ other field modes show their native UI
 
     movs    r0, r4
