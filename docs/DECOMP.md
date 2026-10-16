@@ -167,8 +167,9 @@ pret labels this region of `BattleInput` with offsets that are `0x20` to `0x28` 
   draws the game's own grid in all seven layouts, and its "normal layout" test - the RETIRE
   bit alone, which also passed in the Union Room, Colosseum and Battle Tower partner room -
   is only a fallback, and an exact one.
-- **The Pokéathlon Dome's marts** (BUY / INFO / SEE YA) matched the shop's first-entry key and
-  were drawn as the shop. Menus are now matched on every predictable entry.
+- **A Pokéathlon mart menu** (BUY / INFO / SEE YA, `scr_seq_0003_056`/`_060`) matches the
+  shop's first-entry key and would be drawn as the shop; nothing seems to call it, but menus
+  are now matched on every predictable entry.
 - **The list menu pointer** is `+0x0C`, the menu's own slot; `+0x3A0` is a callback argument
   that the move tutor never sets.
 - **Overlay identities.** Overlay 5 is the link battle's preview/VS screens, not the party menu

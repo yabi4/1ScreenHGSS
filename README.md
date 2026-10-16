@@ -77,9 +77,11 @@ underneath, so one renderer covers them, but a menu is only drawn if the patch *
 it by its own words** — every one of them, not just the first. Anything it has not seen is
 handed to the **game's own top-screen list** instead: HGSS still contains the list window it
 inherited from Diamond and Pearl, which reads the very same menu, so an unknown NPC choice
-appears on the world in the game's own window and words rather than taking the screen. The
-few lists whose entries are two lines tall (Battle Frontier prize shops, Game Corner TMs,
-rankings) keep the touch screen, as does everything with `--touch-lists`.
+appears on the world in the game's own window and words rather than taking the screen.
+Lists with two-line or formatted entries (Battle Frontier prize shops, Game Corner TMs and
+coins, rankings, drink machines, the day-care's level column) keep the touch screen. So do a
+list that would land on a box the script already has up (Mom's savings), the move tutors'
+lists, which the game builds another way, and everything with `--touch-lists`.
 
 Starting a new game works the same way. **GARÇON / FILLE** for the gender question and
 **OUI / NON** for the confirmations are drawn beside Oak's text, so the screen stays on him
@@ -162,8 +164,9 @@ Diamond/Pearl/Platinum are **not** supported — different code, different overl
 
 **v0.3 has not been played yet.** Its changes — the battle-menu fixes, the X menu in the
 special zones, NPC lists in the game's own top-screen window and Oak's steady prompts —
-were built against the full decompilation and checked under emulation
-(`tools/test_hook.py`), but not on hardware or in an emulator. What follows is what v0.2b
+were built against the full decompilation and their routines unit-tested under a CPU
+emulator (`tools/test_hook.py`), but the game has not been played with them, on hardware or
+in melonDS. What follows is what v0.2b
 was played through.
 
 Everything below has been played through, not merely implemented: the overworld and its
@@ -185,8 +188,10 @@ and the Pokégear, which was the largest touch surface found anywhere in the aud
 Known gaps, in order of how likely you are to meet them:
 
 - **19 applications set no display routing of their own** and inherit whatever is current.
-  Four turned out to be wrong and are now handled — most recently the move relearner; the
-  rest are listed in [docs/AUDIT.md](docs/AUDIT.md) and are untested. Berry pots, the
+  One, Oak's speech, turned out to be wrong and is now handled, as are three screens outside
+  that list that kept a routing they should not have (the evolution scene, the fly map and,
+  most recently, the move relearner). The rest are listed in [docs/AUDIT.md](docs/AUDIT.md)
+  and are untested. Berry pots, the
   apricorn box and the Pal Pad are the ones a normal playthrough will reach.
 - **Three screens deliberately stay on the touch screen** because they genuinely need the
   stylus — the trainer-card signature, the Ruins of Alph puzzles and the Pokéathlon. These

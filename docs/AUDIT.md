@@ -182,8 +182,10 @@ as 16 — both are right, for different halves of the same app.
 An inheriting app is not necessarily wrong — it is right whenever the routing it inherits
 happens to suit it. But it is the population where a wrong screen is most likely, and it
 has the worst record so far: **Oak's speech (53) was the first one played and it was
-wrong**, as were the fly map, the evolution scene and the move relearner. All four are now
-handled explicitly. The rest remain untested.
+wrong**, and it is now handled explicitly. Three screens outside this table kept a routing
+they should not have too - the evolution scene (ARM9 code), the fly map and the move
+relearner (overlay 68, whose template is built on the stack) - and are handled as well. The
+rest of the table remains untested.
 
 ### Play-test checklist
 

@@ -316,8 +316,8 @@ def _use_theme(name):
 # entry, and a hash of the rest (see OneScreen_ListMatch). Every menu here has a
 # first entry free of placeholders, which matters - the player's own PC row
 # expands to their name and could never be matched, so it is left out of the
-# hash. The first entry alone was not enough: the Pokeathlon Dome's marts read
-# BUY / INFO / SEE YA and were drawn as the shop.
+# hash. The first entry alone was not enough: a Pokeathlon mart menu reads
+# BUY / INFO / SEE YA (scr_seq_0003_056) and would be drawn as the shop.
 LIST_MSGDATA_FILE = 191
 LIST_KEY_MAX = 16               # codes COMPARED; the full length is checked too,
                                 # so a longer first entry still identifies exactly

@@ -1595,9 +1595,12 @@ let all four in.
 ### The first entry is not enough (v0.3)
 
 The full decompilation's script corpus turned up a menu the key could not tell
-apart: the Pokéathlon Dome's marts are `msg_0191` 321 / 324 / 323 - BUY / INFO /
-SEE YA - three entries with the shop's first entry, so they were drawn as
-ACHETER / VENDRE / QUITTER. Each record now also carries a 16-bit hash of every
+apart: a Pokéathlon mart menu, `msg_0191` 321 / 324 / 323 - BUY / INFO / SEE YA
+(`scr_seq_0003_056` and `_060`) - has three entries and the shop's first entry, so
+it would be drawn as ACHETER / VENDRE / QUITTER. Nothing in the decompilation calls
+those two scripts (they would be std 2056 and 2060); the Dome's live counters use
+325 / 324 / 323, PRIZE EXCHANGE / INFO / SEE YA!, whose French text the
+decompilation does not have. Each record now also carries a 16-bit hash of every
 other entry the patcher can know in advance (`_menu_hash` in `labels.py`,
 `OneScreen_ListHash` in the hook - the same function, tested against each other
 under emulation in `tools/test_hook.py`). Entries it cannot know, such as your own
@@ -1713,15 +1716,16 @@ smaller one drawn where a larger one was leaves the old edges on screen.
 
 `msg_0191` is the archive the script list menus default to, so scanning it for
 short strings enumerates the candidates. Everything below already works with the
-renderer in place - each needs a label set and its first entry as an identifying
-key, nothing more.
+renderer in place - each needs a label set and a record matched on its count, its
+first entry and a hash of the rest (see "The first entry is not enough"). Written
+before v0.3: since then the plain ones already open in the game's own top-screen
+list, so drawing them would add only the theme.
 
 Worth doing, common in ordinary play:
 
 | menu | msg_0191 entries |
 |---|---|
 | GTS / trade counter | 133 DEPOSER POKeMON, 134 CHERCHER POKeMON, 130 INFOS, 131 ECHANGE, 132 RETOUR |
-| Move Deleter / Tutor / Name Rater | short confirm lists |
 | Union Room | 168 SALUER, 169 DISCUTER, 170 TCHAT |
 
 Occasional or optional content:
@@ -1738,7 +1742,9 @@ Occasional or optional content:
 Two caveats. Several of these live in the special zones - Safari, the Bug
 Contest, the Pokeathlon - so each needs checking on its own. And every
 `OUI / NON` prompt (42/43, 46/47) goes through the field yes/no path instead, not
-this renderer.
+this renderer. An earlier version of the table listed the Move Deleter, the tutors
+and the Name Rater: the Name Rater only asks `{YESNO}` questions, and the tutors'
+list is built by `ScrCmd_MoveTutorChooseMove` (653), not by a script list menu.
 
 **The day-care is not on this list, and the first version of it was wrong to say
 so.** msg_0191 132/133/134 look like a deposit/retrieve menu but belong to the
@@ -1754,7 +1760,7 @@ the feature's own message file before building anything.
 The honest read after that correction: none of these is clearly worth the label
 budget and the play-test round-trips. The GTS needs servers that no longer exist,
 the Pokeathlon and Safari are special-zone content, and the rest are one-offs
-where swapping costs nothing.
+that already open in the game's own top-screen list.
 
 ## Still outstanding
 

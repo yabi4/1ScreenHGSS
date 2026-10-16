@@ -43,9 +43,11 @@ and corrected a handful. `docs/DECOMP.md` has the cross-reference.
   list that would land on a box the script already has up there (Mom's savings); the move
   tutors build their lists another way and keep it too. `--touch-lists` (or *Old-style NPC
   lists* in the window) keeps all of them there.
-- **The Pokéathlon Dome's marts are no longer drawn as the shop.** Their options are
-  BUY / INFO / SEE YA, and menus were recognised by their first entry alone; now every
-  entry counts, so these get the game's own top-screen list like any other.
+- **List menus are recognised by every entry, not just the first.** The script corpus has
+  a Pokéathlon mart menu, BUY / INFO / SEE YA, that shares the shop's first entry and would
+  have been drawn as the shop's words. Nothing in the decompilation seems to call it; the
+  Dome's own counters read PRIZE EXCHANGE / INFO / SEE YA! and now get the game's own
+  top-screen list.
 - **The X menu is drawn in the Safari Zone, the Bug Contest, Pal Park and the Union Room**,
   in each one's own arrangement, instead of taking the screen. The panel now reads the touch
   menu's own data - which layout is up, which icons it shows and which is selected -

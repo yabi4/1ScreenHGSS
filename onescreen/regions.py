@@ -76,7 +76,9 @@ START_MENU_TASK_SIG = bytes.fromhex(
 # app_table in src/hook.s. These are ARM9 *code* addresses, so they do not move
 # between regions - but rather than trust that, the patcher checks the bytes at
 # each one against the routine it expects and refuses to use an address whose
-# code has changed. Each entry is (name, callback, swap, signature).
+# code has changed. Each entry is (name, callback, swap, signature, overlay,
+# mask); overlay and mask are None for ARM9 code, and callback is None for an
+# overlay entry found by masked search.
 #
 # Name entry is not an OverlayManager application; this is the small routine
 # that raises the display flag at 0x021D1195 and calls the shared helper. Its

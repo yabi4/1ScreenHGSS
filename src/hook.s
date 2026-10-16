@@ -19,8 +19,8 @@ SWAP_BIT    = 0x8000            @ bit 15: 1 = engine A -> top LCD
 @ the same anchors at the same addresses in French and US HeartGold. Only data,
 @ BSS and overlay bases move, uniformly (US = FR - 0x20).
 @
-@ So rather than ship one payload per region, the six address-valued constants
-@ live in OneScreen_Config below, which the patcher fills in from the ROM it is
+@ So rather than ship one payload per region, the region-dependent addresses and
+@ patch-time values (23 words) live in OneScreen_Config below, which the patcher fills in from the ROM it is
 @ patching. The DEF_ values are the French ones, so an unconfigured payload is
 @ still correct for French.
 @ The "state block" is pret's `struct System gSystem` (include/system.h), at
@@ -1140,9 +1140,9 @@ OneScreen_AutoBattle:
     cmp     r0, #0
     bne     28f                     @ the player has taken the screen; leave it
 
-    @ The bag and the party are their own overlay, and they do not move
-    @ curMenuId off the root menu while they are up - so going by the menu id
-    @ alone left them drawing on the bottom screen the first time they opened.
+    @ The bag and the party run as their own overlay and free the BattleInput
+    @ curMenuId lives in (graphicsMode 3). Its stale byte read as the root menu,
+    @ so going by the menu id alone left them drawing on the bottom screen.
     @ The overlay id says it outright, and it is the same signal the old timeout
     @ logic used for exactly this case.
     bl      OneScreen_BattleSubOpen
@@ -2200,8 +2200,9 @@ OneScreen_OakBlink:
     .align  2
     .pool
 
-@ Put Oak's live edition backdrop colour into the otherwise-unused selected-band
-@ entry of the dialog palette. The source is gold in HG and blue/silver in SS.
+@ Put the theme's band colour into the otherwise-unused selected-band entry of
+@ Oak's dialog palette. Only an unconfigured payload (theme_band 0) borrows his
+@ live edition backdrop colour instead, gold in HG and blue/silver in SS.
     .thumb_func
 OneScreen_OakTheme:
     ldr     r0, =cfg_theme_band
@@ -3220,9 +3221,9 @@ OneScreen_ListMenu:
 @   * the CHARACTERS of its first entry, up to 16, and that entry's full length
 @   * a 16-bit hash over every other entry the patcher could know in advance
 @
-@ The hash is what the first entry alone was missing. The Pokeathlon Dome's
-@ marts are ACHETER / INFOS / QUITTER - three entries, the same first entry as
-@ the shop - and used to be drawn as the shop. Entries the patcher cannot
+@ The hash is what the first entry alone was missing. A Pokeathlon mart menu
+@ reads ACHETER / INFOS / QUITTER - three entries, the same first entry as the
+@ shop - and would be drawn as the shop. Entries the patcher cannot
 @ predict (your own PC's row, which holds your name) are left out of the hash
 @ by the record's skip mask rather than written out.
 @
@@ -3399,18 +3400,20 @@ OneScreen_ListHash:
 @ Installed in the script command table in place of ScrCmd_MenuExec (command
 @ 752), the command that shows a script-built list on the TOUCH screen. HGSS
 @ also has the top-screen list it inherited from Diamond and Pearl -
-@ ScriptMenu_ShowList, what ScrCmd_ScriptListMenuExec (command 71) uses - and
-@ both read the same ScriptMenu, built by the same MenuInit / MenuItemAdd
-@ commands. So a list this patch cannot draw itself is handed to the game's own
+@ ScriptMenu_ShowList, what ScrCmd_ScriptListMenuExec (command 71) uses on a
+@ menu the ScriptListMenu commands (68-70) build. It takes the same struct
+@ ScriptMenu that MenuInit / MenuItemAdd (749-751) build for this command, so a
+@ list this patch cannot draw itself is handed to the game's own
 @ top-screen renderer instead of taking the screen: the window, the cursor,
 @ scrolling past eight entries and the help text are all the game's.
 @
 @ Recognised menus (the shop, the PC) go to the original command, so they keep
 @ the themed panel OneScreen_ListMenu draws. So does anything this cannot vouch
 @ for: the choice app not up and idle, a menu pointer it cannot follow, an
-@ entry holding a line break or a control code, which the touch list lays out
-@ in two lines and the top-screen list cannot, or a list that would land on a
-@ window the script already has on the top screen (OneScreen_ListRoom).
+@ entry holding a line break (the touch list lays it out in two lines) or a
+@ control code such as a CURSOR_X column, neither of which ListMenu's one row
+@ per entry can show, or a list that would land on a window the script already
+@ has on the top screen (OneScreen_ListRoom).
 @
 @ The two paths differ in exactly one result: the touch list's B picks the last
 @ entry, ScriptMenu_ListTask's B writes 0xFFFE. Scripts are written for the

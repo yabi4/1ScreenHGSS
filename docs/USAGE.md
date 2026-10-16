@@ -239,8 +239,9 @@ On a Steam Deck, EmuDeck's melonDS works well with the same settings.
   audit was done, including the bag and the PC box, so it is a lower bound rather than a
   clearance — see [AUDIT.md](AUDIT.md).
 - **19 applications set no display routing of their own** and simply inherit whatever is
-  current. Most are fine; four of them (Oak's speech, the evolution scene, the fly map and
-  the move relearner) turned out not to be and are now handled explicitly. The rest are listed in
+  current. Most are fine; one of them, Oak's speech, turned out not to be and is now
+  handled explicitly, as are three screens outside that list that kept a routing they
+  should not have (the evolution scene, the fly map and the move relearner). The rest are listed in
   [AUDIT.md](AUDIT.md) and are the likeliest place for a remaining wrong screen.
 - If a screen is on the wrong side, **L+R always works** as an escape hatch.
 
