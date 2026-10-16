@@ -59,7 +59,7 @@ Offsets are identical in every region; only data and overlay addresses move.
 |---|---|---|---|
 | `BGCONFIG_OFF` | `FieldSystem+0x08` | `bgConfig` | confirmed |
 | `FS_TASKMAN_OFF` | `+0x10` | `taskman` | confirmed |
-| — | `+0x18` | `bottomScreenType` | new: 1 overworld, 3 Union Room |
+| `FS_BOTTOM_TYPE_OFF` | `+0x18` | `bottomScreenType` | new: 1 overworld, 3 Union Room |
 | `FS_SAVED_APP_ID_OFF` (was `unk1C`) | `+0x1C` | `savedBottomScreenAppId` | confirmed, renamed |
 | `FS_START_MENU_CURSOR_OFF` | `+0xD3` | `startMenuCursorPos` | confirmed |
 | `FS_BOTTOM_TASK_OFF` | `+0xD8` | `bottomScreenTask` | confirmed |

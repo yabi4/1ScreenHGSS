@@ -39,7 +39,7 @@ FIGHT / BAG / POKéMON / RUN without the patcher knowing which is which.
 | PC box | the box itself — moving Pokémon, item storage |
 | Shops and the PC | their menus **drawn on the world**; the screen only moves when you choose |
 | Field binary questions | the world, with **Yes / No** drawn in the dialogue window |
-| Field lists | the world, with the game's **own top-screen list** on it — the day-care, the Name Rater, move tutors and the rest |
+| Field lists | the world, with the game's **own top-screen list** on it — fossil revival, the apricorn juice stand and most one-off NPC choices |
 | Overworld menu (**X**) | the world, with the menu **drawn on it**; **B** closes it |
 | Name entry | the keyboard |
 | New game | Oak's speech, with his questions answered on his own screen |
@@ -104,13 +104,13 @@ world, and the band behind whichever choice is selected:
 
 ![The three colour themes](docs/img/themes.png)
 
-Colour only: nothing moves and no wording changes. The patcher picks the theme matching
-your game, and you can override it.
+Colour only: nothing moves and no wording changes. The window picks the theme matching
+your game, and you can override it; `patch.py` uses `classic` unless you pass `--theme`.
 
 ## Requirements
 
-- Your own dump of Pokémon HeartGold or SoulSilver (**French versions are the tested
-  ones** — see [Compatibility](#compatibility))
+- Your own dump of Pokémon HeartGold or SoulSilver (**French SoulSilver/HeartGold and US
+  HeartGold are the tested ones** — see [Compatibility](#compatibility))
 - Nothing else, if you use `1ScreenHGSS.exe`
 - To run from source: [Python 3.9+](https://www.python.org/) and
   [ndspy](https://github.com/RoadrunnerWMC/ndspy) — `pip install ndspy`
@@ -160,6 +160,12 @@ Diamond/Pearl/Platinum are **not** supported — different code, different overl
 
 ## Status
 
+**v0.3 has not been played yet.** Its changes — the battle-menu fixes, the X menu in the
+special zones, NPC lists in the game's own top-screen window and Oak's steady prompts —
+were built against the full decompilation and checked under emulation
+(`tools/test_hook.py`), but not on hardware or in an emulator. What follows is what v0.2b
+was played through.
+
 Everything below has been played through, not merely implemented: the overworld and its
 menus, battles including sub-screens, the bag through every pocket, the party menu
 including reordering and summaries, the Pokédex with its area map, the PC boxes for
@@ -172,9 +178,9 @@ PC's — were each play-tested through several rounds of correction, as were the
 post-evolution prompts, the opening cinematic, the move relearner and saving from the
 overworld menu. The three colour themes were checked on both editions.
 
-Notably that covers the bag, the party menu and the PC box, which are still raw assembly
-in the decompilation — nothing but play could have cleared them — and the Pokégear, which
-was the largest touch surface found anywhere in the audit.
+Notably that covers the bag and the PC box, which were still raw assembly in pret's
+decompilation when the source audit was done — nothing but play could have cleared them —
+and the Pokégear, which was the largest touch surface found anywhere in the audit.
 
 Known gaps, in order of how likely you are to meet them:
 
@@ -185,9 +191,9 @@ Known gaps, in order of how likely you are to meet them:
 - **Three screens deliberately stay on the touch screen** because they genuinely need the
   stylus — the trainer-card signature, the Ruins of Alph puzzles and the Pokéathlon. These
   are not fixable: moving them up would make them visible but untappable.
-- **Safari Zone, Bug Contest and first-rival battles** hand the command menu to the touch
-  screen instead of drawing it, because their options are not FIGHT / BAG / POKéMON / RUN
-  and the patch only has those four labels.
+- **Safari Zone, Pal Park, Bug Contest and first-rival battles** hand the command menu to
+  the touch screen instead of drawing it, because their options are not FIGHT / BAG /
+  POKéMON / RUN and the patch only has those four labels.
 
 If you find a screen on the wrong side, a savestate makes it quick to diagnose —
 see [docs/USAGE.md](docs/USAGE.md#troubleshooting).
@@ -198,9 +204,9 @@ Touch is physically the *lower* LCD, so anything shown on top cannot be tapped �
 screen the patch moves up has to be fully navigable with buttons.
 
 A source-level audit against the decomp found the Ruins of Alph puzzle to be the only
-genuinely touch-only app it covers, and cleared everything else it covers. The bag, party
-menu and PC box are raw assembly there and could only be cleared by playing them, which
-has now been done. See **[docs/AUDIT.md](docs/AUDIT.md)** for the method, the results and
+genuinely touch-only app it covers, and cleared everything else it covers. The bag and PC
+box were raw assembly there and could only be cleared by playing them, which has now been
+done. See **[docs/AUDIT.md](docs/AUDIT.md)** for the method, the results and
 what is still unchecked.
 
 ## Development

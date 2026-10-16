@@ -3414,8 +3414,8 @@ OneScreen_ListHash:
 @
 @ The two paths differ in exactly one result: the touch list's B picks the last
 @ entry, ScriptMenu_ListTask's B writes 0xFFFE. Scripts are written for the
-@ touch list - the apricorn juice, the rankings and the fossil menus all treat
-@ "not one of the values" as the last choice - so OneScreen_WaitList maps 0xFFFE
+@ touch list - the apricorn juice and the fossil menus test for the last value
+@ and take anything else as a real choice - so OneScreen_WaitList maps 0xFFFE
 @ to the last entry's value before the script sees it.
 @ ---------------------------------------------------------------------------
     .global OneScreen_MenuExec
@@ -3501,9 +3501,9 @@ OneScreen_MenuExec:
 68: lsls    r1, r1, #1
     str     r1, [sp, #4]            @ tile rows
 
-    @ Keep the window on the screen. The script's x and y were written for the
-    @ touch list, which ignores them; they are always clear of the dialogue box,
-    @ but a long translation in a right-hand menu could run past column 31.
+    @ Keep the window on the screen. The touch list ignores the script's x and
+    @ y; they were written for this window and are always clear of the dialogue
+    @ box, but a long translation in a right-hand menu could run past column 31.
     movs    r1, #SCRIPT_MENU_FLAGS_OFF
     ldrb    r1, [r4, r1]
     movs    r2, #ANCHOR_RIGHT_BIT

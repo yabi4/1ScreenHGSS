@@ -174,16 +174,24 @@ D-pad moves through it the way it looks.
 `MON PC` is the one place the patch supplies a word of its own: the touch screen shows your
 name there, and the game only builds that at runtime, long after the labels are rasterised.
 
-**Every other list menu** — the day-care, the Name Rater, move tutors, fossil revival, the
-apricorn juice stand and the many one-off NPC choices — opens in the **game's own top-screen
+**Most other list menus** — fossil revival, the apricorn juice stand, the Pokéathlon
+Dome's counters and the many one-off NPC choices — open in the **game's own top-screen
 list window** over the world, with its own cursor, scrolling and help text. HGSS still has
 the window Diamond and Pearl used for these, and it reads the same menu the touch screen
 does, so the words are always the game's. **B** behaves as on the touch screen.
 
-Lists whose entries are two lines tall — the Battle Frontier prize shops, the Game Corner's
-TMs, the rankings, Pokéathlon course selection — still swap to the touch screen, because
-the top-screen window draws one line per entry. To keep **every** list on the touch screen
-as before, patch with `--touch-lists` (or tick *Old-style NPC lists* in the window).
+Some lists still swap to the touch screen:
+
+- entries two lines tall — the Battle Frontier prize shops, the Game Corner's TMs, the
+  rankings, Pokéathlon course selection — because the top-screen window draws one line per
+  entry;
+- entries with a column or other formatting in them — the drink machines, the Game
+  Corner's coins and prize Pokémon, the day-care's level column;
+- a list that would land on a box the script already has up, such as Mom's savings;
+- the move tutors' lists, which the game builds another way.
+
+To keep **every** list on the touch screen as before, patch with `--touch-lists` (or tick
+*Old-style NPC lists* in the window).
 
 **Starting a new game**, Oak's questions are answered on his own screen:
 
@@ -198,10 +206,10 @@ as before, patch with `--touch-lists` (or tick *Old-style NPC lists* in the wind
 
 The gender options sit side by side and the confirmations stack, because that is how the
 game reads them: the gender question moves on left and right, the confirmations on up and
-down. The highlight follows whichever the game's own cursor is on. Its selected band uses
-the intro's own blue/silver colour in SoulSilver and gold in HeartGold. The small "look at
-the bottom screen" indicator embedded in Oak's question text is suppressed, so it does not
-flash immediately before the custom choices appear.
+down. The highlight follows whichever the game's own cursor is on. Its selected band takes
+the theme's colour (grey, gold or silver), like every other choice the patch draws. The
+small "look at the bottom screen" indicator embedded in Oak's question text is suppressed,
+so it does not flash immediately before the custom choices appear.
 
 **L + R** still works during a battle. It holds until the menu you are on changes, so
 backing out of the move list hands control back to the patch.
@@ -227,18 +235,19 @@ On a Steam Deck, EmuDeck's melonDS works well with the same settings.
   Pokéathlon. Press L+R to reach them.
 - A **source-level** audit against the decompilation found the Alph puzzle to be the only
   genuinely touch-only screen it covers, and cleared everything else it covers as
-  button-navigable. But 75 of 119 code overlays are still raw assembly there, including
-  the bag, the party menu and the PC box, so that audit is a lower bound rather than a
+  button-navigable. But 75 of 119 code overlays were still raw assembly in pret when that
+  audit was done, including the bag and the PC box, so it is a lower bound rather than a
   clearance — see [AUDIT.md](AUDIT.md).
 - **19 applications set no display routing of their own** and simply inherit whatever is
-  current. Most are fine; three of them (Oak's speech, the evolution scene, the fly map)
-  turned out not to be and are now handled explicitly. The rest are listed in
+  current. Most are fine; four of them (Oak's speech, the evolution scene, the fly map and
+  the move relearner) turned out not to be and are now handled explicitly. The rest are listed in
   [AUDIT.md](AUDIT.md) and are the likeliest place for a remaining wrong screen.
 - If a screen is on the wrong side, **L+R always works** as an escape hatch.
 
 ## Troubleshooting
 
-**The patcher says my ROM is unrecognised.** Only the French dumps have been tested. The
+**The patcher says my ROM is unrecognised.** Only French SoulSilver/HeartGold and US
+HeartGold have been tested. The
 patch still applies — it locates code by instruction shape, not fixed offsets — but please
 report whether it worked.
 
@@ -259,4 +268,6 @@ is running — and it is how most of the awkward bugs in this project were actua
 Reasoning without it produced several confident wrong answers.
 
 **The game does not boot.** Check you patched a clean, un-trimmed dump — run
-`python patch.py yourrom.nds --identify` and compare the SHA-1 with the README table.
+`python patch.py yourrom.nds --identify` and compare the SHA-1 with the tested dumps
+listed in `onescreen/rom.py` (a patch run also says `Verified`, or prints a `WARNING` when
+the SHA-1 does not match).

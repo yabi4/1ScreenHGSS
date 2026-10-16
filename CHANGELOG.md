@@ -36,14 +36,16 @@ and corrected a handful. `docs/DECOMP.md` has the cross-reference.
 
 - **NPC list menus open on the top screen, in the game's own list window.** HGSS kept the
   top-screen list it inherited from Diamond and Pearl - `ScriptMenu_ShowList`, the same
-  menu object the touch list reads - so every list the patch does not draw itself (the
-  day-care, the Name Rater, move tutors, fossils, the apricorn juice stand...) is handed to
-  it instead of taking the screen. B answers the way the touch list does. Lists with
-  two-line entries keep the touch screen, and so does a list that would land on a box the
-  script already has up there (Mom's savings); `--touch-lists` (or *Old-style NPC lists* in
-  the window) keeps all of them there.
-- **The Pokéathlon Dome's marts swap instead of showing the shop's words.** Their options
-  are BUY / INFO / SEE YA; menus are now recognised by every entry, not just the first.
+  menu object the touch list reads - so the NPC lists the patch does not draw itself
+  (fossils, the apricorn juice stand, the Pokéathlon Dome's counters, most one-off NPC
+  choices...) are handed to it instead of taking the screen. B answers the way the touch
+  list does. Lists with two-line or formatted entries keep the touch screen, and so does a
+  list that would land on a box the script already has up there (Mom's savings); the move
+  tutors build their lists another way and keep it too. `--touch-lists` (or *Old-style NPC
+  lists* in the window) keeps all of them there.
+- **The Pokéathlon Dome's marts are no longer drawn as the shop.** Their options are
+  BUY / INFO / SEE YA, and menus were recognised by their first entry alone; now every
+  entry counts, so these get the game's own top-screen list like any other.
 - **The X menu is drawn in the Safari Zone, the Bug Contest, Pal Park and the Union Room**,
   in each one's own arrangement, instead of taking the screen. The panel now reads the touch
   menu's own data - which layout is up, which icons it shows and which is selected -

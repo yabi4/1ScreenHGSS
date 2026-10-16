@@ -1086,8 +1086,9 @@ not offering, so from v0.3 they swap like any other menu.
 
 **Two things the menu id cannot see**, both found by playing:
 
-- The bag and party run as **overlay 8** and leave `curMenuId` on the root menu, so they
-  drew on the bottom screen until the overlay id was checked first.
+- The bag and party run as **overlay 8** and free the `BattleInput` that `curMenuId` lives
+  in (`graphicsMode` 3). The stale byte still read as the root menu, so they drew on the
+  bottom screen until the overlay id was checked first.
 - Confirming a choice resets the game's cursor *before* the menu id changes, so the
   highlight flashed back to FIGHT on the way out. Fixed by freezing the image at the
   moment A is pressed and holding it across a submenu trip — which is also simply correct,
@@ -1612,8 +1613,9 @@ it, leaving whatever the previous menu put there.
 ### The game's own top-screen list (v0.3)
 
 The full decompilation shows HGSS never dropped Diamond and Pearl's top-screen list
-window. Two script commands build a menu the same way - `MenuInit` / `MenuItemAdd`
-(749-751) fill a `ScriptMenu` - and differ only in how they show it:
+window. Two script-command families build a `ScriptMenu` the same way -
+`ScriptListMenuInit` / `ScriptListMenuItemAdd` (68-70) and `MenuInit` / `MenuItemAdd`
+(749-751) - and differ in where they keep it and how they show it:
 
 | command | shows it with | waits with |
 |---|---|---|
@@ -1634,17 +1636,22 @@ What had to line up, all from the decompilation:
 - **The result.** `ScriptMenu_Init` already set `*ret_p = 0xEEEE`; the redirect sets it again.
   On A both paths write the entry's value. On **B** they differ: the touch list picks the
   last entry, `ScriptMenu_ListTask` writes `0xFFFE`. Scripts are written for the touch list -
-  the apricorn juice stand, the rankings and the fossil menus treat "anything else" as the
-  last choice - so `OneScreen_WaitList` replaces `0xFFFE` with the last entry's value.
+  the apricorn juice stand and the fossil menus test for the last entry's value and carry on
+  with anything else as if something had been chosen - so `OneScreen_WaitList` replaces
+  `0xFFFE` with the last entry's value.
 - **Freeing it.** `ScriptMenu_CloseList` frees the menu itself; `NativeScript_WaitMenuExec`
   would free it a second time, so the redirect installs its own wait.
 - **Placement.** The scripts' x/y were written for the top screen and always clear the
   dialogue box, but nothing stops a long translation running past column 31, so x is
   pulled left if `ScriptMenu_GetListItemsWidth` says it must be.
 - **What it will not take.** Recognised menus (the shop, the PC) keep the themed panel.
-  Entries with a line break or a control code - 29 sites: Battle Frontier prize shops, Game
-  Corner TMs, rankings, Pokéathlon courses, the mulch shop's price column - keep the touch
-  screen, because `ListMenu` prints one 16-pixel row per entry.
+  Entries with a line break or a control code - about 40 sites: Battle Frontier prize
+  shops, Game Corner TMs, coins and prize Pokémon, drink machines, rankings, Pokéathlon
+  courses, the day-care's level column, the mulch shop's price column - keep the touch
+  screen, because `ListMenu` prints one 16-pixel row per entry. (Control codes survive into
+  the menu's strings: `StringExpandPlaceholders` copies every one that is not a `STRVAR`.)
+  The move tutors' lists never reach the redirect at all: `ScrCmd_MoveTutorChooseMove` (653)
+  builds its own menu and opens the touch list directly.
 - **Room.** The list's window goes on `MAIN_3`, the layer the script's own boxes use, and
   on the touch screen the two never met. Mom's savings menu opens `ShowSavingsBox 1,1` - a
   16x8 window at (1, 1) drawn from tile 1 - then asks for a list at (1, 1), whose window
@@ -1729,16 +1736,16 @@ Occasional or optional content:
 | Fossil selection | 159-165, seven fossil names |
 
 Two caveats. Several of these live in the special zones - Safari, the Bug
-Contest, the Pokeathlon - where the X menu already falls back to swapping because
-their grids cannot be reproduced, so each needs checking on its own. And every
+Contest, the Pokeathlon - so each needs checking on its own. And every
 `OUI / NON` prompt (42/43, 46/47) goes through the field yes/no path instead, not
 this renderer.
 
 **The day-care is not on this list, and the first version of it was wrong to say
 so.** msg_0191 132/133/134 look like a deposit/retrieve menu but belong to the
 GTS counter - OFFER POKeMON / SEEK POKeMON / INFO / TRADE / EXIT in English. The
-day-care itself is `msg_0439`, and every one of its prompts is a `{YESNO}`: nine
-of them, no list menu anywhere. It is already covered by the field yes/no path.
+day-care itself is `msg_0439`, and its prompts are `{YESNO}`s, covered by the field
+yes/no path. Its one list - which Pokémon to take back - is msg_0191 136-138, built at
+runtime from the Pokémon's own names and levels, so it could never be rasterised.
 
 Worth taking as the general lesson: a plausible-looking run of short strings in
 msg_0191 is not evidence that a menu exists, or of which feature owns it. Check

@@ -88,7 +88,7 @@ def patch(rom_bytes: bytes, log=print, auto_battle=True,
         log(f"  WARNING  : {code} recognised but the SHA-1 does not match the "
             "tested dump. Continuing anyway; report problems.")
     else:
-        log(f"  NOTE     : {code} has not been tested (only IPGF/IPKF have). "
+        log(f"  NOTE     : {code} has not been tested (only IPGF/IPKF/IPKE have). "
             "The scanner works by instruction shape, so this may still be fine.")
 
     rom = ndspy.rom.NintendoDSRom(rom_bytes)

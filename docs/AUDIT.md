@@ -20,7 +20,7 @@ was originally found by probing:
 |---|---|---|
 | `+0x00` | `GFIntrCB vBlankIntr` | `app_callback` |
 | `+0x38` | `int heldKeysRaw` | `pad_held` |
-| `+0x44` | `int newKeys` | — (edges are derived in the hook instead) |
+| `+0x48` | `int newKeys` | — (edges are derived in the hook instead) |
 | `+0x69` | `u8 screensFlipped` | the flag name entry sets, at `0x021D1195` |
 
 `app_callback` being `vBlankIntr` explains why it works as an app identity: **every
@@ -37,17 +37,18 @@ void GfGfx_SwapDisplay(void) {                 // src/gf_gfx_planes.c
 }
 ```
 
-That is the shared helper at `0x02022D3E` which had to be marked `KEEP` because flipping
-it inverted the overworld — now explained. And it explains the behaviour the hook works
+That is the shared helper at `0x02022D3C`, whose `POWCNT1` site (`0x02022D3E`) had to be
+marked `KEEP` because flipping it inverted the overworld — now explained. And it explains the behaviour the hook works
 around in two separate places: **any app that calls `GfGfx_SwapDisplay` stamps its own idea
 of the routing back over ours**, which is why the battle sub-screens and the returning
 field app undo a one-shot `POWCNT1` write and the hook has to re-apply it every frame.
 
 **Setting `gSystem.screensFlipped` would be the game-native way to do all of this** and
-would not need re-applying. It is not changed today because the current approach is tested
-and shipping, but it is the first thing to consider in any rework — it could plausibly
-replace much of the per-frame re-application logic, and possibly some of the 80 static site
-flips.
+would not need re-applying. Today the hook writes it in one place only, the PC box
+(`OneScreen_SetFlipped`, called from `OneScreen_PcExec` / `OneScreen_PcHold`); everywhere
+else it still re-applies `POWCNT1`, because that approach is tested and shipping. Using the
+flag more widely is the first thing to consider in any rework — it could plausibly replace
+much of the per-frame re-application logic, and possibly some of the 80 static site flips.
 
 ## Method
 
@@ -109,7 +110,7 @@ is ARM9 static code (`party_menu.c`). The audit result for it stands — it was 
 play.
 
 So the source audit above is a *lower bound*: it proves the Alph puzzle is stylus-only and
-clears the apps it covers, but it cannot vouch for the bag, the party menu or the PC box.
+clears the apps it covers, but it cannot vouch for the bag or the PC box.
 **Those have since been play-tested and all pass** — see the checklist below.
 
 Since then a full, byte-matching decompilation has appeared
@@ -181,8 +182,8 @@ as 16 — both are right, for different halves of the same app.
 An inheriting app is not necessarily wrong — it is right whenever the routing it inherits
 happens to suit it. But it is the population where a wrong screen is most likely, and it
 has the worst record so far: **Oak's speech (53) was the first one played and it was
-wrong**, as were the fly map and the evolution scene. All three are now handled
-explicitly. The rest remain untested.
+wrong**, as were the fly map, the evolution scene and the move relearner. All four are now
+handled explicitly. The rest remain untested.
 
 ### Play-test checklist
 
@@ -197,8 +198,8 @@ Start/Select only. Note anything that responds only to a tap.
 - [x] **Pokégear** — map, radio tuning, phone call list, configuration
 - [x] **Shops** — buy and sell, quantity selection
 
-That closes the three biggest gaps this method left open. The bag, the party menu and the
-PC box are all raw assembly in the decomp, so nothing but play could have cleared them —
+That closes the biggest gaps this method left open. The bag and the PC box were raw
+assembly in pret when this audit was done, so nothing but play could have cleared them —
 and the Pokégear was the largest touch surface in the whole audit at 187 references.
 
 **Still open:**

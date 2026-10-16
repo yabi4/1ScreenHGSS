@@ -39,10 +39,12 @@ The hook does not hardcode the addresses it reads. `OneScreen_Config` at the top
 (`onescreen/regions.py` → `inject.fill_config`). The defaults compiled into the payload
 are the French values, so an unconfigured payload still works there.
 
-The resident code is entered from two verified ARM9 sites. The main-loop call at
-`0x02000DB0` drives global routing, while the callback literal at `0x02075D04` wraps the
-evolution SysTask so its mirrored Yes/No highlight is drawn after native input in the same
-frame. `inject.py` checks the displaced call/pointer before changing either one.
+The resident code is entered from two fixed ARM9 sites, and from pointers the patcher
+finds by shape: the exec slots of five `OverlayManagerTemplate`s (Pokédex, PC box, fly map,
+Oak, battle) and script command 752, `ScrCmd_MenuExec`. The main-loop call at `0x02000DB0`
+drives global routing, while the callback literal at `0x02075D04` wraps the evolution
+SysTask so its mirrored Yes/No highlight is drawn after native input in the same frame.
+`inject.py` checks the displaced call/pointer before changing either fixed site.
 
 **If you add or reorder a field, update `CONFIG_FIELDS` in `onescreen/inject.py` to
 match** — the two are positional and nothing checks them against each other.
@@ -51,7 +53,7 @@ To confirm it landed, read the block over the GDB stub after patching; it sits a
 `OneScreen_Config` address in `hook.json`:
 
 ```bash
-powershell -File tools/probe.ps1 -Addrs "0x01FF8628:14w"
+powershell -File tools/probe.ps1 -Addrs "0x01FF8628:23w"
 ```
 
 ## Prerequisites
@@ -102,7 +104,7 @@ python tools/unpack.py roms/ipgf.nds     # -> build/ipgf/{arm9_dec.bin,overlays/
 | tool | what it is for |
 |---|---|
 | `unpack.py` | extract + BLZ-decompress ARM9 and all 129 overlays |
-| `build.py` | dev build (same result as `patch.py`, but with flip selection flags) |
+| `build.py` | bisecting build with flip selection flags; injects the unconfigured payload (French defaults; no labels, app-table check, or template and script-table redirects), so use `patch.py` for a real build |
 | `find_powcnt.py` | scan and classify every POWCNT1 reference |
 | `xrefs.py` / `crossrefs.py` | who calls an address; calls that cross module boundaries |
 | `peek.py` / `whichov.py` | read words by RAM address; identify which overlay is resident |
@@ -153,7 +155,9 @@ In rough order of preference:
 1. **It has its own POWCNT1 site** — the scanner already found it; just decide its intent
    in `onescreen/table.py` (`FLIP`, `KEEP`, or `TOUCH`).
 2. **It is a distinct app that sets routing on entry** — add
-   `{app callback, desired routing}` to `app_table` in `src/hook.s`. Find the callback by
+   `(name, callback, swap, signature, overlay, mask)` to `APP_TABLE` in
+   `onescreen/regions.py`, and a spare slot to `app_table` in `src/hook.s` if it is full;
+   the patcher writes only the entries whose code it can verify. Find the callback by
    probing `0x021D112C` while the screen is up.
 3. **It is drawn inside another app** (like the overworld X menu) — there is no transition
    to detect, so drive it from the buttons the player already presses.
