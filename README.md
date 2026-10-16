@@ -8,8 +8,9 @@ Play **Pokémon HeartGold / SoulSilver** on a single screen.
 and font — nothing is swapped in from the touch screen — and takes its colours from the
 theme you choose when patching.*
 
-> **v0.2b** — playable start to finish on French SoulSilver and HeartGold, and
-> play-tested on US HeartGold. See
+> **v0.3** — v0.2b is playable start to finish on French SoulSilver and HeartGold, and
+> play-tested on US HeartGold. v0.3's changes were built against the full decompilation and
+> tested under emulation, but have not been played yet. See
 > [Compatibility](#compatibility) and [Status](#status).
 
 The DS puts half of HGSS on the touch screen — the bag, the party, the Pokédex, and
