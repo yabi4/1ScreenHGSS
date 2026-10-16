@@ -38,7 +38,7 @@ FIGHT / BAG / POKéMON / RUN without the patcher knowing which is which.
 | PC box | the box itself — moving Pokémon, item storage |
 | Shops and the PC | their menus **drawn on the world**; the screen only moves when you choose |
 | Field binary questions | the world, with **Yes / No** drawn in the dialogue window |
-| Field lists | longer NPC choices — their UI |
+| Field lists | the world, with the game's **own top-screen list** on it — the day-care, the Name Rater, move tutors and the rest |
 | Overworld menu (**X**) | the world, with the menu **drawn on it**; **B** closes it |
 | Name entry | the keyboard |
 | New game | Oak's speech, with his questions answered on his own screen |
@@ -59,9 +59,7 @@ out from under you.
 Binary questions in the overworld work the same way. Nurse Joy's offer, and every other
 field prompt that uses the shared two-button controller, keeps the world visible and puts
 **Yes / No** or **Oui / Non** in the right-hand end of the dialogue window. Up and down
-move the game's own selection; A and B keep their normal meanings. Longer lists such as
-the PC options, shops and multichoice questions still take the screen because they need
-the room.
+move the game's own selection; A and B keep their normal meanings.
 
 The move-learning questions after an evolution use a separate controller, but receive the
 same treatment. When the game asks whether to forget a move, or later whether to stop
@@ -75,8 +73,12 @@ game's own cursor walks. Picking an entry opens it on the top screen exactly as 
 **Shops and the PC** are drawn the same way — the clerk's `ACHETER / VENDRE / QUITTER`, and
 all three of the PC's menus including its 2×3 storage grid. These are the same object
 underneath, so one renderer covers them, but a menu is only drawn if the patch **recognises
-it by its own words**. Anything it has not seen swaps as before, which is what keeps an
-unknown NPC choice from ever appearing with the wrong labels on it.
+it by its own words** — every one of them, not just the first. Anything it has not seen is
+handed to the **game's own top-screen list** instead: HGSS still contains the list window it
+inherited from Diamond and Pearl, which reads the very same menu, so an unknown NPC choice
+appears on the world in the game's own window and words rather than taking the screen. The
+few lists whose entries are two lines tall (Battle Frontier prize shops, Game Corner TMs,
+rankings) keep the touch screen, as does everything with `--touch-lists`.
 
 Starting a new game works the same way. **GARÇON / FILLE** for the gender question and
 **OUI / NON** for the confirmations are drawn beside Oak's text, so the screen stays on him

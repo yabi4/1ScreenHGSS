@@ -64,11 +64,15 @@ def identify(rom_bytes: bytes):
 
 
 def patch(rom_bytes: bytes, log=print, auto_battle=True,
-          theme=themes.DEFAULT_THEME):
+          theme=themes.DEFAULT_THEME, touch_lists=False):
     """Return the patched ROM image.
 
     `theme` colours what the patch draws - the panels' palettes and the band
     behind a highlighted choice. It changes no sizes or offsets.
+
+    `touch_lists` keeps every script list menu the patch does not draw itself on
+    the touch screen, swapping for it as earlier builds did, instead of handing
+    it to the game's own top-screen list.
     """
     code, title, known, sha1 = identify(rom_bytes)
     log(f"  ROM      : {title}  [{code}]")
@@ -167,6 +171,25 @@ def patch(rom_bytes: bytes, log=print, auto_battle=True,
         # The colour a selected choice is drawn on. Zero leaves the game's own
         # palettes untouched, which is what every build did before themes.
         values["theme_band"] = themes.get(theme)["band"]
+
+        # NPC lists the patch does not draw itself go to the game's own
+        # top-screen list instead of taking the screen: one entry of the script
+        # command table is pointed at OneScreen_MenuExec. Found by shape and
+        # cross-checked; anything unexpected and the lists swap as before.
+        for field in ("menu_exec_orig", "show_list", "list_items_width",
+                      "setup_native"):
+            values[field] = 0
+        if touch_lists:
+            log("  Lists    : touch screen (--touch-lists)")
+        else:
+            native, site, detail = regions.resolve_native_lists(arm9, overlays)
+            if native:
+                values.update(native)
+                struct.pack_into("<I", arm9, site - 0x02000000,
+                                 meta["symbols"]["OneScreen_MenuExec"] | 1)
+                log(f"  Lists    : the game's top-screen list; {detail}")
+            else:
+                log(f"  Lists    : {detail}; NPC lists keep the touch screen")
 
         payload = inject.fill_config(payload, meta["symbols"]["OneScreen_Config"],
                                      meta["load_addr"], values)

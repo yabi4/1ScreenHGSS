@@ -106,12 +106,20 @@ class App:
                             command=self.theme_chosen).grid(
                 row=2 + i, column=0, sticky="w", padx=(8, 0))
 
+        # Off by default: NPC lists the patch does not draw itself use the
+        # game's own top-screen list. On, they swap to the touch screen as
+        # earlier versions did.
+        self.touch_lists = tk.BooleanVar(value=False)
+        ttk.Checkbutton(frame, text="Old-style NPC lists (swap screens)",
+                        variable=self.touch_lists).grid(
+            row=5, column=0, sticky="w", pady=(8, 0))
+
         self.button = ttk.Button(frame, text="Patch", command=self.start)
-        self.button.grid(row=5, column=0, pady=(12, 4))
+        self.button.grid(row=6, column=0, pady=(12, 4))
 
         self.status = ttk.Label(frame, text="No ROM chosen.", wraplength=250,
                                 justify="center")
-        self.status.grid(row=6, column=0)
+        self.status.grid(row=7, column=0)
         self.bar = ttk.Progressbar(frame, mode="indeterminate", length=250)
 
         self.root.after(80, self.drain)
@@ -192,16 +200,19 @@ class App:
             return
         self.busy = True
         self.button.state(["disabled"])
-        self.bar.grid(row=7, column=0, pady=(8, 0))
+        self.bar.grid(row=8, column=0, pady=(8, 0))
         self.bar.start(12)
         self.say("Patching...")
-        threading.Thread(target=self.work, args=(self.rom, out, self.theme.get()),
+        threading.Thread(target=self.work,
+                         args=(self.rom, out, self.theme.get(),
+                               self.touch_lists.get()),
                          daemon=True).start()
 
-    def work(self, src, dst, theme):
+    def work(self, src, dst, theme, touch_lists=False):
         try:
             data = src.read_bytes()
-            out = onescreen_rom.patch(data, log=lambda *_a: None, theme=theme)
+            out = onescreen_rom.patch(data, log=lambda *_a: None, theme=theme,
+                                      touch_lists=touch_lists)
             dst.write_bytes(out)
         except BaseException as exc:            # noqa: BLE001
             # BaseException on purpose: rom.patch raises SystemExit for a ROM it

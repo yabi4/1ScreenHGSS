@@ -109,6 +109,19 @@ Its layouts are `sTouchscreenMenuLayouts` (US `0x0225CFC8`), embedded in `labels
 | `SCRIPT_MENU_STRBUFS_OFF` | `ScriptMenu+0x1C` | `strbufs[28]` | confirmed |
 | `SCRIPT_MENU_COUNT_OFF` | `+0x9B` | `count` | confirmed |
 
+The script command table and the functions the native lists use, found by the patcher
+from table entries 752 and 71 (`regions.resolve_native_lists`):
+
+| what | where | how it is found |
+|---|---|---|
+| `gScriptCmdTable` | ARM9 `.rodata`, 853 Thumb pointers | shape; entries 0 and 1 are `movs r0,#0; bx lr` |
+| `ScrCmd_MenuExec` | table[752] | five calls; pool holds `0x02047909`, `0x020478D1` |
+| `ScrCmd_ScriptListMenuExec` | table[71] | three calls; pool holds `0x020418B5` |
+| `SetupNativeScript` | last call of both | must agree |
+| `ScriptMenu_ShowList` | second call of table[71], overlay 1 | retail prologue (pret `ov01_021EDFA4`) |
+| `ScriptMenu_GetListItemsWidth` | first call of `ShowList` | |
+| `ScriptMenu.x`, `.ret_p`, `.items` | `+0x98`, `+0xA0`, `+0x1C4` | the source's own offset comments, and the helper |
+
 ### Battle (`include/battle/battle.h`, `include/battle/battle_input.h`)
 
 | hook | offset | field | status |

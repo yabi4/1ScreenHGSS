@@ -1609,6 +1609,49 @@ tutor's list (`ScrCmd_MoveTutorChooseMove`) enters the list state without settin
 it, leaving whatever the previous menu put there.
 
 
+### The game's own top-screen list (v0.3)
+
+The full decompilation shows HGSS never dropped Diamond and Pearl's top-screen list
+window. Two script commands build a menu the same way - `MenuInit` / `MenuItemAdd`
+(749-751) fill a `ScriptMenu` - and differ only in how they show it:
+
+| command | shows it with | waits with |
+|---|---|---|
+| 752 `ScrCmd_MenuExec` | the touch choice app, state 7 | `NativeScript_WaitMenuExec` |
+| 71 `ScrCmd_ScriptListMenuExec` | `ScriptMenu_ShowList`, a window on `MAIN_3` | `NativeScript_WaitMultichoice` |
+
+HGSS's scripts use 752 for nearly every list (146 sites in 49 scripts). So v0.3 points
+table entry 752 at `OneScreen_MenuExec`, which gives any menu it does not draw itself to
+`ScriptMenu_ShowList` - the game's window, cursor, scrolling past eight entries and help
+text - instead of letting it take the screen. The choice app stays idle on the hidden
+screen, which `OneScreen_ScriptMenu` already routes as "keep the world".
+
+What had to line up, all from the decompilation:
+
+- **The menu.** `ScrCmd_MenuExec` takes it from the choice controller's own slot
+  (`+0x0C`); the redirect reads it from there, after checking the controller is the running
+  app 3, idle, and points back at this field.
+- **The result.** `ScriptMenu_Init` already set `*ret_p = 0xEEEE`; the redirect sets it again.
+  On A both paths write the entry's value. On **B** they differ: the touch list picks the
+  last entry, `ScriptMenu_ListTask` writes `0xFFFE`. Scripts are written for the touch list -
+  the apricorn juice stand, the rankings and the fossil menus treat "anything else" as the
+  last choice - so `OneScreen_WaitList` replaces `0xFFFE` with the last entry's value.
+- **Freeing it.** `ScriptMenu_CloseList` frees the menu itself; `NativeScript_WaitMenuExec`
+  would free it a second time, so the redirect installs its own wait.
+- **Placement.** The scripts' x/y were written for the top screen and always clear the
+  dialogue box, but nothing stops a long translation running past column 31, so x is
+  pulled left if `ScriptMenu_GetListItemsWidth` says it must be.
+- **What it will not take.** Recognised menus (the shop, the PC) keep the themed panel.
+  Entries with a line break or a control code - 29 sites: Battle Frontier prize shops, Game
+  Corner TMs, rankings, Pokéathlon courses, the mulch shop's price column - keep the touch
+  screen, because `ListMenu` prints one 16-pixel row per entry.
+
+The patcher finds all of it by shape: the 853-entry table (entries 0 and 1 are
+`movs r0, #0; bx lr`), then the calls and literal pools of entries 752 and 71, cross-checked
+against ARM9 addresses that do not move between regions (`MenuExec_PrintItemHelp`,
+`NativeScript_WaitMenuExec`, `NativeScript_WaitMultichoice`) and `ShowList`'s retail
+prologue. Any mismatch and the table is left alone.
+
 ## Who owns the VRAM you just drew into
 
 Four separate bugs in this project have been the same mistake: **assuming what we

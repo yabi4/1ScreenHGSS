@@ -90,7 +90,7 @@ the screen back to the world by itself.
 | Pokédex — a Pokémon's detail level | **the area map** |
 | PC box | the option list **and** the box itself — Pokémon and item storage |
 | Field binary questions | the world, with `Yes / No` or `Oui / Non` beside the question |
-| Field lists | shop lists, PC options and longer NPC choices — their UI |
+| Field lists | the world: shops and the PC drawn on it, other NPC lists in the game's own top-screen window |
 | Pokégear, main menu, trainer card, options | their UI |
 | Name entry | the keyboard |
 | New game — Oak's speech | his text, with his questions answered beside it (below) |
@@ -123,8 +123,7 @@ picked something the game draws on the touch screen.
 to heal your Pokémon, `Oui / Non` or `Yes / No` appears at the right-hand end of her
 dialogue. Use **Up / Down** to choose, **A** to confirm, or **B** to decline, exactly as in
 the unpatched game. This applies to every field prompt that uses the same two-button
-controller. Longer choices — PC options, shops and multichoice questions — still swap to
-their full UI and are unchanged.
+controller. Longer choices are covered below.
 
 **After an evolution**, the questions about forgetting a move and giving up on teaching
 it also stay beside the Pokémon. The small `Oui / Non` or `Yes / No` labels follow the
@@ -175,9 +174,16 @@ D-pad moves through it the way it looks.
 `MON PC` is the one place the patch supplies a word of its own: the touch screen shows your
 name there, and the game only builds that at runtime, long after the labels are rasterised.
 
-Other list menus — NPC choices, the day-care, the Game Corner — still swap. The patch draws
-only menus it recognises, so one it has never seen keeps the old behaviour rather than
-risking the wrong words on screen. `docs/FINDINGS.md` lists the ones that could be added.
+**Every other list menu** — the day-care, the Name Rater, move tutors, fossil revival, the
+apricorn juice stand and the many one-off NPC choices — opens in the **game's own top-screen
+list window** over the world, with its own cursor, scrolling and help text. HGSS still has
+the window Diamond and Pearl used for these, and it reads the same menu the touch screen
+does, so the words are always the game's. **B** behaves as on the touch screen.
+
+Lists whose entries are two lines tall — the Battle Frontier prize shops, the Game Corner's
+TMs, the rankings, Pokéathlon course selection — still swap to the touch screen, because
+the top-screen window draws one line per entry. To keep **every** list on the touch screen
+as before, patch with `--touch-lists` (or tick *Old-style NPC lists* in the window).
 
 **Starting a new game**, Oak's questions are answered on his own screen:
 

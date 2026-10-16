@@ -52,6 +52,10 @@ DEF_INTRO_C_EXEC = 0
 DEF_INTRO_CLOCK = 0
 DEF_THEME_BAND = 0              @ BGR555 for a selected band, 0 = leave the
                                 @ game's own palettes untouched
+DEF_MENU_EXEC_ORIG = 0          @ ScrCmd_MenuExec and the three game functions
+DEF_SHOW_LIST = 0               @ the native list needs; the patcher finds them
+DEF_LIST_ITEMS_WIDTH = 0        @ through the script command table, 0 = leave
+DEF_SETUP_NATIVE = 0            @ every script menu exactly as it was
 
 KEY_A       = 0x001
 KEY_B       = 0x002
@@ -496,6 +500,17 @@ LIST_CURSOR_OFF = 0x394         @ TouchscreenChoiceMenuData.selection
 CHOICE_MENU_OFF = 0x0C          @ TouchscreenChoiceMenuData.menu, the menu's own slot
 CHOICE_CALLBACK_ARG_OFF = 0x3A0 @ TouchscreenChoiceMenuData.selectionCallbackArg
 SCRIPT_MENU_COUNT_OFF = 0x9B    @ ScriptMenu.count
+SCRIPT_MENU_FLAGS_OFF = 0x97    @ ScriptMenu: cancellable bit 0 .. anchorRight bit 6
+SCRIPT_MENU_X_OFF = 0x98        @ ScriptMenu.x
+SCRIPT_MENU_RET_OFF = 0xA0      @ ScriptMenu.ret_p, the script's result var
+SCRIPT_MENU_ITEMS_OFF = 0x1C4   @ ScriptMenu.items[28], ListMenuItem {text, value}
+SCRIPT_MENU_SIZE = 0x2E0        @ sizeof(ScriptMenu)
+SCRIPT_MENU_MAX = 28
+ANCHOR_RIGHT_BIT = 0x40
+CHOICE_IDLE = 1                 @ TOUCHSCREEN_CHOICE_MENU_STATE_IDLE
+LIST_NONE = 0xEEEE              @ the script's "nothing chosen yet"
+LIST_CANCEL = 0xFFFE            @ ScriptMenu_ListTask's B
+LIST_RIGHT_EDGE = 31            @ last tile column a list window may reach
 SCRIPT_MENU_STRBUFS_OFF = 0x1C  @ ScriptMenu.strbufs
 STRING_SIZE_OFF = 2
 STRING_DATA_OFF = 8
@@ -755,7 +770,7 @@ EVOLUTION_TASK_ORIG     = 0x02075D09 @ sub_02075D08, Thumb
     .global OneScreen_Signature
 OneScreen_Signature:
     .ascii  "1SGS"
-    .word   0x0000001C          @ payload version
+    .word   0x0000001D          @ payload version
 
 @ Filled in by the patcher from the ROM being patched. Defaults are French, so
 @ an unconfigured payload still works there. Keep the field order in step with
@@ -781,6 +796,10 @@ cfg_intro_b_exec:   .word DEF_INTRO_B_EXEC
 cfg_intro_c_exec:   .word DEF_INTRO_C_EXEC
 cfg_intro_clock:    .word DEF_INTRO_CLOCK
 cfg_theme_band:     .word DEF_THEME_BAND
+cfg_menu_exec_orig: .word DEF_MENU_EXEC_ORIG
+cfg_show_list:      .word DEF_SHOW_LIST
+cfg_list_items_width: .word DEF_LIST_ITEMS_WIDTH
+cfg_setup_native:   .word DEF_SETUP_NATIVE
 
 pad_held:       .word 0
 pad_new:        .word 0         @ newly pressed this frame
@@ -820,6 +839,8 @@ list_drawn:     .word 0         @ 1 once a list menu's pool is in VRAM
 list_rect:      .word 0         @ x | cols<<8 | rows<<16 of the panel last drawn
 list_hold:      .word 0         @ frames left to keep a panel that stopped confirming
 intro_hold_until: .word 0       @ tick the last intro sequence stops, 0 = idle
+wl_ret:         .word 0         @ the result var of the list OneScreen_MenuExec opened
+wl_last:        .word 0         @ that list's last value, which B stands for
 
 @ Kept below the word variables above, not among them: tools/savestate.py reads
 @ that run as a flat array of words and a six-byte table in the middle of it
@@ -3263,6 +3284,234 @@ OneScreen_ListHash:
     mvns    r0, r0
 47: add     sp, #8
     pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ BOOL OneScreen_MenuExec(ScriptContext *ctx)
+@
+@ Installed in the script command table in place of ScrCmd_MenuExec (command
+@ 752), the command that shows a script-built list on the TOUCH screen. HGSS
+@ also has the top-screen list it inherited from Diamond and Pearl -
+@ ScriptMenu_ShowList, what ScrCmd_ScriptListMenuExec (command 71) uses - and
+@ both read the same ScriptMenu, built by the same MenuInit / MenuItemAdd
+@ commands. So a list this patch cannot draw itself is handed to the game's own
+@ top-screen renderer instead of taking the screen: the window, the cursor,
+@ scrolling past eight entries and the help text are all the game's.
+@
+@ Recognised menus (the shop, the PC) go to the original command, so they keep
+@ the themed panel OneScreen_ListMenu draws. So does anything this cannot vouch
+@ for: the choice app not up and idle, a menu pointer it cannot follow, or an
+@ entry holding a line break or a control code, which the touch list lays out
+@ in two lines and the top-screen list cannot.
+@
+@ The two paths differ in exactly one result: the touch list's B picks the last
+@ entry, ScriptMenu_ListTask's B writes 0xFFFE. Scripts are written for the
+@ touch list - the apricorn juice, the rankings and the fossil menus all treat
+@ "not one of the values" as the last choice - so OneScreen_WaitList maps 0xFFFE
+@ to the last entry's value before the script sees it.
+@ ---------------------------------------------------------------------------
+    .global OneScreen_MenuExec
+    .thumb_func
+OneScreen_MenuExec:
+    push    {r4, r5, r6, r7, lr}
+    movs    r7, r0                  @ ScriptContext
+    ldr     r0, =cfg_show_list
+    ldr     r0, [r0]
+    cmp     r0, #0
+    beq     70f
+    ldr     r0, =cfg_setup_native
+    ldr     r0, [r0]
+    cmp     r0, #0
+    beq     70f
+    bl      OneScreen_FieldSys
+    movs    r6, r0                  @ FieldSystem
+    beq     70f
+    movs    r1, #BSAPP_CHOICE_MENU
+    bl      OneScreen_BottomApp
+    movs    r5, r0                  @ TouchscreenChoiceMenuData
+    ldr     r1, =(CHOICE_SELECTION_OFF + 4)
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     70f
+    ldr     r0, [r5, #CHOICE_FS_OFF]
+    cmp     r0, r6
+    bne     70f
+    ldr     r0, [r5, #CHOICE_STATE_OFF]
+    cmp     r0, #CHOICE_IDLE
+    bne     70f
+    ldr     r4, [r5, #CHOICE_MENU_OFF]  @ the ScriptMenu MenuInit built
+    movs    r0, r4
+    ldr     r1, =SCRIPT_MENU_SIZE
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     70f
+    movs    r0, #SCRIPT_MENU_COUNT_OFF
+    ldrb    r5, [r4, r0]            @ count
+    cmp     r5, #0
+    beq     70f
+    cmp     r5, #SCRIPT_MENU_MAX
+    bhi     70f
+    movs    r0, r4
+    bl      OneScreen_ListMatch
+    cmp     r0, #0
+    bne     70f                     @ ours: the themed panel draws it
+    movs    r0, r4
+    movs    r1, r5
+    bl      OneScreen_ListPlain
+    cmp     r0, #0
+    beq     70f                     @ two-line or formatted entries
+    ldr     r0, =SCRIPT_MENU_RET_OFF
+    ldr     r6, [r4, r0]            @ ret_p, a u16 in the script's vars
+    ldr     r0, =0x02000000
+    cmp     r6, r0
+    blo     70f
+    ldr     r0, =0x023FFFFE
+    cmp     r6, r0
+    bhs     70f
+    lsls    r0, r6, #31
+    bne     70f                     @ not halfword-aligned
+
+    @ From here on the list is the game's.
+    ldr     r0, =wl_ret
+    str     r6, [r0]
+    ldr     r0, =LIST_NONE
+    strh    r0, [r6]
+    subs    r0, r5, #1
+    lsls    r0, r0, #3
+    ldr     r1, =(SCRIPT_MENU_ITEMS_OFF + 4)
+    adds    r0, r0, r1
+    ldr     r0, [r4, r0]            @ items[count - 1].value
+    ldr     r1, =wl_last
+    str     r0, [r1]
+
+    @ Keep the window on the screen. The script's x and y were written for the
+    @ touch list, which ignores them; they are always clear of the dialogue box,
+    @ but a long translation in a right-hand menu could run past column 31.
+    movs    r0, #SCRIPT_MENU_FLAGS_OFF
+    ldrb    r0, [r4, r0]
+    movs    r1, #ANCHOR_RIGHT_BIT
+    tst     r0, r1
+    bne     72f                     @ anchored: ShowList places it itself
+    ldr     r3, =cfg_list_items_width
+    ldr     r3, [r3]
+    cmp     r3, #0
+    beq     72f
+    movs    r0, r4
+    blx     r3                      @ widest entry + 12, in pixels
+    adds    r0, #7
+    lsrs    r0, r0, #3              @ tiles
+    movs    r1, #SCRIPT_MENU_X_OFF
+    ldrb    r2, [r4, r1]
+    adds    r3, r2, r0
+    cmp     r3, #LIST_RIGHT_EDGE
+    bls     72f
+    movs    r2, #LIST_RIGHT_EDGE
+    subs    r2, r2, r0
+    cmp     r2, #1
+    bge     71f
+    movs    r2, #1
+71: strb    r2, [r4, r1]
+
+    @ A recognised panel may still be up from the menu before this one, and the
+    @ game's list window is about to take tiles from 0x3D, inside our pool.
+72: bl      OneScreen_ListMenuWipe
+    ldr     r0, =list_hold
+    movs    r1, #0
+    str     r1, [r0]
+    ldr     r0, =list_drawn
+    str     r1, [r0]
+
+    movs    r0, r4
+    ldr     r3, =cfg_show_list
+    ldr     r3, [r3]
+    blx     r3                      @ ScriptMenu_ShowList(menu)
+    movs    r0, r7
+    ldr     r1, =OneScreen_WaitList
+    ldr     r3, =cfg_setup_native
+    ldr     r3, [r3]
+    blx     r3                      @ SetupNativeScript(ctx, OneScreen_WaitList)
+    movs    r0, #1
+    pop     {r4, r5, r6, r7, pc}
+
+70: movs    r0, r7                  @ anything else: exactly as before
+    ldr     r3, =cfg_menu_exec_orig
+    ldr     r3, [r3]
+    blx     r3
+    pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ BOOL OneScreen_WaitList(ScriptContext *) - the native-script wait for a list
+@ OneScreen_MenuExec opened: FALSE until ScriptMenu_ListTask writes a result,
+@ with B turned into the last entry's value, which is what the touch list gives.
+    .global OneScreen_WaitList
+    .thumb_func
+OneScreen_WaitList:
+    ldr     r1, =wl_ret
+    ldr     r1, [r1]
+    ldrh    r0, [r1]
+    ldr     r2, =LIST_NONE
+    cmp     r0, r2
+    beq     73f
+    ldr     r2, =LIST_CANCEL
+    cmp     r0, r2
+    bne     74f
+    ldr     r0, =wl_last
+    ldr     r0, [r0]
+    strh    r0, [r1]
+74: movs    r0, #1
+    bx      lr
+73: movs    r0, #0
+    bx      lr
+    .align  2
+    .pool
+
+@ int OneScreen_ListPlain(r0 = ScriptMenu *, r1 = count) -> 1 if every entry
+@ is plain text: readable, and with no code at or above 0xE000 (a line break or
+@ a formatting control), which the top-screen list would draw wrong.
+    .thumb_func
+OneScreen_ListPlain:
+    push    {r4, r5, r6, lr}
+    movs    r4, r0
+    movs    r5, r1
+    movs    r6, #0
+75: cmp     r6, r5
+    bhs     78f
+    lsls    r0, r6, #2
+    adds    r0, r4, r0
+    ldr     r0, [r0, #SCRIPT_MENU_STRBUFS_OFF]
+    push    {r0}
+    movs    r1, #STRING_DATA_OFF
+    bl      OneScreen_MainRamRange
+    pop     {r2}
+    cmp     r0, #0
+    beq     79f
+    ldrh    r3, [r2, #STRING_SIZE_OFF]
+    push    {r2, r3}
+    movs    r0, r2
+    lsls    r1, r3, #1
+    adds    r1, #STRING_DATA_OFF
+    bl      OneScreen_MainRamRange
+    pop     {r2, r3}
+    cmp     r0, #0
+    beq     79f
+    adds    r2, #STRING_DATA_OFF
+    ldr     r1, =0xE000
+76: cmp     r3, #0
+    beq     77f
+    ldrh    r0, [r2]
+    cmp     r0, r1
+    bhs     79f
+    adds    r2, #2
+    subs    r3, #1
+    b       76b
+77: adds    r6, #1
+    b       75b
+78: movs    r0, #1
+    pop     {r4, r5, r6, pc}
+79: movs    r0, #0
+    pop     {r4, r5, r6, pc}
     .align  2
     .pool
 

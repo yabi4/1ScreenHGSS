@@ -567,6 +567,220 @@ def test_save_box_still_takes_the_screen():
     assert h.r32(h.var("sm_shown")) == 1
 
 
+# --- native top-screen lists ---------------------------------------------------
+
+CHOICE_STATE, CHOICE_MENU, CHOICE_FS = 0x00, 0x0C, 0x24
+SM_X, SM_FLAGS, SM_RET, SM_ITEMS = 0x98, 0x97, 0xA0, 0x1C4
+STUB_ORIG, STUB_SHOW, STUB_WIDTH, STUB_SETUP = 0x02000101, 0x02000111, 0x02000121, 0x02000131
+
+
+def native_lists(h: Hook, entries, values=None, x=1, choice_state=1, width_px=60):
+    """A script mid-MenuInit: the choice app up and idle, a ScriptMenu built."""
+    fs, _tm, _sm = field(h, task_func=0)
+    h.w32(fs + 0x18, 1)
+    outer = h.alloc(0x1C)
+    h.w32(fs + FS_BOTTOM_TASK, outer)
+    mgr = h.alloc(0x10)
+    h.w32(outer + 0x10, mgr)
+    app = h.alloc(0x1C)
+    h.w8(mgr + 0, 3)                                  # the choice menu
+    h.w8(mgr + 1, 1)
+    h.w32(mgr + 4, app)
+    h.w32(mgr + 8, fs)
+    ctrl = h.alloc(0x3A4)
+    h.w32(app + 0x10, ctrl)
+    h.w32(ctrl + CHOICE_STATE, choice_state)
+    h.w32(ctrl + CHOICE_FS, fs)
+    menu = script_menu(h, entries)
+    h.w32(ctrl + CHOICE_MENU, menu)
+    for i, v in enumerate(values or range(len(entries))):
+        h.w32(menu + SM_ITEMS + 8 * i, h.r32(menu + SM_STRBUFS + 4 * i))
+        h.w32(menu + SM_ITEMS + 8 * i + 4, v)
+    var = h.alloc(4)
+    h.w16(var, 0x1234)
+    h.w32(menu + SM_RET, var)
+    h.w8(menu + SM_X, x)
+    calls = []
+    h.stub(STUB_ORIG, lambda hk, *r: calls.append(("orig", r[0])) or 0x55)
+    h.stub(STUB_SHOW, lambda hk, *r: calls.append(("show", r[0])) or 0)
+    h.stub(STUB_WIDTH, lambda hk, *r: width_px)
+    h.stub(STUB_SETUP, lambda hk, *r: calls.append(("setup", r[0], r[1])) or 0)
+    for name, addr in (("cfg_menu_exec_orig", STUB_ORIG), ("cfg_show_list", STUB_SHOW),
+                       ("cfg_list_items_width", STUB_WIDTH),
+                       ("cfg_setup_native", STUB_SETUP)):
+        h.w32(h.var(name), addr)
+    ctx = h.alloc(0x100)
+    return {"ctx": ctx, "menu": menu, "var": var, "calls": calls, "ctrl": ctrl}
+
+
+def test_menu_exec_hands_unknown_lists_to_the_game():
+    h = Hook()
+    put_list_menus(h, [([codes("ACHETER"), codes("VENDRE"), codes("QUITTER")], 0)])
+    t = native_lists(h, [codes("OUI"), codes("NON"), codes("PEUT-ETRE")],
+                     values=[7, 8, 9])
+    assert h.call("OneScreen_MenuExec", t["ctx"]) == 1
+    wait = h.var("OneScreen_WaitList") | 1
+    assert t["calls"] == [("show", t["menu"]), ("setup", t["ctx"], wait)], t["calls"]
+    assert h.r16(t["var"]) == 0xEEEE
+    assert h.r32(h.var("wl_last")) == 9
+    # the wait: nothing yet, then a pick, then B standing for the last entry
+    assert h.call("OneScreen_WaitList", t["ctx"]) == 0
+    h.w16(t["var"], 8)
+    assert h.call("OneScreen_WaitList", t["ctx"]) == 1 and h.r16(t["var"]) == 8
+    h.w16(t["var"], 0xFFFE)
+    assert h.call("OneScreen_WaitList", t["ctx"]) == 1 and h.r16(t["var"]) == 9
+
+
+def test_menu_exec_keeps_what_it_should_not_touch():
+    shop = [codes("ACHETER"), codes("VENDRE"), codes("QUITTER")]
+    cases = {
+        "recognised": dict(entries=shop),
+        "two lines": dict(entries=[codes("BP") + [0xE000] + codes("SHOP"), codes("NON")]),
+        "control code": dict(entries=[codes("PRIX") + [0xFFFE, 0x0100], codes("NON")]),
+        "not idle": dict(entries=[codes("A"), codes("B")], choice_state=7),
+    }
+    for name, kw in cases.items():
+        h = Hook()
+        put_list_menus(h, [(shop, 0)])
+        t = native_lists(h, **kw)
+        assert h.call("OneScreen_MenuExec", t["ctx"]) == 0x55, name
+        assert t["calls"] == [("orig", t["ctx"])], (name, t["calls"])
+    h = Hook()
+    put_list_menus(h, [(shop, 0)])
+    t = native_lists(h, [codes("A"), codes("B")])
+    h.w32(h.var("cfg_show_list"), 0)                 # the patcher found nothing
+    assert h.call("OneScreen_MenuExec", t["ctx"]) == 0x55
+
+
+def test_menu_exec_keeps_the_window_on_screen():
+    for x, width_px, want in ((1, 60, 1), (24, 100, 18), (21, 60, 21), (12, 300, 1)):
+        h = Hook()
+        put_list_menus(h, [([codes("Z")], 0)])
+        t = native_lists(h, [codes("A"), codes("B")], x=x, width_px=width_px)
+        h.call("OneScreen_MenuExec", t["ctx"])
+        assert h.r8(t["menu"] + SM_X) == want, (x, width_px, h.r8(t["menu"] + SM_X))
+    h = Hook()
+    put_list_menus(h, [([codes("Z")], 0)])
+    t = native_lists(h, [codes("A"), codes("B")], x=24, width_px=100)
+    h.w8(t["menu"] + SM_FLAGS, 0x40)                 # anchored right: leave it
+    h.call("OneScreen_MenuExec", t["ctx"])
+    assert h.r8(t["menu"] + SM_X) == 24
+
+
+# --- the patcher's script-table finder ------------------------------------------
+
+def assemble(src: str, base: int, defs: dict) -> bytes:
+    """Assemble Thumb source at `base` with absolute symbols, return the bytes."""
+    import shutil
+    import subprocess
+    import tempfile
+    tools = {t: shutil.which(f"arm-none-eabi-{t}") for t in ("as", "ld", "objcopy")}
+    if None in tools.values():
+        raise RuntimeError("arm-none-eabi binutils are needed for this test")
+    with tempfile.TemporaryDirectory() as d:
+        d = pathlib.Path(d)
+        # Targets are declared Thumb functions, so the linker calls them with a
+        # plain BL rather than routing through an interworking veneer.
+        decls = "".join(f".thumb_set {k}, {v & ~1:#x}\n" for k, v in defs.items())
+        (d / "a.s").write_text(".syntax unified\n.thumb\n.text\n" + decls + src)
+        subprocess.run([tools["as"], "-mcpu=arm946e-s", "-mthumb", "-o", d / "a.o",
+                        d / "a.s"], check=True)
+        subprocess.run([tools["ld"], f"-Ttext={base:#x}", "-o", d / "a.elf",
+                        d / "a.o"], check=True, capture_output=True)
+        subprocess.run([tools["objcopy"], "-O", "binary", d / "a.elf", d / "a.bin"],
+                       check=True)
+        return (d / "a.bin").read_bytes()
+
+
+class FakeOverlay:
+    def __init__(self, ram, data):
+        self.ramAddress, self.data = ram, data
+
+
+def fake_rom_for_lists(break_check=None):
+    from onescreen import regions
+    ov1_base = 0x021E5900
+    defs = {"GetList": ov1_base + 0x11, "SetState": ov1_base + 0x21,
+            "SetCb": ov1_base + 0x31, "ShowList": ov1_base + 0x101,
+            "Width": ov1_base + 0x201,
+            "GetVar": 0x02000301, "Setup": 0x02000311, "Attr": 0x02000321}
+    shop_sig = "push {r4, lr}\nadds r4, r0, #0\nbl Width\nmovs r1, #7\ntst r1, r0\n" \
+               "bne 1f\nlsrs r1, r0, #3\nb 2f\n1: lsrs r0, r0, #3\nadds r1, r0, #1\n" \
+               "2: adds r0, r4, #0\nadds r0, #0x97\nldrb r0, [r0]\n" \
+               "lsls r0, r0, #0x19\nlsrs r0, r0, #0x1f\npop {r4, pc}\n"
+    ov1 = bytearray(0x400)
+    show = assemble(shop_sig, ov1_base + 0x100, {"Width": defs["Width"]})
+    ov1[0x100:0x100 + len(show)] = show
+    menu_exec = assemble(f"""
+        push {{r3, r4, r5, lr}}
+        adds r4, r0, #0
+        adds r0, #0x80
+        ldr r5, [r0]
+        adds r0, r5, #0
+        bl GetList
+        ldr r1, [r4, #0x64]
+        bl GetVar
+        adds r3, r0, #0
+        movs r1, #3
+        movs r2, #{7 if break_check != "state" else 6}
+        adds r0, r5, #0
+        bl SetState
+        ldr r1, =0x02047909
+        adds r0, r5, #0
+        bl SetCb
+        ldr r1, ={0x020478D1 if break_check != "pool" else 0x020478D5}
+        adds r0, r4, #0
+        bl Setup
+        movs r0, #1
+        pop {{r3, r4, r5, pc}}
+        .pool
+    """, 0x02001000, defs)
+    list_exec = assemble("""
+        push {r4, lr}
+        adds r4, r0, #0
+        adds r0, #0x80
+        ldr r0, [r0]
+        movs r1, #0
+        bl Attr
+        ldr r0, [r0]
+        bl ShowList
+        ldr r1, =0x020418B5
+        adds r0, r4, #0
+        bl Setup
+        movs r0, #1
+        pop {r4, pc}
+        .pool
+    """, 0x02001100, defs)
+    arm9 = bytearray(0x8000)
+    arm9[0x200:0x204] = bytes.fromhex("00207047")    # the do-nothing command
+    arm9[0x1000:0x1000 + len(menu_exec)] = menu_exec
+    arm9[0x1100:0x1100 + len(list_exec)] = list_exec
+    table = 0x4000
+    for k in range(regions.SCRIPT_CMD_COUNT):
+        struct.pack_into("<I", arm9, table + 4 * k, 0x02000201)
+    struct.pack_into("<I", arm9, table + 4 * 71, 0x02001101)
+    struct.pack_into("<I", arm9, table + 4 * 752, 0x02001001)
+    return bytes(arm9), {1: FakeOverlay(ov1_base, bytes(ov1))}, defs
+
+
+def test_patcher_finds_the_native_list_functions():
+    from onescreen import regions
+    arm9, overlays, defs = fake_rom_for_lists()
+    values, site, detail = regions.resolve_native_lists(arm9, overlays)
+    assert values == {"menu_exec_orig": 0x02001001, "show_list": defs["ShowList"],
+                      "list_items_width": defs["Width"],
+                      "setup_native": defs["Setup"]}, (values, detail)
+    assert site == 0x02004000 + 4 * 752
+    for broken in ("state", "pool"):
+        arm9, overlays, _defs = fake_rom_for_lists(broken)
+        values, site, why = regions.resolve_native_lists(arm9, overlays)
+        assert values is None and site is None, broken
+    arm9, overlays, _defs = fake_rom_for_lists()
+    damaged = bytearray(arm9)
+    damaged[0x4000 + 4 * 400] = 0                     # a gap in the table
+    assert regions.find_script_table(bytes(damaged)) is None
+
+
 TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
 
 

@@ -310,3 +310,145 @@ def resolve(arm9: bytes, overlays) -> tuple[dict, int]:
         "intro_clock": state_block + INTRO_CLOCK_OFFSET,
         "start_menu_task": _checked(arm9, START_MENU_TASK, START_MENU_TASK_SIG),
     }, delta
+
+
+# --- the script command table, for the native top-screen lists ---------------
+#
+# ScrCmd_MenuExec (command 752) shows a script-built list on the touch screen.
+# The hook replaces it with OneScreen_MenuExec, which hands lists it does not
+# draw itself to the game's own top-screen renderer instead - the one
+# ScrCmd_ScriptListMenuExec (command 71) uses. Everything it needs is found from
+# those two table entries, not from addresses:
+#
+#   gScriptCmdTable   853 Thumb pointers in ARM9 .rodata, entries 0 and 1 being
+#                     the do-nothing commands (`movs r0, #0; bx lr`)
+#   table[752]        ScrCmd_MenuExec, five calls; its literal pool holds
+#                     MenuExec_PrintItemHelp and NativeScript_WaitMenuExec
+#   table[71]         ScrCmd_ScriptListMenuExec, three calls:
+#                     FieldSysGetAttrAddr, ScriptMenu_ShowList, SetupNativeScript;
+#                     its pool holds NativeScript_WaitMultichoice
+#   ShowList's first call is ScriptMenu_GetListItemsWidth.
+#
+# The pool values are ARM9 code addresses, which do not move between regions
+# (pret names them sub_02047908, sub_020478D0 and sub_020418B4). ShowList is in
+# overlay 1, so it is checked against its retail prologue rather than an address.
+SCRIPT_CMD_COUNT = 853
+SCRCMD_LIST_MENU_EXEC = 71
+SCRCMD_MENU_EXEC = 752
+MENU_EXEC_HELP = 0x02047909          # MenuExec_PrintItemHelp | 1
+WAIT_MENU_EXEC = 0x020478D1          # NativeScript_WaitMenuExec | 1
+WAIT_MULTICHOICE = 0x020418B5        # NativeScript_WaitMultichoice | 1
+SCRCMD_NOP = bytes.fromhex("00207047")   # movs r0, #0; bx lr
+
+# ScriptMenu_ShowList, pret ov01_021EDFA4: push {r4,lr}; mov r4,r0; BL width;
+# then the tile rounding and the anchorRight test on +0x97 / +0x98.
+SHOW_LIST_SIG = bytes.fromhex(
+    "10b5041c00f000f8072101420 1d1c108 01e0c008 411c201c 9730 0078 4006 c00f"
+    .replace(" ", ""))
+SHOW_LIST_MASK = bytes.fromhex(
+    "ffffffff00000000ffffffffffffffffffffffffffffffffffffffffffffffff")
+
+
+def _thumb_calls(code: bytes, base: int, addr: int, limit: int = 0x80):
+    """Decode a small Thumb function: (BL targets, literal-pool words, halfwords).
+
+    Walks from `addr` until the first `pop {..., pc}` or `bx lr`. Only plain BL
+    pairs count as calls; a BLX would be a call into ARM code, which none of the
+    functions read here make.
+    """
+    off = (addr & ~1) - base
+    if off < 0 or off + 4 > len(code):
+        raise ValueError(f"{addr:#010x} is outside the module")
+    calls, literals, halfwords = [], [], []
+    i = off
+    while i < min(off + limit, len(code) - 2):
+        h = struct.unpack_from("<H", code, i)[0]
+        halfwords.append(h)
+        if (h & 0xF800) == 0xF000 and i + 4 <= len(code):
+            h2 = struct.unpack_from("<H", code, i + 2)[0]
+            if (h2 & 0xF800) == 0xF800:
+                disp = ((h & 0x7FF) << 12) | ((h2 & 0x7FF) << 1)
+                if disp & 0x400000:
+                    disp -= 0x800000
+                calls.append(base + i + 4 + disp)
+                halfwords.append(h2)
+                i += 4
+                continue
+        if (h & 0xF800) == 0x4800:                     # ldr rX, [pc, #imm]
+            lit = ((base + i + 4) & ~3) + (h & 0xFF) * 4 - base
+            if 0 <= lit <= len(code) - 4:
+                literals.append(struct.unpack_from("<I", code, lit)[0])
+        if (h & 0xFF00) == 0xBD00 or h == 0x4770:      # pop {.., pc} / bx lr
+            break
+        i += 2
+    return calls, literals, halfwords
+
+
+def find_script_table(arm9: bytes):
+    """Address of gScriptCmdTable in a decompressed ARM9, or None."""
+    n = len(arm9) // 4
+    words = struct.unpack_from(f"<{n}I", arm9, 0)
+    lo, hi = ARM9_RAM, ARM9_RAM + 0x400000
+    run = [0] * (n + 1)
+    for i in range(n - 1, -1, -1):
+        w = words[i]
+        run[i] = run[i + 1] + 1 if (w & 1) and lo <= w < hi else 0
+    hits = []
+    for i in range(n):
+        if run[i] < SCRIPT_CMD_COUNT:
+            continue
+        nops = []
+        for w in words[i:i + 2]:
+            off = (w & ~1) - ARM9_RAM
+            nops.append(0 <= off <= len(arm9) - 4 and arm9[off:off + 4] == SCRCMD_NOP)
+        if all(nops):
+            hits.append(ARM9_RAM + i * 4)
+    return hits[0] if len(hits) == 1 else None
+
+
+def resolve_native_lists(arm9: bytes, overlays):
+    """Return ({config values}, table_entry_address, log) or (None, None, why).
+
+    Every check has to pass; anything unexpected and the script lists stay on
+    the touch screen, which is what every earlier build did.
+    """
+    table = find_script_table(arm9)
+    if table is None:
+        return None, None, "script command table not found"
+    entry = lambda k: struct.unpack_from("<I", arm9, table - ARM9_RAM + 4 * k)[0]
+    menu_exec, list_exec = entry(SCRCMD_MENU_EXEC), entry(SCRCMD_LIST_MENU_EXEC)
+    ov1 = overlays.get(1) if overlays else None
+    if ov1 is None:
+        return None, None, "overlay 1 not available"
+    ov1_lo, ov1_hi = ov1.ramAddress, ov1.ramAddress + len(ov1.data)
+    in_ov1 = lambda a: ov1_lo <= a < ov1_hi
+    try:
+        m_calls, m_lits, m_half = _thumb_calls(arm9, ARM9_RAM, menu_exec)
+        l_calls, l_lits, _l_half = _thumb_calls(arm9, ARM9_RAM, list_exec)
+    except ValueError as exc:
+        return None, None, str(exc)
+    if len(m_calls) != 5 or MENU_EXEC_HELP not in m_lits or WAIT_MENU_EXEC not in m_lits:
+        return None, None, f"command {SCRCMD_MENU_EXEC} is not ScrCmd_MenuExec"
+    if 0x2103 not in m_half or 0x2207 not in m_half or not in_ov1(m_calls[0]):
+        return None, None, f"command {SCRCMD_MENU_EXEC} does not set the list state"
+    if len(l_calls) != 3 or WAIT_MULTICHOICE not in l_lits:
+        return None, None, f"command {SCRCMD_LIST_MENU_EXEC} is not the list command"
+    setup_native = m_calls[4]
+    if l_calls[2] != setup_native:
+        return None, None, "the two commands disagree on SetupNativeScript"
+    show_list = l_calls[1]
+    if not in_ov1(show_list):
+        return None, None, "ScriptMenu_ShowList is not in overlay 1"
+    data = bytes(ov1.data)
+    off = show_list - ov1.ramAddress
+    window = data[off:off + len(SHOW_LIST_SIG)]
+    if len(window) != len(SHOW_LIST_SIG) or any(
+            (a & m) != (b & m) for a, b, m in zip(window, SHOW_LIST_SIG, SHOW_LIST_MASK)):
+        return None, None, "ScriptMenu_ShowList does not match its retail prologue"
+    w_calls, _w_lits, _w_half = _thumb_calls(data, ov1.ramAddress, show_list)
+    if not w_calls or not in_ov1(w_calls[0]):
+        return None, None, "ScriptMenu_GetListItemsWidth not found"
+    values = {"menu_exec_orig": menu_exec, "show_list": show_list | 1,
+              "list_items_width": w_calls[0] | 1, "setup_native": setup_native | 1}
+    return values, table + 4 * SCRCMD_MENU_EXEC, (
+        f"table {table:#010x}, MenuExec {menu_exec:#010x}, ShowList {show_list:#010x}")
