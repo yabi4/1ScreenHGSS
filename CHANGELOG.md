@@ -21,6 +21,17 @@ and corrected a handful. `docs/DECOMP.md` has the cross-reference.
   `graphicsMode` before reading it, and only uses the battle's data while the battle proper
   is running.
 
+### Oak's speech
+
+- **The band behind Oak's selected answer no longer flashes.** The full decompilation
+  showed the cause: a palette blink animating the bottom-screen icon rewrites the dialog
+  window's whole palette twice a second, after this patch has written its colour. It is
+  held still while his three questions are up - the icon it animates is hidden there - and
+  restarted afterwards.
+- **The ends of Oak's longest lines are no longer erased.** The patch painted over the
+  right-hand corner of his dialog box on every frame, believing text never reached it; in
+  English five of his lines do. It now only takes its own box down when a question ends.
+
 ### Menus
 
 - **NPC list menus open on the top screen, in the game's own list window.** HGSS kept the

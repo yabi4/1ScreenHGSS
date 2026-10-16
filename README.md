@@ -187,10 +187,6 @@ Known gaps, in order of how likely you are to meet them:
 - **Safari Zone, Bug Contest and first-rival battles** hand the command menu to the touch
   screen instead of drawing it, because their options are not FIGHT / BAG / POKéMON / RUN
   and the patch only has those four labels.
-- **Oak's two questions flicker.** The band behind the selected choice alternates with the
-  game's own highlight for the few seconds those prompts are up. Cosmetic, understood, and
-  written up in [docs/FINDINGS.md](docs/FINDINGS.md); fixing it needs more invasive work
-  than it is worth.
 
 If you find a screen on the wrong side, a savestate makes it quick to diagnose —
 see [docs/USAGE.md](docs/USAGE.md#troubleshooting).

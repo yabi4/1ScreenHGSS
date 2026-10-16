@@ -1885,38 +1885,40 @@ two prompts used it because the band used to be whatever saturated colour his
 intro was showing. A theme picks a light colour deliberately, so inverting made
 his selected choice white while every other prompt's was black - it is off now.
 
-### Oak's prompts still flash, and why that was left alone
+### Oak's prompts used to flash - solved with the full decompilation (v0.3)
 
-The band behind Oak's selected choice alternates between the theme colour and the
-game's own red. This predates themes; the earlier edition-colour version flashed
-the same way.
+The band behind Oak's selected choice alternated with a salmon red, and with white, about
+once a second. This section once blamed a race with the print task and then the multichoice
+controller; both were wrong, and v0.2b left it alone. The full decompilation names the
+real culprit in one look.
 
-It is a race, not a stale value. `OneScreen_OakDraw` redraws **every frame** on
-purpose - Oak repaints that window as he builds each state, so a draw-once would
-simply be painted over - and the band colour is written every frame with it. The
-game wins some of those frames because, as the focus-indicator work already
-established, **the print task runs later in the main loop than this hook does.**
+`OakSpeech_InitMsgPrinter` starts a **`PaletteBlink`** on top-screen BG palette 6 - the
+dialog window's own palette - to animate the "look at the bottom screen" icon, whose colours
+are 11-14 (`src/palette_blink.c`). It is a SysTask on the main queue, which runs *after* the
+overlay manager and therefore after `OneScreen_OakExec`, and on ticks 0 and 24 of its
+32-tick cycle it writes **all sixteen** colours of palette 6 back to palette RAM from its own
+copy. The band is palette 6 colour 12, so on tick 0 the copy's `0x62FF` - the salmon - came
+back, and on tick 24 colour 12 went to the copy's white paper. The main loop runs at about
+30 Hz, so that is one flash of each per ~1.07 s.
 
-Two things were ruled out:
+Two consequences that shaped the fix:
 
-- **It is not the palette shadow buffer.** Gen-IV keeps an unfaded copy in
-  `PaletteData.buffers[].opaque` and pushes it to palette RAM, which would have
-  been the same shape as the tilemap fix. Searching a savestate's main RAM for a
-  `PaletteBuffer`-shaped record with a plausible palette found exactly one, and
-  its palette 6 matches neither Oak's dialogue nor our colour.
-- **It is not a missing write.** `oak_drawn` confirms the draw runs, and the theme
-  write sits on the same path.
+- **Moving the band to another colour does not help.** The blink writes every colour, so
+  any index would be reset from its snapshot twice a cycle (to black, for 7-10).
+- **The blink has nothing to show in those states anyway.** The icon it animates is
+  suppressed in exactly the three questions that draw a band.
 
-What is left is the native multichoice controller drawing its own highlight into
-the same window during the INPUT states (65, 69, 98). The existing suppression -
-which neutralises the `{YESNO 0}` control in the live string before the printer
-sees it - only runs at the INIT states (61, 67, 97), where the string is created.
-Neutralising the controller's own rendering during input is a bigger and riskier
-intervention than suppressing one control code, and it touches the part of Oak's
-flow that works.
+So `OneScreen_OakBlink` holds it still - `state = PALETTE_BLINK_PAUSE` - while states 65,
+69 or 98 are up, and sets `PALETTE_BLINK_RESTART` when they end, but only if it was the
+one that paused it. It never writes `END`, which would destroy the task. Before writing a
+byte it checks the struct is the one expected: in main RAM, palette 6, top screen, no
+`PaletteData`, and its `apply` pointer equal to `PaletteBlink_LoadMainBgPltt`
+(`0x020165A5`, ARM9, the same in every region).
 
-Left alone deliberately: cosmetic, pre-existing, and confined to two prompts in
-the opening minutes. If it is ever worth chasing, the next step is two savestates
-a frame or two apart during the flash, diffed over Oak's dialogue window tiles -
-that separates "the red arrives as pixels" from "the red arrives as a palette
-entry", which decides which of the two fixes applies.
+The same research found the hook's own damage in the same window. On every frame outside
+the three prompts, the hook held an all-paper image over the dialog's columns 24-26, on the
+belief that text never reaches them. Only messages carrying the `{YESNO}` icon keep clear of
+that corner; with the US text, five of Oak's lines run past x = 192 (`msg 2`, `3`, `6`, `36`
+and `43`) and lost their last letters once printing paused, and the tutorial's own icon was
+painted out as well. That wipe is gone; our box is taken down once when a prompt ends.
+

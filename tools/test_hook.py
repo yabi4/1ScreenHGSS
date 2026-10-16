@@ -781,6 +781,111 @@ def test_patcher_finds_the_native_list_functions():
     assert regions.find_script_table(bytes(damaged)) is None
 
 
+# --- Oak's speech ---------------------------------------------------------------
+
+OAK_STATE, OAK_BLINK = 0x0C, 0x114
+BLINK_APPLY = 0x020165A5
+
+
+def oak(h: Hook, state=46, blink_state=1, **blink):
+    data = h.alloc(0x180)
+    h.w32(data + OAK_STATE, state)
+    b = h.alloc(0x50)
+    h.w32(data + OAK_BLINK, b)
+    h.w32(b + 0x04, blink.get("apply", BLINK_APPLY))
+    h.w32(b + 0x08, blink.get("pltt", 0))
+    h.w8(b + 0x4C, blink.get("screen", 0))
+    h.w8(b + 0x4D, blink.get("palette", 6))
+    h.w8(b + 0x4E, blink_state)
+    h.w8(b + 0x4F, blink.get("timer", 5))
+    return data, b
+
+
+def test_oak_blink_held_only_while_a_band_is_up():
+    h = Hook()
+    data, b = oak(h)
+    h.call("OneScreen_OakBlink", data, 1)
+    assert h.r8(b + 0x4E) == 2                        # paused
+    h.call("OneScreen_OakBlink", data, 1)
+    assert h.r8(b + 0x4E) == 2
+    h.call("OneScreen_OakBlink", data, 0)
+    assert h.r8(b + 0x4E) == 0                        # restarted, from tick 0
+    h.call("OneScreen_OakBlink", data, 0)
+    assert h.r8(b + 0x4E) == 0                        # and left alone after
+    # a pause we did not make is not ours to undo
+    data, b = oak(h, blink_state=2)
+    h.call("OneScreen_OakBlink", data, 0)
+    assert h.r8(b + 0x4E) == 2
+    # a blink mid-RESTART is caught the next frame, not forced
+    data, b = oak(h, blink_state=0)
+    h.call("OneScreen_OakBlink", data, 1)
+    assert h.r8(b + 0x4E) == 0
+
+
+def test_oak_blink_validation():
+    for bad in (dict(apply=0x020165BD), dict(pltt=0x02100000), dict(screen=1),
+                dict(palette=11), dict(timer=40)):
+        h = Hook()
+        data, b = oak(h, **bad)
+        h.call("OneScreen_OakBlink", data, 1)
+        assert h.r8(b + 0x4E) == 1, bad                # untouched
+    h = Hook()
+    data, _b = oak(h)
+    h.w32(data + OAK_BLINK, 0x027FFFF0)               # not in main RAM
+    h.call("OneScreen_OakBlink", data, 1)
+
+
+def test_oak_monologue_text_is_not_painted_over():
+    """Outside the three prompts, nothing of ours is blitted into Oak's dialog
+    window - the per-frame paper over columns 24-26 erased the ends of long
+    lines."""
+    h = Hook()
+    base = blank_blob(h)
+    oak_char, oak_tile, col = 0x06018000, 0x36D, 24
+    rows = [oak_char + (oak_tile + r * 27 + col) * 32 for r in range(4)]
+    geo = struct.pack("<IIHH", labels.BLOB_HEADER, 3 * 32 * 4, 3 * 32, 3) + \
+        struct.pack("<4I", *rows)
+    h.w8(base + 4, 4)                                  # tile rows per box
+    h.w8(base + 5, labels.GEO_COUNT)                   # geometries in the blob
+    h.write(base + 8 + 28 * 2, geo)                   # LABEL_GEO_OAK
+    for r in rows:
+        h.write(r, bytes([0x11]) * 96)                # "text" in those tiles
+    data, _b = oak(h, state=46)
+    gsys = h.alloc(0x80)
+    h.w32(gsys + 4, data)
+    h.w32(h.var("cfg_app_callback"), gsys)
+    orig = 0x02000141
+    h.stub(orig, lambda hk, *r: 0)
+    h.w32(h.var("cfg_oak_exec_orig"), orig)
+    manager = h.alloc(0x40)
+    h.w32(manager + 0x14 + 8, data)
+    for _ in range(3):
+        h.call("OneScreen_OakExec", manager, manager + 0x14)
+    for r in rows:
+        assert h.read(r, 96) == bytes([0x11]) * 96, hex(r)
+
+
+def test_oak_exec_pauses_the_blink_for_its_prompts():
+    h = Hook()
+    blank_blob(h)
+    data, b = oak(h, state=64)
+    gsys = h.alloc(0x80)
+    h.w32(gsys + 4, data)
+    h.w32(h.var("cfg_app_callback"), gsys)
+    h.stub(0x02000151, lambda hk, *r: 0)
+    h.w32(h.var("cfg_oak_exec_orig"), 0x02000151)
+    manager = h.alloc(0x40)
+    h.w32(manager + 0x14 + 8, data)
+    seen = []
+    for state in (64, 65, 65, 66, 69, 70, 98, 99):
+        h.w32(data + OAK_STATE, state)
+        h.call("OneScreen_OakExec", manager, manager + 0x14)
+        seen.append(h.r8(b + 0x4E))
+        if seen[-1] == 0:                              # the game's next tick
+            h.w8(b + 0x4E, 1)
+    assert seen == [1, 2, 2, 0, 2, 0, 2, 0], seen
+
+
 TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
 
 

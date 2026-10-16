@@ -137,6 +137,18 @@ from table entries 752 and 71 (`regions.resolve_native_lists`):
 pret labels this region of `BattleInput` with offsets that are `0x20` to `0x28` too low; its
 *layout* is the same as the full decompilation's. Only the names drifted.
 
+### Oak's speech (`include/oaks_speech_internal.h`, `src/palette_blink.c`)
+
+| hook | offset | field | status |
+|---|---|---|---|
+| `OAK_STATE_OFF` | `OakSpeechData+0x0C` | `state` | confirmed |
+| `OAK_PRINT_STATE_OFF` | `+0x104` | `printDialogMsgState` | confirmed |
+| `OAK_STRING_OFF` | `+0x110` | `string` | confirmed |
+| `OAK_BLINK_OFF` | `+0x114` | `paletteBlink` | **new** |
+| `OAK_NUMOPTS_OFF`, `OAK_CURSOR_OFF` | `+0x161`, `+0x163` | `menuData.numOptions`, `.cursorPos` | confirmed |
+| `BLINK_BYTES_OFF` | `PaletteBlink+0x4C` | `screen`, `palette`, `state`, `timer` | **new**; state 0 RESTART, 1 RUN, 2 PAUSE, 3 END |
+| `BLINK_APPLY_MAIN_BG` | `0x020165A5` | `PaletteBlink_LoadMainBgPltt` | pret `sub_020165A4`, the `apply` for a top-screen hardware blink |
+
 ## What it corrected
 
 - **The battle cursor** was at `+0x6DC`, not the `+0x6D4` the hook started from. The hook
@@ -163,5 +175,8 @@ pret labels this region of `BattleInput` with offsets that are `0x20` to `0x28` 
   (which is ARM9 static). Overlay 10 is the trainer AI — but it is resident for exactly the
   command-selection phase, which is why the overlay-slot proxy works. Berry pots are an app in
   16 running its UI in 17. The overlays pret left unnamed are named in [AUDIT.md](AUDIT.md).
+- **Oak's flashing band** was a `PaletteBlink` on the dialog's palette rewriting all sixteen
+  colours twice a second, not a race with the text printer. It is paused while his questions
+  are up. The same research found the hook erasing the ends of his longer US lines.
 - **`start_menu.c` writes the X-menu cursor** on a touch, not only reads it; the touch overlay
   writes it on every D-pad move.

@@ -625,7 +625,7 @@ OAK_CONFIRM_NAME   = 98         @ CONFIRM_NAME_YESNO_HANDLE_INPUT
 @ all-paper image through the lead-in covers it, without showing a prompt the
 @ player cannot answer yet.
 @
-@     62 WAIT_FADE_OUT_TO_ASK_GENDER .. 64 WAIT_FADE_IN_GENDER_SELECT_MENU
+@     61 ARE_YOU_A_GENDER            .. 64 WAIT_FADE_IN_GENDER_SELECT_MENU
 @     66 PREPARE_ASK_CONFIRM_GENDER  .. 68 CONFIRM_GENDER_YESNO_INIT_MENU
 @     96 PROMPT_NAME_RESTORE_GRAPHICS .. 97 CONFIRM_NAME_YESNO_INIT_MENU
 OAK_GENDER_PRE_LO  = 61
@@ -678,6 +678,38 @@ OAK_STRING_MAGIC    = 0xB6F8D2EC
 OAK_CONTROL_MARK    = 0xFFFE
 OAK_FOCUS_CONTROL   = 0x0200
 OAK_IGNORE_CONTROL  = 0x0209
+
+@ Why the band behind Oak's selected choice used to flash, from the full
+@ decompilation. OakSpeech_InitMsgPrinter starts a PaletteBlink on top-screen
+@ BG palette 6 - the dialog window's own palette - to animate the "look at the
+@ bottom screen" icon, colours 11-14 (src/palette_blink.c). It runs on the main
+@ SysTask queue, after this exec trampoline, and on ticks 0 and 24 of its
+@ 32-tick cycle it writes ALL SIXTEEN colours of palette 6 back to palette RAM
+@ from its own copy. Our band is palette 6 colour 12, so once a cycle the
+@ game's 0x62FF salmon came back for a frame, and once it went white.
+@
+@ The icon is suppressed in exactly the states that draw a band, so the blink
+@ has nothing to show there: hold it still (PALETTE_BLINK_PAUSE) while 65, 69
+@ or 98 is up, and RESTART it afterwards - only if we were the ones who paused
+@ it, and never END it, which would destroy its task.
+@
+@     struct PaletteBlink { SysTask *task; ApplyFunc apply; PaletteData *pltt;
+@                           u16 source[16], current[16];
+@                           u8 screen, palette, state, timer; };   // 0x50
+@
+@ apply is checked against PaletteBlink_LoadMainBgPltt - ARM9 code, the same
+@ address in every region (pret's sub_020165A4) - so this only ever touches the
+@ hardware-palette blink of the top screen it expects.
+OAK_BLINK_OFF       = 0x114     @ OakSpeechData.paletteBlink
+BLINK_SIZE          = 0x50
+BLINK_APPLY_OFF     = 0x04
+BLINK_PLTT_OFF      = 0x08
+BLINK_BYTES_OFF     = 0x4C      @ screen, palette, state, timer
+BLINK_APPLY_MAIN_BG = 0x020165A5 @ PaletteBlink_LoadMainBgPltt, Thumb
+BLINK_RESTART       = 0
+BLINK_RUN           = 1
+BLINK_PAUSE         = 2
+BLINK_PALETTE_OAK   = 6
 
 @ Field script menus - the PC option list, shop lists, NPC yes/no choices. All
 @ of these are drawn on the touch screen by the running script, inside the field
@@ -770,7 +802,7 @@ EVOLUTION_TASK_ORIG     = 0x02075D09 @ sub_02075D08, Thumb
     .global OneScreen_Signature
 OneScreen_Signature:
     .ascii  "1SGS"
-    .word   0x0000001D          @ payload version
+    .word   0x0000001E          @ payload version
 
 @ Filled in by the patcher from the ROM being patched. Defaults are French, so
 @ an unconfigured payload still works there. Keep the field order in step with
@@ -841,6 +873,7 @@ list_hold:      .word 0         @ frames left to keep a panel that stopped confi
 intro_hold_until: .word 0       @ tick the last intro sequence stops, 0 = idle
 wl_ret:         .word 0         @ the result var of the list OneScreen_MenuExec opened
 wl_last:        .word 0         @ that list's last value, which B stands for
+oak_blink_held: .word 0         @ 1 while we hold Oak's palette blink paused
 
 @ Kept below the word variables above, not among them: tools/savestate.py reads
 @ that run as a flat array of words and a six-byte table in the middle of it
@@ -2108,6 +2141,62 @@ OneScreen_OakSuppressFocus:
     .align  2
     .pool
 
+@ void OneScreen_OakBlink(r0 = OakSpeechData *, r1 = 1 to hold it, 0 to let go)
+@ See the note at OAK_BLINK_OFF. Every field is checked before one byte is
+@ written; anything unexpected and the blink is left exactly as the game has it.
+    .thumb_func
+OneScreen_OakBlink:
+    push    {r4, r5, r6, lr}
+    movs    r6, r1
+    ldr     r1, =OAK_BLINK_OFF
+    ldr     r4, [r0, r1]
+    movs    r0, r4
+    movs    r1, #BLINK_SIZE
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     89f
+    ldr     r0, [r4, #BLINK_APPLY_OFF]
+    ldr     r1, =BLINK_APPLY_MAIN_BG
+    cmp     r0, r1
+    bne     89f                     @ not the top screen's hardware blink
+    ldr     r0, [r4, #BLINK_PLTT_OFF]
+    cmp     r0, #0
+    bne     89f
+    movs    r5, #BLINK_BYTES_OFF
+    adds    r5, r4, r5              @ -> screen, palette, state, timer
+    ldrb    r0, [r5]
+    cmp     r0, #0
+    bne     89f                     @ PM_LCD_TOP
+    ldrb    r0, [r5, #1]
+    cmp     r0, #BLINK_PALETTE_OAK
+    bne     89f
+    ldrb    r0, [r5, #3]
+    cmp     r0, #32
+    bhs     89f
+    ldrb    r0, [r5, #2]            @ the state
+    ldr     r1, =oak_blink_held
+    cmp     r6, #0
+    beq     88f
+    cmp     r0, #BLINK_RUN          @ hold: only a running blink, so a RESTART
+    bne     89f                     @ in progress is caught next frame instead
+    movs    r0, #BLINK_PAUSE
+    strb    r0, [r5, #2]
+    movs    r0, #1
+    str     r0, [r1]
+    b       89f
+88: ldr     r2, [r1]                @ let go: only one we are holding
+    cmp     r2, #0
+    beq     89f
+    movs    r2, #0
+    str     r2, [r1]
+    cmp     r0, #BLINK_PAUSE
+    bne     89f
+    movs    r0, #BLINK_RESTART
+    strb    r0, [r5, #2]
+89: pop     {r4, r5, r6, pc}
+    .align  2
+    .pool
+
 @ Put Oak's live edition backdrop colour into the otherwise-unused selected-band
 @ entry of the dialog palette. The source is gold in HG and blue/silver in SS.
     .thumb_func
@@ -2208,6 +2297,17 @@ OneScreen_OakExec:
     bl      OneScreen_OakSuppressFocus
 .Loak_focus_checked:
     ldr     r0, [r4, #OAK_STATE_OFF]
+    movs    r1, #1                  @ hold the blink still in the three
+    cmp     r0, #OAK_GENDER_PICK    @ states that draw a band
+    beq     78f
+    cmp     r0, #OAK_CONFIRM_GENDER
+    beq     78f
+    cmp     r0, #OAK_CONFIRM_NAME
+    beq     78f
+    movs    r1, #0
+78: movs    r0, r4
+    bl      OneScreen_OakBlink
+    ldr     r0, [r4, #OAK_STATE_OFF]
 
     @ The three prompts that take input get drawn on Oak's own screen instead of
     @ handing the screen over. Gender picks between two symbols, the two
@@ -2234,13 +2334,16 @@ OneScreen_OakExec:
     cmp     r1, #(OAK_NAME_PRE_HI - OAK_NAME_PRE_LO)
     bls     74f
 
-    @ Not a prompt: hold the narrow box's own all-paper image over the corner the
-    @ icon occupies. Text never reaches those three tiles - it would collide with
-    @ the icon if it did - so this is safe even under Oak's longest lines, and it
-    @ covers the case where the icon turns out to be tiles rather than an object.
+    @ Not a prompt: take down whatever of ours is still up, once. This used to
+    @ hold an all-paper image over the corner the icon occupies on EVERY frame,
+    @ on the belief that text never reaches those three tiles. Only messages
+    @ with the {YESNO} icon keep clear of them; with the US text, five of Oak's
+    @ lines run past x = 192 and lost their last letters once printing paused,
+    @ and the tutorial's own icon was painted out too. The icon is handled by
+    @ OneScreen_OakSuppressFocus in the states that would show it.
     push    {r0, r2}
-    movs    r0, #LABEL_GEO_OAK
-    bl      OneScreen_BattleWipe
+    movs    r0, #0
+    mvns    r0, r0                  @ -1: take our box down, if one is up
     bl      OneScreen_OakDraw
     pop     {r0, r2}
 
