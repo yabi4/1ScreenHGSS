@@ -570,14 +570,21 @@ def test_save_box_still_takes_the_screen():
 # --- native top-screen lists ---------------------------------------------------
 
 CHOICE_STATE, CHOICE_MENU, CHOICE_FS = 0x00, 0x0C, 0x24
-SM_X, SM_FLAGS, SM_RET, SM_ITEMS = 0x98, 0x97, 0xA0, 0x1C4
+SM_X, SM_Y, SM_FLAGS, SM_RET, SM_ITEMS = 0x98, 0x99, 0x97, 0xA0, 0x1C4
+FS_BGCONFIG, BG3_BUFFER = 0x08, 0x8C
+LIST_SCREEN_BASE = 16                                 # in the list record
 STUB_ORIG, STUB_SHOW, STUB_WIDTH, STUB_SETUP = 0x02000101, 0x02000111, 0x02000121, 0x02000131
 
 
-def native_lists(h: Hook, entries, values=None, x=1, choice_state=1, width_px=60):
-    """A script mid-MenuInit: the choice app up and idle, a ScriptMenu built."""
+def native_lists(h: Hook, entries, values=None, x=1, y=1, choice_state=1, width_px=60):
+    """A script mid-MenuInit: the choice app up and idle, a ScriptMenu built,
+    and MAIN_3's tilemap buffer empty."""
     fs, _tm, _sm = field(h, task_func=0)
     h.w32(fs + 0x18, 1)
+    bg = h.alloc(0x100)
+    h.w32(fs + FS_BGCONFIG, bg)
+    tilemap = h.alloc(32 * 32 * 2)
+    h.w32(bg + BG3_BUFFER, tilemap)
     outer = h.alloc(0x1C)
     h.w32(fs + FS_BOTTOM_TASK, outer)
     mgr = h.alloc(0x10)
@@ -600,6 +607,7 @@ def native_lists(h: Hook, entries, values=None, x=1, choice_state=1, width_px=60
     h.w16(var, 0x1234)
     h.w32(menu + SM_RET, var)
     h.w8(menu + SM_X, x)
+    h.w8(menu + SM_Y, y)
     calls = []
     h.stub(STUB_ORIG, lambda hk, *r: calls.append(("orig", r[0])) or 0x55)
     h.stub(STUB_SHOW, lambda hk, *r: calls.append(("show", r[0])) or 0)
@@ -610,7 +618,23 @@ def native_lists(h: Hook, entries, values=None, x=1, choice_state=1, width_px=60
                        ("cfg_setup_native", STUB_SETUP)):
         h.w32(h.var(name), addr)
     ctx = h.alloc(0x100)
-    return {"ctx": ctx, "menu": menu, "var": var, "calls": calls, "ctrl": ctrl}
+    return {"ctx": ctx, "menu": menu, "var": var, "calls": calls, "ctrl": ctrl,
+            "bg": bg, "tilemap": tilemap}
+
+
+def put_window(h: Hook, tilemap, x, y, w, rows, first_tile, palette=13):
+    """A window as the game draws one on MAIN_3: its own character tiles, one per
+    cell from first_tile, framed by the user frame from 0x3D9."""
+    entry = lambda tile: (palette << 12) | tile
+    for r in range(rows):
+        for c in range(w):
+            h.w16(tilemap + 2 * (32 * (y + r) + x + c), entry(first_tile + r * w + c))
+    for c in range(x - 1, x + w + 1):
+        h.w16(tilemap + 2 * (32 * (y - 1) + c), entry(0x3D9))
+        h.w16(tilemap + 2 * (32 * (y + rows) + c), entry(0x3D9))
+    for r in range(y, y + rows):
+        h.w16(tilemap + 2 * (32 * r + x - 1), entry(0x3DA))
+        h.w16(tilemap + 2 * (32 * r + x + w), entry(0x3DA))
 
 
 def test_menu_exec_hands_unknown_lists_to_the_game():
@@ -665,6 +689,54 @@ def test_menu_exec_keeps_the_window_on_screen():
     h.w8(t["menu"] + SM_FLAGS, 0x40)                 # anchored right: leave it
     h.call("OneScreen_MenuExec", t["ctx"])
     assert h.r8(t["menu"] + SM_X) == 24
+
+
+def test_menu_exec_leaves_room_for_script_windows():
+    """The top-screen list goes where the script said, on MAIN_3. A window the
+    script already has there - Mom's savings box - keeps the touch list."""
+    a_b = [codes("A"), codes("B")]                   # 60 px: 8 tiles x 4 rows
+
+    def run(setup, x=1, y=1, flags=0):
+        h = Hook()
+        head = put_list_menus(h, [([codes("Z")], 0)])
+        t = native_lists(h, a_b, x=x, y=y)
+        t["head"] = head
+        h.w8(t["menu"] + SM_FLAGS, flags)
+        setup(h, t)
+        h.call("OneScreen_MenuExec", t["ctx"])
+        return t["calls"][0][0]
+
+    nothing = lambda h, t: None
+    assert run(nothing) == "show"
+    # ShowSavingsBox 1,1: 16x8 at (1, 1) from tile 1, then a list at (1, 1)
+    savings = lambda h, t: put_window(h, t["tilemap"], 1, 1, 16, 8, 1)
+    assert run(savings) == "orig"
+    # the money box, 10x4 from tile 1, across the screen: no overlap, no shared tiles
+    money = lambda h, t: put_window(h, t["tilemap"], 20, 1, 10, 4, 1)
+    assert run(money) == "show"
+    # the dialogue box below: tiles from 0x237, rows 19-22, framed 18-23
+    talk = lambda h, t: put_window(h, t["tilemap"], 2, 19, 27, 4, 0x237)
+    assert run(talk) == "show"
+    # frame to frame is still a collision: the list's frame is column 9
+    assert run(lambda h, t: put_window(h, t["tilemap"], 10, 1, 4, 2, 0x300)) == "orig"
+    assert run(lambda h, t: put_window(h, t["tilemap"], 11, 1, 4, 2, 0x300)) == "show"
+    # far away, but holding a tile the list's window would be given
+    assert run(lambda h, t: h.w16(t["tilemap"] + 2 * (32 * 15 + 28), 0x3D + 31)) == "orig"
+    assert run(lambda h, t: h.w16(t["tilemap"] + 2 * (32 * 15 + 28), 0x3D + 32)) == "show"
+    # anchored bottom-right: the list is moved up and left by its own size first
+    corner = lambda h, t: put_window(h, t["tilemap"], 2, 2, 4, 2, 0x300)
+    assert run(corner, x=17, y=11, flags=0xC0) == "show"     # lands at (9, 7)
+    assert run(corner, x=15, y=9, flags=0xC0) == "orig"      # lands at (7, 5)
+    # no layer to look at: keep the touch list
+    assert run(lambda h, t: h.w32(t["bg"] + BG3_BUFFER, 0)) == "orig"
+    # a panel of ours from the menu before is ours to clear, not in the way
+    def held_panel(h, t):
+        h.w32(h.var("list_drawn"), 1)
+        h.w32(h.var("list_hold"), 3)
+        h.w32(t["head"] + LIST_SCREEN_BASE, 0x06000000)
+        h.w32(h.var("list_rect"), 0 | 14 << 8 | 8 << 16)
+        put_window(h, t["tilemap"], 1, 1, 12, 6, 0x3D)
+    assert run(held_panel) == "show"
 
 
 # --- the patcher's script-table finder ------------------------------------------

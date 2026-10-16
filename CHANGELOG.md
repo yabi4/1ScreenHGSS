@@ -39,8 +39,9 @@ and corrected a handful. `docs/DECOMP.md` has the cross-reference.
   menu object the touch list reads - so every list the patch does not draw itself (the
   day-care, the Name Rater, move tutors, fossils, the apricorn juice stand...) is handed to
   it instead of taking the screen. B answers the way the touch list does. Lists with
-  two-line entries keep the touch screen; `--touch-lists` (or *Old-style NPC lists* in the
-  window) keeps all of them there.
+  two-line entries keep the touch screen, and so does a list that would land on a box the
+  script already has up there (Mom's savings); `--touch-lists` (or *Old-style NPC lists* in
+  the window) keeps all of them there.
 - **The Pokéathlon Dome's marts swap instead of showing the shop's words.** Their options
   are BUY / INFO / SEE YA; menus are now recognised by every entry, not just the first.
 - **The X menu is drawn in the Safari Zone, the Bug Contest, Pal Park and the Union Room**,

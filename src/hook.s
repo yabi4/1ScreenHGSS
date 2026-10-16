@@ -507,6 +507,9 @@ SCRIPT_MENU_ITEMS_OFF = 0x1C4   @ ScriptMenu.items[28], ListMenuItem {text, valu
 SCRIPT_MENU_SIZE = 0x2E0        @ sizeof(ScriptMenu)
 SCRIPT_MENU_MAX = 28
 ANCHOR_RIGHT_BIT = 0x40
+ANCHOR_BOTTOM_BIT = 0x80
+LIST_WINDOW_TILE = 0x3D         @ ScriptMenu list windows' first character tile
+LIST_SCAN_CELLS = 32 * 24       @ the visible part of a 32x32 tilemap
 CHOICE_IDLE = 1                 @ TOUCHSCREEN_CHOICE_MENU_STATE_IDLE
 LIST_NONE = 0xEEEE              @ the script's "nothing chosen yet"
 LIST_CANCEL = 0xFFFE            @ ScriptMenu_ListTask's B
@@ -802,7 +805,7 @@ EVOLUTION_TASK_ORIG     = 0x02075D09 @ sub_02075D08, Thumb
     .global OneScreen_Signature
 OneScreen_Signature:
     .ascii  "1SGS"
-    .word   0x0000001E          @ payload version
+    .word   0x0000001F          @ payload version
 
 @ Filled in by the patcher from the ROM being patched. Defaults are French, so
 @ an unconfigured payload still works there. Keep the field order in step with
@@ -3404,9 +3407,10 @@ OneScreen_ListHash:
 @
 @ Recognised menus (the shop, the PC) go to the original command, so they keep
 @ the themed panel OneScreen_ListMenu draws. So does anything this cannot vouch
-@ for: the choice app not up and idle, a menu pointer it cannot follow, or an
+@ for: the choice app not up and idle, a menu pointer it cannot follow, an
 @ entry holding a line break or a control code, which the touch list lays out
-@ in two lines and the top-screen list cannot.
+@ in two lines and the top-screen list cannot, or a list that would land on a
+@ window the script already has on the top screen (OneScreen_ListRoom).
 @
 @ The two paths differ in exactly one result: the touch list's B picks the last
 @ entry, ScriptMenu_ListTask's B writes 0xFFFE. Scripts are written for the
@@ -3418,18 +3422,19 @@ OneScreen_ListHash:
     .thumb_func
 OneScreen_MenuExec:
     push    {r4, r5, r6, r7, lr}
+    sub     sp, #8                  @ [sp] tiles across, [sp, #4] tile rows
     movs    r7, r0                  @ ScriptContext
     ldr     r0, =cfg_show_list
     ldr     r0, [r0]
     cmp     r0, #0
-    beq     70f
+    beq     59f
     ldr     r0, =cfg_setup_native
     ldr     r0, [r0]
     cmp     r0, #0
-    beq     70f
+    beq     59f
     bl      OneScreen_FieldSys
     movs    r6, r0                  @ FieldSystem
-    beq     70f
+    beq     59f
     movs    r1, #BSAPP_CHOICE_MENU
     bl      OneScreen_BottomApp
     movs    r5, r0                  @ TouchscreenChoiceMenuData
@@ -3474,6 +3479,84 @@ OneScreen_MenuExec:
     bhs     70f
     lsls    r0, r6, #31
     bne     70f                     @ not halfword-aligned
+    b       58f
+59: b       70f                     @ in reach of the guards at the top
+58:
+
+    @ Size the window the way ScriptMenu_OpenListWindow will: the widest entry
+    @ in tiles across, and two tile rows per entry up to a page of eight.
+    ldr     r3, =cfg_list_items_width
+    ldr     r3, [r3]
+    cmp     r3, #0
+    beq     70f                     @ cannot size it: cannot check its room
+    movs    r0, r4
+    blx     r3                      @ widest entry + 12, in pixels
+    adds    r0, #7
+    lsrs    r0, r0, #3
+    str     r0, [sp]                @ tiles across
+    movs    r1, r5
+    cmp     r1, #8
+    bls     68f
+    movs    r1, #8
+68: lsls    r1, r1, #1
+    str     r1, [sp, #4]            @ tile rows
+
+    @ Keep the window on the screen. The script's x and y were written for the
+    @ touch list, which ignores them; they are always clear of the dialogue box,
+    @ but a long translation in a right-hand menu could run past column 31.
+    movs    r1, #SCRIPT_MENU_FLAGS_OFF
+    ldrb    r1, [r4, r1]
+    movs    r2, #ANCHOR_RIGHT_BIT
+    tst     r1, r2
+    bne     69f                     @ anchored: ShowList places it itself
+    movs    r1, #SCRIPT_MENU_X_OFF
+    ldrb    r2, [r4, r1]
+    adds    r3, r2, r0
+    cmp     r3, #LIST_RIGHT_EDGE
+    bls     69f
+    movs    r2, #LIST_RIGHT_EDGE
+    subs    r2, r2, r0
+    cmp     r2, #1
+    bge     71f
+    movs    r2, #1
+71: strb    r2, [r4, r1]
+
+    @ A recognised panel may still be up from the menu before this one. It is
+    @ over - the script has moved on to this one - and it sits in the game's copy
+    @ of the layer, so it goes before the room check below would trip on it.
+69: bl      OneScreen_ListMenuWipe
+    ldr     r0, =list_hold
+    movs    r1, #0
+    str     r1, [r0]
+    ldr     r0, =list_drawn
+    str     r1, [r0]
+
+    @ Is there room? A script may have its own window up on this layer - Mom's
+    @ savings box is 16x8 tiles at (1, 1), drawn from tile 1, and her menu then
+    @ asks for a list at (1, 1) too, whose window takes tiles from 0x3D. On the
+    @ touch screen that never mattered. If anything already on MAIN_3 sits where
+    @ the list would, or uses the tiles it would take, keep the touch list.
+    movs    r1, #SCRIPT_MENU_X_OFF
+    ldrb    r0, [r4, r1]            @ x
+    adds    r1, #1
+    ldrb    r1, [r4, r1]            @ y
+    movs    r2, #SCRIPT_MENU_FLAGS_OFF
+    ldrb    r2, [r4, r2]
+    movs    r3, #ANCHOR_RIGHT_BIT
+    tst     r2, r3
+    beq     67f
+    ldr     r3, [sp]
+    subs    r0, r0, r3              @ ShowList moves an anchored list left...
+67: movs    r3, #ANCHOR_BOTTOM_BIT
+    tst     r2, r3
+    beq     66f
+    ldr     r3, [sp, #4]
+    subs    r1, r1, r3              @ ...or up, by its own size
+66: ldr     r2, [sp]
+    ldr     r3, [sp, #4]
+    bl      OneScreen_ListRoom
+    cmp     r0, #0
+    beq     70f                     @ something is in the way: the touch list
 
     @ From here on the list is the game's.
     ldr     r0, =wl_ret
@@ -3488,43 +3571,6 @@ OneScreen_MenuExec:
     ldr     r1, =wl_last
     str     r0, [r1]
 
-    @ Keep the window on the screen. The script's x and y were written for the
-    @ touch list, which ignores them; they are always clear of the dialogue box,
-    @ but a long translation in a right-hand menu could run past column 31.
-    movs    r0, #SCRIPT_MENU_FLAGS_OFF
-    ldrb    r0, [r4, r0]
-    movs    r1, #ANCHOR_RIGHT_BIT
-    tst     r0, r1
-    bne     72f                     @ anchored: ShowList places it itself
-    ldr     r3, =cfg_list_items_width
-    ldr     r3, [r3]
-    cmp     r3, #0
-    beq     72f
-    movs    r0, r4
-    blx     r3                      @ widest entry + 12, in pixels
-    adds    r0, #7
-    lsrs    r0, r0, #3              @ tiles
-    movs    r1, #SCRIPT_MENU_X_OFF
-    ldrb    r2, [r4, r1]
-    adds    r3, r2, r0
-    cmp     r3, #LIST_RIGHT_EDGE
-    bls     72f
-    movs    r2, #LIST_RIGHT_EDGE
-    subs    r2, r2, r0
-    cmp     r2, #1
-    bge     71f
-    movs    r2, #1
-71: strb    r2, [r4, r1]
-
-    @ A recognised panel may still be up from the menu before this one, and the
-    @ game's list window is about to take tiles from 0x3D, inside our pool.
-72: bl      OneScreen_ListMenuWipe
-    ldr     r0, =list_hold
-    movs    r1, #0
-    str     r1, [r0]
-    ldr     r0, =list_drawn
-    str     r1, [r0]
-
     movs    r0, r4
     ldr     r3, =cfg_show_list
     ldr     r3, [r3]
@@ -3535,12 +3581,81 @@ OneScreen_MenuExec:
     ldr     r3, [r3]
     blx     r3                      @ SetupNativeScript(ctx, OneScreen_WaitList)
     movs    r0, #1
+    add     sp, #8
     pop     {r4, r5, r6, r7, pc}
 
 70: movs    r0, r7                  @ anything else: exactly as before
     ldr     r3, =cfg_menu_exec_orig
     ldr     r3, [r3]
     blx     r3
+    add     sp, #8
+    pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ int OneScreen_ListRoom(r0 = x, r1 = y, r2 = tiles across, r3 = tile rows)
+@   -> 1 if a ScriptMenu list window would land on an empty part of MAIN_3.
+@
+@ Reads the layer's own tilemap buffer, which is what the game commits to the
+@ screen, so it sees every window drawn there: any entry inside the list's
+@ rectangle (plus the one-tile frame around it), or any entry anywhere using a
+@ character tile the list's window would be given (0x3D onwards), means no.
+@ x and y are signed: an anchored list can be moved off the left or top edge.
+    .thumb_func
+OneScreen_ListRoom:
+    push    {r4, r5, r6, r7, lr}
+    sub     sp, #16
+    subs    r0, #1
+    str     r0, [sp]                @ left edge of the frame
+    adds    r0, r0, r2
+    adds    r0, #1
+    str     r0, [sp, #4]            @ right edge of the frame, inclusive
+    subs    r1, #1
+    str     r1, [sp, #8]            @ top edge
+    adds    r1, r1, r3
+    adds    r1, #1
+    str     r1, [sp, #12]           @ bottom edge, inclusive
+    muls    r2, r3                  @ the window's character tiles
+    movs    r6, #LIST_WINDOW_TILE
+    adds    r7, r6, r2              @ [r6, r7) is what it will take
+    bl      OneScreen_MapBuffer
+    cmp     r0, #0
+    beq     65f                     @ cannot see the layer: assume no room
+    movs    r4, r0
+    movs    r5, #0                  @ entry index, row-major, 32 a row
+60: ldrh    r0, [r4]
+    adds    r4, #2
+    cmp     r0, #0
+    beq     63f                     @ an empty cell
+    lsls    r1, r0, #22
+    lsrs    r1, r1, #22             @ its character tile
+    cmp     r1, r6
+    blo     61f
+    cmp     r1, r7
+    blo     65f                     @ one of the tiles the list would take
+61: movs    r1, #31
+    ands    r1, r5                  @ column
+    ldr     r2, [sp]
+    cmp     r1, r2
+    blt     63f
+    ldr     r2, [sp, #4]
+    cmp     r1, r2
+    bgt     63f
+    lsrs    r1, r5, #5              @ row
+    ldr     r2, [sp, #8]
+    cmp     r1, r2
+    blt     63f
+    ldr     r2, [sp, #12]
+    cmp     r1, r2
+    ble     65f                     @ inside where the list would sit
+63: adds    r5, #1
+    ldr     r0, =LIST_SCAN_CELLS
+    cmp     r5, r0
+    blo     60b
+    movs    r0, #1
+    b       64f
+65: movs    r0, #0
+64: add     sp, #16
     pop     {r4, r5, r6, r7, pc}
     .align  2
     .pool

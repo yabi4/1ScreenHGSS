@@ -1645,6 +1645,14 @@ What had to line up, all from the decompilation:
   Entries with a line break or a control code - 29 sites: Battle Frontier prize shops, Game
   Corner TMs, rankings, Pokéathlon courses, the mulch shop's price column - keep the touch
   screen, because `ListMenu` prints one 16-pixel row per entry.
+- **Room.** The list's window goes on `MAIN_3`, the layer the script's own boxes use, and
+  on the touch screen the two never met. Mom's savings menu opens `ShowSavingsBox 1,1` - a
+  16x8 window at (1, 1) drawn from tile 1 - then asks for a list at (1, 1), whose window
+  takes tiles from `0x3D`. So before handing over, `OneScreen_ListRoom` reads the layer's
+  tilemap buffer: anything already inside the list's rectangle or its one-tile frame, or
+  anywhere using a tile the window would be given, keeps the touch list. The dialogue box
+  (tiles from `0x237`, rows 18-23) never trips it; every corpus list ends above row 18.
+  A themed panel left over from the menu before is cleared first, so it does not count.
 
 The patcher finds all of it by shape: the 853-entry table (entries 0 and 1 are
 `movs r0, #0; bx lr`), then the calls and literal pools of entries 752 and 71, cross-checked
