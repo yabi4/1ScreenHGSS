@@ -180,15 +180,21 @@ list window** over the world, with its own cursor, scrolling and help text. HGSS
 the window Diamond and Pearl used for these, and it reads the same menu the touch screen
 does, so the words are always the game's. **B** behaves as on the touch screen.
 
+Lists laid out over two lines or in columns on the touch screen open there too. The
+top-screen window draws one line per entry, so a two-line entry is folded onto one. An
+indented second line, as in the move tutors' lists, becomes a column shared by the whole
+list, so the prices line up; any other second line is joined with a space (*DEPOSIT
+POKéMON*, the Pokéathlon courses, *PROTEIN 1 BP* in the Battle Frontier shops). Price
+columns that are already on one line (the drink machines, the Game Corner's coins, the
+day-care's levels) keep their column, and the window is made wide enough for it. The **Battle Frontier move tutors'** list opens the same way, moves on the
+left and BP on the right; **B** is *QUIT*, as on the touch screen.
+
 Some lists still swap to the touch screen:
 
-- entries two lines tall — the Battle Frontier prize shops, the Game Corner's TMs, the
-  rankings, Pokéathlon course selection — because the top-screen window draws one line per
-  entry;
-- entries with a column or other formatting in them — the drink machines, the Game
-  Corner's coins and prize Pokémon, the day-care's level column;
 - a list that would land on a box the script already has up, such as Mom's savings;
-- the move tutors' lists, which the game builds another way.
+- an entry with formatting the patch does not know, more than one line break, or a column
+  its own text runs past (possible in a translation, since the top window's text starts
+  further right than the touch screen's).
 
 To keep **every** list on the touch screen as before, patch with `--touch-lists` (or tick
 *Old-style NPC lists* in the window).

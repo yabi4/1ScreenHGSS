@@ -1646,15 +1646,12 @@ What had to line up, all from the decompilation:
   would free it a second time, so the redirect installs its own wait.
 - **Placement.** The scripts' x/y were written for the top screen and always clear the
   dialogue box, but nothing stops a long translation running past column 31, so x is
-  pulled left if `ScriptMenu_GetListItemsWidth` says it must be.
+  pulled left if the list's width says it must be.
 - **What it will not take.** Recognised menus (the shop, the PC) keep the themed panel.
-  Entries with a line break or a control code - about 40 sites: Battle Frontier prize
-  shops, Game Corner TMs, coins and prize Pokémon, drink machines, rankings, Pokéathlon
-  courses, the day-care's level column, the mulch shop's price column - keep the touch
-  screen, because `ListMenu` prints one 16-pixel row per entry. (Control codes survive into
-  the menu's strings: `StringExpandPlaceholders` copies every one that is not a `STRVAR`.)
-  The move tutors' lists never reach the redirect at all: `ScrCmd_MoveTutorChooseMove` (653)
-  builds its own menu and opens the touch list directly.
+  Until payload v33, entries with a line break or a control code kept the touch screen too,
+  because `ListMenu` prints one 16-pixel row per entry - see the next section for how they
+  are taken now. (Control codes survive into the menu's strings: `StringExpandPlaceholders`
+  copies every one that is not a `STRVAR`.)
 - **Room.** The list's window goes on `MAIN_3`, the layer the script's own boxes use, and
   on the touch screen the two never met. Mom's savings menu opens `ShowSavingsBox 1,1` - a
   16x8 window at (1, 1) drawn from tile 1 - then asks for a list at (1, 1), whose window
@@ -1669,6 +1666,84 @@ The patcher finds all of it by shape: the 853-entry table (entries 0 and 1 are
 against ARM9 addresses that do not move between regions (`MenuExec_PrintItemHelp`,
 `NativeScript_WaitMenuExec`, `NativeScript_WaitMultichoice`) and `ShowList`'s retail
 prologue. Any mismatch and the table is left alone.
+
+
+### Formatted entries and the move tutors (payload v33)
+
+A census of the decompilation's scripts: of the 146 `MenuExec` sites, 27 build lists whose
+entries hold something besides plain characters, and there are exactly two kinds of it.
+
+| kind | example | sites |
+|---|---|---|
+| `CHAR_LF` (`0xE000`) | `DEPOSIT\nPOKéMON`, `PROTEIN\n1 BP`, `NUGGET\n$4,500`, Pokéathlon courses | 20 |
+| `CURSOR_X` (`0xFFFE 0x0203 1 x`) | `FRESH WATER{CURSOR_X 80}$200`, `50 Coins{CURSOR_X 60}$1,000`, the day-care's `Lv.` column | 8 |
+
+(one, the mulch shop, has both: `GROWTH MULCH{CURSOR_X 90}\n$200`). No entry has two line
+breaks, and no other control appears. What each does on the top-screen list:
+
+- **`CURSOR_X` already renders.** `RenderText` (src/render_text.c) handles `0x203` by setting
+  the pen to its argument, an absolute x in the window. The only problem was the window:
+  `ScriptMenu_GetListItemsWidth` measures with `GetStringWidth`, which *skips* control codes,
+  so `FRESH WATER{CURSOR_X 80}$200` was sized as `FRESH WATER$200` and the price ran off the
+  window's right edge.
+- **`CHAR_LF` drops the pen a line** - 16 pixels, onto the next entry's row.
+
+So `OneScreen_MenuExec` no longer opens the list through `ScriptMenu_ShowList`. It measures
+the entries itself (`OneScreen_ListFormat`), the way the printer moves: from `item_X` (12),
+each run of characters adds its width, each `CURSOR_X` sets the pen; the furthest the pen
+reaches is the window's width. It then does what `ShowList` does with that width - rounds
+it up to tiles, moves an anchored list left or up by its own size - and calls
+`ScriptMenu_OpenListWindow(menu, tiles)` itself. The runs are measured with the game's own
+`FontID_String_GetWidth(0, string, 0)`, the call `GetListItemsWidth` makes, on a copy of the
+entry cut short at each column. The copy has to be a real `String`, header and magic: the
+retail `String_c_str` keeps its `GF_ASSERT(magic == 0xB6F8D2EC)` (pret's `asm/pm_string.s`
+before it was decompiled shows the check and the `GF_AssertFail` call).
+
+A line break is folded before measuring. Followed by three spaces or more it was laid out
+as an indented second column, and becomes a `CURSOR_X` to one column for the whole list,
+8 pixels past the widest first half; otherwise it was a wrapped line, and becomes a space.
+Neither lengthens the entry - four codes replace a break and three or more spaces, one
+replaces a break and fewer - so it always fits the entry's own buffer. Plain lists measure
+exactly as `GetListItemsWidth` did (12 plus the widest entry).
+
+Everything is done on a copy in ITCM and written back only after every check has passed,
+the room check included: a list that falls back shows the touch list its own text. Turned
+down, keeping the touch screen: any other control code, a second line break, a code from
+`0xE000` up that is neither, a `CURSOR_X` that would move the pen back over text already
+drawn (a translation longer than the column it sits before: the top list prints from x 12
+in font 0, the touch list from x 0 of each button in font 4), an entry whose `String` is
+not the one `items[]` prints or is longer than the 80 codes `ScriptMenu_Init` gives it.
+
+**The move tutors** (`ScrCmd_MoveTutorChooseMove`, command 653) build their `ScriptMenu`
+themselves: each move with its price from the script's own messages - entry 0
+`{move}{CURSOR_X 120}{cost} BP`, or entry 1 `{move}\n           {cost} BP` once there are
+four entries or more - then NEXT (`0xFFFD`) when there is another page and QUIT (`0xFFFE`).
+Then:
+
+```c
+FieldSystem_SetTouchscreenChoiceMenuState(fieldSystem, 3, 7, result);
+SetupNativeScript(ctx, NativeScript_WaitMoveTutorMenu);
+```
+
+and `FieldSystem_SetTouchscreenChoiceMenuState` (src/field/bottom_screen_app.c) only writes
+the controller's `state` and `result`. Nothing is drawn until the controller's own task next
+runs and finds state 7. So table entry 653 now points at `OneScreen_TutorExec`, which lets
+the real command run untouched, then - if the controller was idle beforehand and the command
+left exactly state 7, its own result var and its menu in the controller's slot - hands the
+menu to the same `OneScreen_ListOpen` and, if that opens it, puts the controller's state
+and result pointer back. The native wait is replaced with `OneScreen_WaitList`:
+`NativeScript_WaitMoveTutorMenu` calls `ScriptMenu_Free`, and `ScriptMenu_CloseList` has
+already freed the menu by then. B needs no translation here: the menu is cancellable, the
+touch list's B picks the last row, and the last row is QUIT, whose value is the `0xFFFE`
+`ScriptMenu_ListTask` writes. The indented entry 1 folds into a price column.
+
+The patcher finds `OpenListWindow` as `ShowList`'s second call (and `ShowListWithWidth`, just
+before it, is `ldr r3, =OpenListWindow; bx r3`), and `FontID_String_GetWidth` as
+`GetListItemsWidth`'s one call, each checked against pret's retail disassembly. Command 653
+must match the retail prologue (pret's `asm/scrcmd_move_tutor.s`, before the file was
+decompiled), start with the same menu-slot getter `MenuExec` calls, and end with the same
+state setter and `SetupNativeScript`, passing a wait whose pool holds `0xEEEE`. If 653 does
+not check out, only the tutors keep the touch screen.
 
 ## Who owns the VRAM you just drew into
 
@@ -1899,6 +1974,8 @@ Theming it means writing palettes the patch did not previously write:
 Written per frame from each draw site while a prompt is up - never from the frame
 hook unconditionally. Palette memory is shared, and colouring 11 or 12 outside a
 prompt would recolour whatever else happened to be using index 12 at the time.
+In battles and the evolution scene it also goes into the game's palette buffer,
+and comes out of it again with the prompt; see below.
 
 `_render`'s `invert` flag is orthogonal to all of this: it does not change the
 band, only the glyphs on it, dropping the shadow and turning ink to paper. Oak's
@@ -1942,4 +2019,34 @@ belief that text never reaches them. Only messages carrying the `{YESNO}` icon k
 that corner; with the US text, five of Oak's lines run past x = 192 (`msg 2`, `3`, `6`, `36`
 and `43`) and lost their last letters once printing paused, and the tutorial's own icon was
 painted out as well. That wipe is gone; our box is taken down once when a prompt ends.
+
+### The band in battles and the evolution scene (v0.3)
+
+Palette 11 colour 12 had two more writers there, both found in the full decompilation.
+
+**The VBlank push.** Both scenes keep a `PaletteData` with `autoTransparent` set
+(`battle_main.c`, `evolution_scene.c`), and their VBlank callbacks call
+`PaletteData_PushTransparentBuffers`, which loads the whole main-BG `transparent` buffer into
+palette RAM. `main.c` runs that callback after its *second* VBlank wait of each 30 Hz logic
+frame, so the second video frame of every pair started with the game's colour 12, and ours
+only came back when the next exec wrote it - reaching the message window's rows (152 and
+down) only when the exec ran early in the frame. The band now goes into that buffer too, and
+on the way down the entry is put back from the buffer's `opaque` copy, the game's own
+unfaded colour.
+
+**A `PaletteBlink` on the same palette.** The battle's `msgIcon` and the evolution scene's
+`paletteBlink` animate colours 11-14 of palette 11, colour 12 included, writing both buffers
+on ticks 0 and 24 of their 32-tick cycle - colour 15, white, at tick 24. Note that
+`PaletteBlink_SetState(blink, 1)` *pauses* a blink; the command numbers are not the state
+numbers.
+
+- The battle's runs through the command menu, so `OneScreen_BandBuffer` holds it paused
+  while the commands or a yes/no box are drawn and restarts it after, like Oak's - unless
+  the bag or the party has taken the screen by then (`graphicsMode != 0`): they pause it
+  before their fade and restart it themselves on the way out.
+- The evolution scene pauses its own at `EVO_STATE_WAIT_CRY` and never restarts it, wherever
+  in the cycle it was. A quarter of the time that is the white phase, and colour 12 stays
+  white for the rest of the scene - which made the band behind the move-learning *Oui / Non*
+  white on white paper. The buffer write is enough there; a pause the game made is never
+  undone.
 

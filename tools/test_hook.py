@@ -291,6 +291,209 @@ def test_battle_exec_publishes_only_in_battle_main():
         assert h.r32(h.var("bt_system")) == want, (st, hex(h.r32(h.var("bt_system"))))
 
 
+# --- the selected band in a scene that pushes its palette buffer --------------
+
+BAND = 0x1234                    # a theme colour no palette below starts with
+SALMON, WHITE = 0x62FF, 0x7FFF   # the font palette's colour 12, and its paper
+BAND_ENTRY = 11 * 32 + 12 * 2    # palette 11, colour 12, in bytes
+BAND_HW = 0x05000000 + BAND_ENTRY
+BS_PALETTE, BS_MSG_ICON = 0x28, 0x1B0
+EVO_PLTT, EVO_BLINK = 0x14, 0x58
+BLINK_STATE = 0x4E
+
+
+def palette_data(h: Hook, colour12=SALMON, size=0x200):
+    """A PaletteData whose main-BG buffers hold `colour12` at palette 11."""
+    pd = h.alloc(0x120)
+    opaque, faded = h.alloc(0x200), h.alloc(0x200)
+    h.w32(pd + 0x00, opaque)
+    h.w32(pd + 0x04, faded)
+    h.w32(pd + 0x08, size)
+    h.w16(opaque + BAND_ENTRY, colour12)
+    h.w16(faded + BAND_ENTRY, colour12)
+    return pd, opaque, faded
+
+
+def palette_blink(h: Hook, pd, state=1, **kw):
+    b = h.alloc(0x50)
+    h.w32(b + 0x08, kw.get("pltt", pd))
+    h.w8(b + 0x4C, kw.get("screen", 0))
+    h.w8(b + 0x4D, kw.get("palette", 11))
+    h.w8(b + BLINK_STATE, state)
+    h.w8(b + 0x4F, kw.get("timer", 5))
+    return b
+
+
+def battle_with_palette(h: Hook, theme=BAND, blink_state=1, **blink):
+    bs, bi = battle(h, menu_id=1)
+    pd, opaque, faded = palette_data(h)
+    b = palette_blink(h, pd, blink_state, **blink)
+    h.w32(bs + BS_PALETTE, pd)
+    h.w32(bs + BS_MSG_ICON, b)
+    h.w32(h.var("cfg_theme_band"), theme)
+    return bs, bi, faded, b
+
+
+def test_battle_band_goes_into_the_pushed_buffer():
+    """The battle's VBlank callback copies the faded buffer over palette RAM
+    every frame, so the band has to be in that buffer to stay on screen."""
+    h = Hook()
+    bs, bi, faded, b = battle_with_palette(h)
+    for _ in range(2):
+        h.call("OneScreen_BattleDraw", 1)
+        assert h.r16(faded + BAND_ENTRY) == BAND
+        assert h.r16(BAND_HW) == BAND
+        assert h.r8(b + BLINK_STATE) == 2              # held still
+    h.w16(faded + BAND_ENTRY, WHITE)                   # the blink got in first
+    h.call("OneScreen_BattleDraw", 14)                 # a yes/no prompt
+    assert h.r16(faded + BAND_ENTRY) == BAND
+    # into the move list: the game's colour comes back, and the blink restarts
+    h.w8(bi + BI_CURMENU, 11)
+    h.call("OneScreen_BattleDraw", 11)
+    assert h.r16(faded + BAND_ENTRY) == SALMON
+    assert h.r8(b + BLINK_STATE) == 0
+    assert h.r32(h.var("bt_band")) == 0
+    h.w8(b + BLINK_STATE, 1)                           # the game's next tick
+    h.w16(faded + BAND_ENTRY, WHITE)                   # and its white phase
+    h.call("OneScreen_BattleDraw", 11)                 # nothing left to undo
+    assert h.r16(faded + BAND_ENTRY) == WHITE
+    assert h.r8(b + BLINK_STATE) == 1
+
+
+def test_battle_band_leaves_the_bag_its_own_pause():
+    """The bag pauses the blink before its fade and restarts it on the way out;
+    once it owns the screen, a pause is not ours to undo."""
+    h = Hook()
+    bs, _bi, faded, b = battle_with_palette(h)
+    h.call("OneScreen_BattleDraw", 1)
+    assert h.r8(b + BLINK_STATE) == 2
+    h.w8(bs + BS_GRAPHICS_MODE, 3)                     # the bag freed BattleInput
+    h.call("OneScreen_BattleDraw", -1 & 0xFFFFFFFF)
+    assert h.r8(b + BLINK_STATE) == 2
+    assert h.r16(faded + BAND_ENTRY) == SALMON
+    assert h.r32(h.var("bt_band")) == 0
+
+
+def test_battle_band_without_a_theme_changes_nothing():
+    h = Hook()
+    _bs, _bi, faded, b = battle_with_palette(h, theme=0)
+    h.call("OneScreen_BattleDraw", 1)
+    h.call("OneScreen_BattleDraw", 11)
+    assert h.r16(faded + BAND_ENTRY) == SALMON
+    assert h.r8(b + BLINK_STATE) == 1
+    assert h.r32(h.var("bt_band")) == 0
+
+
+def test_battle_band_validation():
+    # a blink that is not this battle's palette-11 blink is never touched,
+    # though the buffer still gets the band
+    for bad in (dict(pltt=0x02100000), dict(screen=1), dict(palette=6),
+                dict(timer=40)):
+        h = Hook()
+        _bs, _bi, faded, b = battle_with_palette(h, **bad)
+        h.call("OneScreen_BattleDraw", 1)
+        assert h.r8(b + BLINK_STATE) == 1, bad
+        assert h.r16(faded + BAND_ENTRY) == BAND, bad
+    # a buffer too small for palette 11, or out of RAM, is never written
+    h = Hook()
+    bs, _bi, faded, b = battle_with_palette(h)
+    h.w32(h.r32(bs + BS_PALETTE) + 0x08, 0x100)
+    h.call("OneScreen_BattleDraw", 1)
+    assert h.r16(faded + BAND_ENTRY) == SALMON
+    h = Hook()
+    bs, _bi, faded, b = battle_with_palette(h)
+    h.w32(h.r32(bs + BS_PALETTE) + 0x04, 0x023FFF00)
+    h.call("OneScreen_BattleDraw", 1)
+    assert h.r8(b + BLINK_STATE) == 2                  # the blink is still checked
+    h = Hook()
+    bs, _bi, faded, b = battle_with_palette(h)
+    h.w32(bs + BS_PALETTE, 0x04000000)
+    h.w32(bs + BS_MSG_ICON, 0x027FFFF0)
+    h.call("OneScreen_BattleDraw", 1)
+    assert h.r16(BAND_HW) == BAND                      # palette RAM, as before
+
+
+def test_battle_band_is_forgotten_with_the_battle():
+    """Out of BSTATE_BATTLE_MAIN the BattleSystem may be gone: drop the claim
+    without writing anything."""
+    h = Hook()
+    bs, _bi, faded, b = battle_with_palette(h)
+    h.call("OneScreen_BattleDraw", 1)
+    assert h.r32(h.var("bt_band")) == 3
+    orig = 0x0203E3AD
+    h.stub(orig, lambda hook, m, p, *_: hook.w32(p, 10) or 0)
+    h.w32(h.var("cfg_battle_exec_orig"), orig)
+    manager = h.alloc(0x40)
+    h.w32(manager + 0x14 + 8, bs)
+    h.call("OneScreen_BattleExec", manager, manager + 0x14)
+    assert h.r32(h.var("bt_band")) == 0
+    assert h.r16(faded + BAND_ENTRY) == BAND           # untouched: may be freed
+    assert h.r8(b + BLINK_STATE) == 2
+
+
+def evolution(h: Hook, state=21, choice=1, blink_state=2, colour12=WHITE):
+    """The evolution scene mid move-learning prompt. Its blink was paused by the
+    game itself at the start of the evolution, here in its white phase."""
+    callback = 0x02077271
+    h.w32(h.var("evolution_app"), callback)
+    gsys = h.alloc(0x80)
+    h.w32(h.var("cfg_app_callback"), gsys)
+    data = h.alloc(0xBC)
+    h.w32(gsys, callback)
+    h.w32(gsys + 4, data)
+    bg = h.alloc(0x40)
+    win = h.alloc(0x10)
+    h.w32(data + 0x00, bg)
+    h.w32(data + 0x04, win)
+    h.w32(win + 0x00, bg)
+    h.w32(win + 0x04, 0x1B130201)
+    h.w32(win + 0x08, 0x001F0B04)
+    h.w32(win + 0x0C, h.alloc(0x40))
+    h.w8(data + 0x64, state)
+    h.w8(data + 0x8A, 0)
+    h.w8(data + 0x8B, choice)
+    pd, opaque, faded = palette_data(h, colour12)
+    b = palette_blink(h, pd, blink_state)
+    h.w32(data + EVO_PLTT, pd)
+    h.w32(data + EVO_BLINK, b)
+    h.w32(h.var("cfg_theme_band"), BAND)
+    return gsys, data, faded, b
+
+
+def test_evolution_band_survives_a_blink_stuck_on_white():
+    h = Hook()
+    gsys, data, faded, b = evolution(h)
+    h.call("OneScreen_EvolutionPrompt")
+    assert h.r16(faded + BAND_ENTRY) == BAND
+    assert h.r16(BAND_HW) == BAND
+    assert h.r8(b + BLINK_STATE) == 2                  # the game's pause, kept
+    assert h.r32(h.var("evo_band")) == 1
+    h.w8(data + 0x64, 22)                              # the prompt is answered
+    h.call("OneScreen_EvolutionPrompt")
+    assert h.r16(faded + BAND_ENTRY) == WHITE          # the scene's own colour
+    assert h.r8(b + BLINK_STATE) == 2                  # not ours to restart
+    assert h.r32(h.var("evo_band")) == 0
+    # the app leaves mid-prompt: forget the band without touching its memory
+    h.w8(data + 0x64, 35)
+    h.call("OneScreen_EvolutionPrompt")
+    assert h.r32(h.var("evo_band")) == 1
+    h.w32(gsys, 0x02000001)                            # another app's VBlank
+    h.call("OneScreen_EvolutionPrompt")
+    assert h.r32(h.var("evo_band")) == 0
+    assert h.r16(faded + BAND_ENTRY) == BAND
+
+
+def test_evolution_band_holds_a_running_blink():
+    h = Hook()
+    _gsys, data, faded, b = evolution(h, blink_state=1, colour12=SALMON)
+    h.call("OneScreen_EvolutionPrompt")
+    assert h.r8(b + BLINK_STATE) == 2
+    h.w8(data + 0x64, 22)
+    h.call("OneScreen_EvolutionPrompt")
+    assert h.r8(b + BLINK_STATE) == 0
+    assert h.r16(faded + BAND_ENTRY) == SALMON
+
+
 # --- the field ----------------------------------------------------------------
 
 def field(h: Hook, task_func=START_MENU_TASK, state=3, inhibit=0x180):
@@ -569,14 +772,49 @@ def test_save_box_still_takes_the_screen():
 
 # --- native top-screen lists ---------------------------------------------------
 
-CHOICE_STATE, CHOICE_MENU, CHOICE_FS = 0x00, 0x0C, 0x24
+CHOICE_STATE, CHOICE_RESULT, CHOICE_MENU, CHOICE_FS = 0x00, 0x04, 0x0C, 0x24
 SM_X, SM_Y, SM_FLAGS, SM_RET, SM_ITEMS = 0x98, 0x99, 0x97, 0xA0, 0x1C4
 FS_BGCONFIG, BG3_BUFFER = 0x08, 0x8C
 LIST_SCREEN_BASE = 16                                 # in the list record
-STUB_ORIG, STUB_SHOW, STUB_WIDTH, STUB_SETUP = 0x02000101, 0x02000111, 0x02000121, 0x02000131
+STUB_ORIG, STUB_OPEN, STUB_WIDTH, STUB_SETUP = 0x02000101, 0x02000111, 0x02000121, 0x02000131
+STUB_TUTOR = 0x02000141
+STRING_MAGIC = 0xB6F8D2EC
+LF, SP, CTRL, EOS = 0xE000, 0x01DE, 0xFFFE, 0xFFFF
+GLYPH = 6                                             # every test glyph is 6 px wide
 
 
-def native_lists(h: Hook, entries, values=None, x=1, y=1, choice_state=1, width_px=60):
+def cursor_x(x):
+    return [CTRL, 0x0203, 1, x]
+
+
+def string_width(h: Hook, font, s, spacing):
+    """FontID_String_GetWidth as src/font.c and src/font_data.c have it: String_c_str
+    (which checks the magic), then GetStringWidth - the glyph widths up to the EOS,
+    control codes skipped by their own argument count."""
+    assert font == 0 and spacing == 0, (font, spacing)
+    assert h.r32(s + 4) == STRING_MAGIC, "String_c_str would assert"
+    i, total = s + 8, 0
+    while True:
+        c = h.r16(i)
+        if c == EOS:
+            return total
+        if c == CTRL:
+            i += 2 * (3 + h.r16(i + 4))
+            continue
+        total += GLYPH
+        i += 2
+
+
+def entry(h: Hook, menu, i):
+    """Entry i's String as the hook left it: (size, codes up to the EOS)."""
+    s = h.r32(menu + SM_STRBUFS + 4 * i)
+    size = h.r16(s + 2)
+    data = [h.r16(s + 8 + 2 * k) for k in range(size + 1)]
+    assert data[-1] == EOS, data
+    return size, data[:-1]
+
+
+def native_lists(h: Hook, entries, values=None, x=1, y=1, choice_state=1):
     """A script mid-MenuInit: the choice app up and idle, a ScriptMenu built,
     and MAIN_3's tilemap buffer empty."""
     fs, _tm, _sm = field(h, task_func=0)
@@ -610,16 +848,16 @@ def native_lists(h: Hook, entries, values=None, x=1, y=1, choice_state=1, width_
     h.w8(menu + SM_Y, y)
     calls = []
     h.stub(STUB_ORIG, lambda hk, *r: calls.append(("orig", r[0])) or 0x55)
-    h.stub(STUB_SHOW, lambda hk, *r: calls.append(("show", r[0])) or 0)
-    h.stub(STUB_WIDTH, lambda hk, *r: width_px)
+    h.stub(STUB_OPEN, lambda hk, *r: calls.append(("open", r[0], r[1])) or 0)
+    h.stub(STUB_WIDTH, lambda hk, *r: string_width(hk, *r[:3]))
     h.stub(STUB_SETUP, lambda hk, *r: calls.append(("setup", r[0], r[1])) or 0)
-    for name, addr in (("cfg_menu_exec_orig", STUB_ORIG), ("cfg_show_list", STUB_SHOW),
-                       ("cfg_list_items_width", STUB_WIDTH),
+    for name, addr in (("cfg_menu_exec_orig", STUB_ORIG), ("cfg_open_list", STUB_OPEN),
+                       ("cfg_string_width", STUB_WIDTH),
                        ("cfg_setup_native", STUB_SETUP)):
         h.w32(h.var(name), addr)
     ctx = h.alloc(0x100)
     return {"ctx": ctx, "menu": menu, "var": var, "calls": calls, "ctrl": ctrl,
-            "bg": bg, "tilemap": tilemap}
+            "bg": bg, "tilemap": tilemap, "fs": fs}
 
 
 def put_window(h: Hook, tilemap, x, y, w, rows, first_tile, palette=13):
@@ -637,6 +875,20 @@ def put_window(h: Hook, tilemap, x, y, w, rows, first_tile, palette=13):
         h.w16(tilemap + 2 * (32 * r + x + w), entry(0x3DA))
 
 
+def wide(px):
+    """A plain entry whose text ends `px` pixels into the window (item_X is 12)."""
+    assert (px - 12) % GLYPH == 0
+    return codes("A" * ((px - 12) // GLYPH))
+
+
+def opened(t):
+    """The tiles across the hook opened its window with, or None for the touch list."""
+    for c in t["calls"]:
+        if c[0] == "open":
+            return c[2]
+    return None
+
+
 def test_menu_exec_hands_unknown_lists_to_the_game():
     h = Hook()
     put_list_menus(h, [([codes("ACHETER"), codes("VENDRE"), codes("QUITTER")], 0)])
@@ -644,7 +896,8 @@ def test_menu_exec_hands_unknown_lists_to_the_game():
                      values=[7, 8, 9])
     assert h.call("OneScreen_MenuExec", t["ctx"]) == 1
     wait = h.var("OneScreen_WaitList") | 1
-    assert t["calls"] == [("show", t["menu"]), ("setup", t["ctx"], wait)], t["calls"]
+    # PEUT-ETRE: 12 + 9 * 6 = 66 px, nine tiles - what ShowList would have opened
+    assert t["calls"] == [("open", t["menu"], 9), ("setup", t["ctx"], wait)], t["calls"]
     assert h.r16(t["var"]) == 0xEEEE
     assert h.r32(h.var("wl_last")) == 9
     # the wait: nothing yet, then a pick, then B standing for the last entry
@@ -655,12 +908,29 @@ def test_menu_exec_hands_unknown_lists_to_the_game():
     assert h.call("OneScreen_WaitList", t["ctx"]) == 1 and h.r16(t["var"]) == 9
 
 
+def controller_slot(h: Hook, t):
+    """Where the choice app's SysTask keeps its data pointer, the controller."""
+    mgr = h.r32(h.r32(t["fs"] + FS_BOTTOM_TASK) + 0x10)
+    return h.r32(mgr + 4) + 0x10
+
+
+def twenty_nine(h: Hook, t):
+    """Every one of the 28 slots filled, and a 29th entry that would otherwise pass
+    for one: the words past strbufs[] and items[] (msgData, msgIds) made to hold a
+    String as well."""
+    for i in range(29):
+        if h.r32(t["menu"] + SM_STRBUFS + 4 * i) == 0:
+            s = h.string(codes("Z"))
+            h.w32(t["menu"] + SM_STRBUFS + 4 * i, s)
+            h.w32(t["menu"] + SM_ITEMS + 8 * i, s)
+    h.w8(t["menu"] + SM_COUNT, 29)
+
+
 def test_menu_exec_keeps_what_it_should_not_touch():
     shop = [codes("ACHETER"), codes("VENDRE"), codes("QUITTER")]
     cases = {
         "recognised": dict(entries=shop),
-        "two lines": dict(entries=[codes("BP") + [0xE000] + codes("SHOP"), codes("NON")]),
-        "control code": dict(entries=[codes("PRIX") + [0xFFFE, 0x0100], codes("NON")]),
+        "control code": dict(entries=[codes("PRIX") + [CTRL, 0x0100, 1, 0], codes("NON")]),
         "not idle": dict(entries=[codes("A"), codes("B")], choice_state=7),
     }
     for name, kw in cases.items():
@@ -669,32 +939,63 @@ def test_menu_exec_keeps_what_it_should_not_touch():
         t = native_lists(h, **kw)
         assert h.call("OneScreen_MenuExec", t["ctx"]) == 0x55, name
         assert t["calls"] == [("orig", t["ctx"])], (name, t["calls"])
-    h = Hook()
-    put_list_menus(h, [(shop, 0)])
-    t = native_lists(h, [codes("A"), codes("B")])
-    h.w32(h.var("cfg_show_list"), 0)                 # the patcher found nothing
-    assert h.call("OneScreen_MenuExec", t["ctx"]) == 0x55
+    for name in ("cfg_open_list", "cfg_string_width", "cfg_setup_native"):
+        h = Hook()
+        put_list_menus(h, [(shop, 0)])
+        t = native_lists(h, [codes("A"), codes("B")])
+        h.w32(h.var(name), 0)                         # the patcher found nothing
+        assert h.call("OneScreen_MenuExec", t["ctx"]) == 0x55, name
+        assert t["calls"] == [("orig", t["ctx"])], (name, t["calls"])
+    tampered = {
+        "another field's controller":
+            lambda h, t: h.w32(t["ctrl"] + CHOICE_FS, h.alloc(FIELD_SYSTEM_SIZE)),
+        "no field": lambda h, t: h.w32(h.var("cfg_field_sys"), 0),
+        "controller off the end of RAM": lambda h, t: h.w32(controller_slot(h, t), 0x023FFE00),
+        "controller at the IPC FIFO": lambda h, t: h.w32(controller_slot(h, t), 0x04100000),
+        "menu off the end of RAM": lambda h, t: h.w32(t["ctrl"] + CHOICE_MENU, 0x023FFF00),
+        "menu at the IPC FIFO": lambda h, t: h.w32(t["ctrl"] + CHOICE_MENU, 0x04100000),
+        "no entries": lambda h, t: h.w8(t["menu"] + SM_COUNT, 0),
+        "too many entries": twenty_nine,
+        "result var below RAM": lambda h, t: h.w32(t["menu"] + SM_RET, 0x01FFFFFE),
+        "result var past RAM": lambda h, t: h.w32(t["menu"] + SM_RET, 0x023FFFFE),
+        "result var odd": lambda h, t: h.w32(t["menu"] + SM_RET, 0x02100001),
+    }
+    for name, fn in tampered.items():
+        h = Hook()
+        put_list_menus(h, [(shop, 0)])
+        t = native_lists(h, [codes("A"), codes("B")])
+        fn(h, t)
+        assert h.call("OneScreen_MenuExec", t["ctx"]) == 0x55, name
+        assert t["calls"] == [("orig", t["ctx"])], (name, t["calls"])
 
 
 def test_menu_exec_keeps_the_window_on_screen():
-    for x, width_px, want in ((1, 60, 1), (24, 100, 18), (21, 60, 21), (12, 300, 1)):
+    for x, width_px, want in ((1, 60, 1), (24, 102, 18), (21, 60, 21), (12, 300, 1)):
         h = Hook()
         put_list_menus(h, [([codes("Z")], 0)])
-        t = native_lists(h, [codes("A"), codes("B")], x=x, width_px=width_px)
+        t = native_lists(h, [wide(width_px), codes("B")], x=x)
         h.call("OneScreen_MenuExec", t["ctx"])
         assert h.r8(t["menu"] + SM_X) == want, (x, width_px, h.r8(t["menu"] + SM_X))
+    # anchored: moved left and up by its own size, as ScriptMenu_ShowList does
     h = Hook()
     put_list_menus(h, [([codes("Z")], 0)])
-    t = native_lists(h, [codes("A"), codes("B")], x=24, width_px=100)
-    h.w8(t["menu"] + SM_FLAGS, 0x40)                 # anchored right: leave it
+    t = native_lists(h, [wide(102), codes("B")], x=24, y=20)
+    h.w8(t["menu"] + SM_FLAGS, 0xC0)
     h.call("OneScreen_MenuExec", t["ctx"])
-    assert h.r8(t["menu"] + SM_X) == 24
+    assert opened(t) == 13
+    assert (h.r8(t["menu"] + SM_X), h.r8(t["menu"] + SM_Y)) == (11, 16)
+    h = Hook()
+    put_list_menus(h, [([codes("Z")], 0)])
+    t = native_lists(h, [codes("A")] * 10, x=5, y=18)
+    h.w8(t["menu"] + SM_FLAGS, 0x80)                  # ten entries: a page of 16 rows
+    h.call("OneScreen_MenuExec", t["ctx"])
+    assert (h.r8(t["menu"] + SM_X), h.r8(t["menu"] + SM_Y)) == (5, 2)
 
 
 def test_menu_exec_leaves_room_for_script_windows():
     """The top-screen list goes where the script said, on MAIN_3. A window the
     script already has there - Mom's savings box - keeps the touch list."""
-    a_b = [codes("A"), codes("B")]                   # 60 px: 8 tiles x 4 rows
+    a_b = [wide(60), codes("B")]                      # 60 px: 8 tiles x 4 rows
 
     def run(setup, x=1, y=1, flags=0):
         h = Hook()
@@ -707,25 +1008,25 @@ def test_menu_exec_leaves_room_for_script_windows():
         return t["calls"][0][0]
 
     nothing = lambda h, t: None
-    assert run(nothing) == "show"
+    assert run(nothing) == "open"
     # ShowSavingsBox 1,1: 16x8 at (1, 1) from tile 1, then a list at (1, 1)
     savings = lambda h, t: put_window(h, t["tilemap"], 1, 1, 16, 8, 1)
     assert run(savings) == "orig"
     # the money box, 10x4 from tile 1, across the screen: no overlap, no shared tiles
     money = lambda h, t: put_window(h, t["tilemap"], 20, 1, 10, 4, 1)
-    assert run(money) == "show"
+    assert run(money) == "open"
     # the dialogue box below: tiles from 0x237, rows 19-22, framed 18-23
     talk = lambda h, t: put_window(h, t["tilemap"], 2, 19, 27, 4, 0x237)
-    assert run(talk) == "show"
+    assert run(talk) == "open"
     # frame to frame is still a collision: the list's frame is column 9
     assert run(lambda h, t: put_window(h, t["tilemap"], 10, 1, 4, 2, 0x300)) == "orig"
-    assert run(lambda h, t: put_window(h, t["tilemap"], 11, 1, 4, 2, 0x300)) == "show"
+    assert run(lambda h, t: put_window(h, t["tilemap"], 11, 1, 4, 2, 0x300)) == "open"
     # far away, but holding a tile the list's window would be given
     assert run(lambda h, t: h.w16(t["tilemap"] + 2 * (32 * 15 + 28), 0x3D + 31)) == "orig"
-    assert run(lambda h, t: h.w16(t["tilemap"] + 2 * (32 * 15 + 28), 0x3D + 32)) == "show"
+    assert run(lambda h, t: h.w16(t["tilemap"] + 2 * (32 * 15 + 28), 0x3D + 32)) == "open"
     # anchored bottom-right: the list is moved up and left by its own size first
     corner = lambda h, t: put_window(h, t["tilemap"], 2, 2, 4, 2, 0x300)
-    assert run(corner, x=17, y=11, flags=0xC0) == "show"     # lands at (9, 7)
+    assert run(corner, x=17, y=11, flags=0xC0) == "open"     # lands at (9, 7)
     assert run(corner, x=15, y=9, flags=0xC0) == "orig"      # lands at (7, 5)
     # no layer to look at: keep the touch list
     assert run(lambda h, t: h.w32(t["bg"] + BG3_BUFFER, 0)) == "orig"
@@ -736,7 +1037,233 @@ def test_menu_exec_leaves_room_for_script_windows():
         h.w32(t["head"] + LIST_SCREEN_BASE, 0x06000000)
         h.w32(h.var("list_rect"), 0 | 14 << 8 | 8 << 16)
         put_window(h, t["tilemap"], 1, 1, 12, 6, 0x3D)
-    assert run(held_panel) == "show"
+    assert run(held_panel) == "open"
+
+
+# --- formatted entries --------------------------------------------------------
+
+def show(entries, **kw):
+    """Run OneScreen_MenuExec on a list of these entries; the test state back."""
+    h = Hook()
+    put_list_menus(h, [([codes("Z")], 0)])
+    t = native_lists(h, entries, **kw)
+    t["h"] = h
+    t["ret"] = h.call("OneScreen_MenuExec", t["ctx"])
+    return t
+
+
+def test_format_measures_to_the_cursor_x_column():
+    """The drink machines: GetListItemsWidth skips the CURSOR_X and counts
+    WATER$200 as nine characters, 66 px. The price really ends at 80 + 24."""
+    water = codes("WATER") + cursor_x(80) + codes("$200")
+    t = show([water, codes("SODA") + cursor_x(80) + codes("$300"), codes("NO THANKS")])
+    assert t["ret"] == 1 and opened(t) == 13, t["calls"]       # 104 px
+    assert entry(t["h"], t["menu"], 0) == (len(water), water)  # left as it was
+    # a column further right than the names reach widens the window with it
+    t = show([codes("AB") + cursor_x(150) + codes("C"), codes("D")])
+    assert opened(t) == 20                                     # 156 px
+    # and two columns in one entry: the pen follows both
+    t = show([codes("A") + cursor_x(40) + codes("BB") + cursor_x(90) + codes("CCC")])
+    assert opened(t) == 14                                     # 90 + 18 = 108 px
+
+
+def test_format_turns_down_a_column_over_its_text():
+    """A translation longer than the column it sits before would print over itself."""
+    long = codes("VERYLONGNAME") + cursor_x(80) + codes("$1")  # 12 + 72 = 84 > 80
+    t = show([long, codes("NO")])
+    assert t["ret"] == 0x55 and t["calls"] == [("orig", t["ctx"])]
+    assert entry(t["h"], t["menu"], 0) == (len(long), long)
+    t = show([codes("VERYLONGNAM") + cursor_x(80) + codes("$1"), codes("NO")])
+    assert opened(t) == 12                                     # 12 + 66 = 78: fits
+
+
+def test_format_folds_a_wrapped_line_onto_one():
+    """'DEPOSIT\\nPOKEMON' lays out in two lines on the touch screen; a ListMenu
+    row is one line high. A wrapped line becomes a space."""
+    t = show([codes("DEPOSIT") + [LF] + codes("POKEMON"),
+              codes("MOVE") + [LF, SP] + codes("POKEMON"),
+              codes("SEE") + [LF, SP, SP] + codes("YA")])
+    h, menu = t["h"], t["menu"]
+    assert t["ret"] == 1
+    assert entry(h, menu, 0) == (15, codes("DEPOSIT") + [SP] + codes("POKEMON"))
+    assert entry(h, menu, 1) == (12, codes("MOVE") + [SP] + codes("POKEMON"))
+    assert entry(h, menu, 2) == (6, codes("SEE") + [SP] + codes("YA"))
+    assert opened(t) == 13                                     # 12 + 15 * 6 = 102 px
+    # the mulch shop: a CURSOR_X then a break - the price lands in the column
+    mulch = codes("GROWTH") + cursor_x(90) + [LF] + codes("$200")
+    t = show([mulch, codes("NO")])
+    assert entry(t["h"], t["menu"], 0)[1] == codes("GROWTH") + cursor_x(90) + [SP] + codes("$200")
+    assert opened(t) == 15                                     # 90 + 5 * 6 = 120 px
+
+
+def test_format_lines_up_indented_second_lines():
+    """The move tutors' '{move}\\n           {cost} BP': an indented second line
+    becomes a column shared by the whole list, FMT_GAP past the longest move."""
+    pad = [SP] * 11
+    t = show([codes("DIVE") + [LF] + pad + codes("40 BP"),
+              codes("MUD-SLAP") + [LF] + pad + codes("32 BP"),
+              codes("QUIT")])
+    h, menu = t["h"], t["menu"]
+    col = 12 + 8 * GLYPH + 8                                   # 68
+    assert entry(h, menu, 0) == (13, codes("DIVE") + cursor_x(col) + codes("40 BP"))
+    assert entry(h, menu, 1) == (17, codes("MUD-SLAP") + cursor_x(col) + codes("32 BP"))
+    assert entry(h, menu, 2) == (4, codes("QUIT"))
+    assert opened(t) == 13                                     # 68 + 30 = 98 px
+    # three spaces are an indent; two are a wrapped line with stray spaces
+    t = show([codes("A") + [LF, SP, SP, SP] + codes("B")])
+    assert entry(t["h"], t["menu"], 0)[1] == codes("A") + cursor_x(12 + 6 + 8) + codes("B")
+    t = show([codes("A") + [LF, SP, SP] + codes("B")])
+    assert entry(t["h"], t["menu"], 0)[1] == codes("A") + [SP] + codes("B")
+    # narrow spaces count as spaces
+    t = show([codes("A") + [LF] + [0x01E2] * 3 + codes("B")])
+    assert entry(t["h"], t["menu"], 0)[1] == codes("A") + cursor_x(26) + codes("B")
+
+
+def test_format_turns_down_what_it_cannot_lay_out():
+    bad = {
+        "two breaks": codes("A") + [LF] + codes("B") + [LF] + codes("C"),
+        "colour": [CTRL, 0xFF00, 1, 2] + codes("RED"),
+        "focus icon": codes("A") + [CTRL, 0x0200, 1, 0],
+        "centring": [CTRL, 0x0205, 0] + codes("A"),
+        "cursor_y, shaped like a column": codes("A") + [CTRL, 0x0204, 1, 100] + codes("B"),
+        "a stray code before a column's body": codes("A") + [0xF000, 0x0203, 1, 100],
+        "cursor_x, no x": codes("A") + [CTRL, 0x0203, 0] + codes("B"),
+        "arguments past the end": codes("A") + [CTRL, 0x0203, 5, 80],
+        "cut-off control": codes("A") + [CTRL, 0x0203],
+        "skip code": codes("A") + [0xF0FD, 1] + codes("B"),
+        "an EOS inside": codes("A") + [EOS] + codes("B"),
+    }
+    for name, codes_ in bad.items():
+        t = show([codes_, codes("NO")])
+        assert t["ret"] == 0x55 and t["calls"] == [("orig", t["ctx"])], (name, t["calls"])
+        assert entry(t["h"], t["menu"], 0) == (len(codes_), codes_), name
+
+    def tamper(fn):
+        h = Hook()
+        put_list_menus(h, [([codes("Z")], 0)])
+        t = native_lists(h, [codes("A") + [LF] + codes("B"), codes("NO")])
+        fn(h, t, h.r32(t["menu"] + SM_STRBUFS))
+        return h.call("OneScreen_MenuExec", t["ctx"]), t
+
+    for name, fn in {
+        "size past maxsize": lambda h, t, s: h.w16(s, 2),
+        "longer than String_New(80)": lambda h, t, s: h.w16(s, 81),
+        "entry pointer off the end of RAM": lambda h, t, s: (
+            h.w32(t["menu"] + SM_STRBUFS, 0x023FFFFC), h.w32(t["menu"] + SM_ITEMS, 0x023FFFFC)),
+        "entry pointer at the IPC FIFO": lambda h, t, s: (
+            h.w32(t["menu"] + SM_STRBUFS, 0x04100000), h.w32(t["menu"] + SM_ITEMS, 0x04100000)),
+        "characters past the end of RAM": lambda h, t, s: (
+            h.write(0x023FFFF0, struct.pack("<HHI", 40, 40, STRING_MAGIC) + bytes(8)),
+            h.w32(t["menu"] + SM_STRBUFS, 0x023FFFF0), h.w32(t["menu"] + SM_ITEMS, 0x023FFFF0)),
+        "items[] not the strbufs": lambda h, t, s: h.w32(t["menu"] + SM_ITEMS, h.string(codes("X"))),
+    }.items():
+        ret, t = tamper(fn)
+        assert ret == 0x55 and t["calls"] == [("orig", t["ctx"])], (name, t["calls"])
+    ret, t = tamper(lambda h, t, s: h.w16(s, 80))     # a maxsize of 80 is fine
+    assert ret == 1
+
+
+def test_format_changes_nothing_unless_the_list_opens():
+    """The fold is measured on a copy, and written back only once the room check
+    has passed: a list that falls back shows the touch list its own text."""
+    two = codes("DEPOSIT") + [LF] + codes("POKEMON")
+    tutor = codes("DIVE") + [LF] + [SP] * 11 + codes("40 BP")
+    h = Hook()
+    put_list_menus(h, [([codes("Z")], 0)])
+    t = native_lists(h, [two, tutor])
+    put_window(h, t["tilemap"], 1, 1, 16, 8, 1)       # the savings box
+    assert h.call("OneScreen_MenuExec", t["ctx"]) == 0x55
+    assert entry(h, t["menu"], 0) == (len(two), two)
+    assert entry(h, t["menu"], 1) == (len(tutor), tutor)
+    assert h.r8(t["menu"] + SM_X) == 1 and h.r16(t["var"]) == 0x1234
+
+
+# --- the move tutors (command 653) -------------------------------------------
+
+def tutor(h: Hook, entries, values, before_state=1, after=None):
+    """The choice app idle, then ScrCmd_MoveTutorChooseMove: it has built `entries`
+    (in the controller's menu slot, as FieldSystem_GetTouchscreenChoiceMenuList
+    hands it over) and asks for the touch list - state 7 and its result var."""
+    t = native_lists(h, entries, values=values, choice_state=before_state)
+    prev = h.alloc(4)
+    h.w32(t["ctrl"] + CHOICE_RESULT, prev)
+    t["prev"] = prev
+
+    def real(hk, ctx, *_):
+        t["calls"].append(("tutor", ctx))
+        hk.w32(t["ctrl"] + CHOICE_STATE, 7)
+        hk.w32(t["ctrl"] + CHOICE_RESULT, t["var"])
+        if after:
+            after(hk, t)
+        return 1
+    h.stub(STUB_TUTOR, real)
+    h.w32(h.var("cfg_tutor_exec_orig"), STUB_TUTOR)
+    return t
+
+
+TUTOR = [codes("DIVE") + [LF] + [SP] * 11 + codes("40 BP"),
+         codes("MUD-SLAP") + [LF] + [SP] * 11 + codes("32 BP"),
+         codes("ICY WIND") + [LF] + [SP] * 11 + codes("48 BP"),
+         codes("NEXT"), codes("QUIT")]
+TUTOR_VALUES = [291, 189, 196, 0xFFFD, 0xFFFE]
+
+
+def test_tutor_list_opens_on_top():
+    h = Hook()
+    t = tutor(h, TUTOR, TUTOR_VALUES)
+    assert h.call("OneScreen_TutorExec", t["ctx"]) == 1
+    wait = h.var("OneScreen_WaitList") | 1
+    assert t["calls"] == [("tutor", t["ctx"]), ("open", t["menu"], 13),
+                          ("setup", t["ctx"], wait)], t["calls"]
+    # the touch list taken back before its task could see state 7
+    assert h.r32(t["ctrl"] + CHOICE_STATE) == 1
+    assert h.r32(t["ctrl"] + CHOICE_RESULT) == t["prev"]
+    assert entry(h, t["menu"], 2)[1] == codes("ICY WIND") + cursor_x(68) + codes("48 BP")
+    assert h.r16(t["var"]) == 0xEEEE
+    assert h.r32(h.var("wl_last")) == 0xFFFE
+    # B is QUIT; a move is a move
+    h.w16(t["var"], 0xFFFE)
+    assert h.call("OneScreen_WaitList", t["ctx"]) == 1 and h.r16(t["var"]) == 0xFFFE
+    h.w16(t["var"], 189)
+    assert h.call("OneScreen_WaitList", t["ctx"]) == 1 and h.r16(t["var"]) == 189
+
+
+def test_tutor_keeps_the_touch_list_when_it_cannot_vouch():
+    def other_field(h, t):
+        h.w32(t["ctrl"] + CHOICE_FS, h.alloc(FIELD_SYSTEM_SIZE))
+
+    cases = {
+        "not idle before": dict(before_state=3),
+        "another field's controller": dict(before_hook=other_field),
+        "no field": dict(before_hook=lambda h, t: h.w32(h.var("cfg_field_sys"), 0)),
+        "no list asked for": dict(after=lambda h, t: h.w32(t["ctrl"] + CHOICE_STATE, 3)),
+        "another result var": dict(after=lambda h, t: h.w32(t["ctrl"] + CHOICE_RESULT, t["prev"])),
+        "controller at the IPC FIFO": dict(before_hook=lambda h, t: h.w32(controller_slot(h, t), 0x04100000)),
+        "menu off the end of RAM": dict(after=lambda h, t: h.w32(t["ctrl"] + CHOICE_MENU, 0x023FFF00)),
+        "menu at the IPC FIFO": dict(after=lambda h, t: h.w32(t["ctrl"] + CHOICE_MENU, 0x04100000)),
+        "no entries": dict(after=lambda h, t: h.w8(t["menu"] + SM_COUNT, 0)),
+        "too many entries": dict(after=twenty_nine),
+        "the savings box": dict(after=lambda h, t: put_window(h, t["tilemap"], 1, 1, 16, 8, 1)),
+        "no window function": dict(before_hook=lambda h, t: h.w32(h.var("cfg_open_list"), 0)),
+        "an entry it cannot fold": dict(entries=[codes("A") + [LF, LF]] + TUTOR[1:]),
+    }
+    for name, kw in cases.items():
+        h = Hook()
+        before_hook = kw.pop("before_hook", None)
+        entries = kw.pop("entries", TUTOR)
+        t = tutor(h, entries, TUTOR_VALUES, **kw)
+        if before_hook:
+            before_hook(h, t)
+        assert h.call("OneScreen_TutorExec", t["ctx"]) == 1, name
+        assert t["calls"] == [("tutor", t["ctx"])], (name, t["calls"])
+        # whatever the real command left is left alone: the touch list goes up
+        if name not in ("no list asked for",):
+            assert h.r32(t["ctrl"] + CHOICE_STATE) == 7, name
+        if name not in ("another result var",):
+            assert h.r32(t["ctrl"] + CHOICE_RESULT) == t["var"], name
+        assert h.r16(t["var"]) == 0x1234, name
+        for i, e in enumerate(entries):
+            assert entry(h, t["menu"], i) == (len(e), e), (name, i)
 
 
 # --- the patcher's script-table finder ------------------------------------------
@@ -754,7 +1281,7 @@ def assemble(src: str, base: int, defs: dict) -> bytes:
         # Targets are declared Thumb functions, so the linker calls them with a
         # plain BL rather than routing through an interworking veneer.
         decls = "".join(f".thumb_set {k}, {v & ~1:#x}\n" for k, v in defs.items())
-        (d / "a.s").write_text(".syntax unified\n.thumb\n.text\n" + decls + src)
+        (d / "a.s").write_text(".syntax unified\n.thumb\n.text\n.balign 4\n" + decls + src)
         subprocess.run([tools["as"], "-mcpu=arm946e-s", "-mthumb", "-o", d / "a.o",
                         d / "a.s"], check=True)
         subprocess.run([tools["ld"], f"-Ttext={base:#x}", "-o", d / "a.elf",
@@ -770,19 +1297,135 @@ class FakeOverlay:
 
 
 def fake_rom_for_lists(break_check=None):
+    """An ARM9 and an overlay 1 holding the functions resolve_native_lists walks,
+    each written to the shape pret's matching disassembly gives the retail one.
+    `break_check` damages one of them, the way a different build might."""
     from onescreen import regions
+    b = break_check
     ov1_base = 0x021E5900
     defs = {"GetList": ov1_base + 0x11, "SetState": ov1_base + 0x21,
             "SetCb": ov1_base + 0x31, "ShowList": ov1_base + 0x101,
-            "Width": ov1_base + 0x201,
-            "GetVar": 0x02000301, "Setup": 0x02000311, "Attr": 0x02000321}
-    shop_sig = "push {r4, lr}\nadds r4, r0, #0\nbl Width\nmovs r1, #7\ntst r1, r0\n" \
-               "bne 1f\nlsrs r1, r0, #3\nb 2f\n1: lsrs r0, r0, #3\nadds r1, r0, #1\n" \
-               "2: adds r0, r4, #0\nadds r0, #0x97\nldrb r0, [r0]\n" \
-               "lsls r0, r0, #0x19\nlsrs r0, r0, #0x1f\npop {r4, pc}\n"
-    ov1 = bytearray(0x400)
-    show = assemble(shop_sig, ov1_base + 0x100, {"Width": defs["Width"]})
-    ov1[0x100:0x100 + len(show)] = show
+            "OpenList": ov1_base + 0x201, "Width": ov1_base + 0x301,
+            "Tutor": ov1_base + 0x401, "Wait": ov1_base + 0x501,
+            "Create": ov1_base + 0x41, "AddItem": ov1_base + 0x51, "Frame": ov1_base + 0x61,
+            "GetVar": 0x02000301, "Setup": 0x02000311, "Attr": 0x02000321,
+            "AssertFail": 0x02000331, "GetStringWidth": 0x02000341,
+            "CStr": 0x02002001, "StrWidth": 0x02002F31}
+    ov1 = bytearray(0x600)
+
+    def put(off, src):
+        code = assemble(src, ov1_base + off, defs)
+        ov1[off:off + len(code)] = code
+
+    # ScriptMenu_ShowList: the retail prologue, then OpenListWindow
+    put(0x100, f"push {{r4, lr}}\nadds r4, r0, #0\nbl Width\n"
+               f"movs r1, #{7 if b != 'show list' else 6}\ntst r1, r0\n"
+               "bne 1f\nlsrs r1, r0, #3\nb 2f\n1: lsrs r0, r0, #3\nadds r1, r0, #1\n"
+               "2: adds r0, r4, #0\nadds r0, #0x97\nldrb r0, [r0]\n"
+               "lsls r0, r0, #0x19\nlsrs r0, r0, #0x1f\nadds r0, r4, #0\n"
+               + ("bl Frame\n" if b == "show list calls" else "") +
+               "bl OpenList\npop {r4, pc}\n")
+    # ScriptMenu_ShowListWithWidth, then ScriptMenu_OpenListWindow right after it
+    if b != "with width":
+        put(0x1F8, "ldr r3, [pc, #0]\nbx r3\n.word OpenList + 1\n")
+    put(0x200, f"""
+        push {{r3, r4, lr}}
+        sub sp, #0x14
+        adds r4, r0, #0
+        adds r0, #0x9b
+        ldrb r2, [r0]
+        cmp r2, #{8 if b != "open list" else 7}
+        ldr r2, ={0x3D9 if b != "frame" else 0x3DA}
+        bl Frame
+        add sp, #0x14
+        pop {{r3, r4, pc}}
+        .pool
+    """)
+    # ScriptMenu_GetListItemsWidth
+    put(0x300, f"""
+        push {{r3, r4, r5, r6, r7, lr}}
+        adds r7, r0, #0
+        adds r0, #0x9b
+        ldrb r0, [r0]
+        movs r6, #0
+        adds r4, r6, #0
+        cmp r0, #0
+        ble 3f
+        adds r5, r7, #0
+    1:  movs r0, #{0x71 if b != "width" else 0x70}
+        lsls r0, r0, #2
+        ldr r1, [r5, r0]
+        cmp r1, #0
+        beq 3f
+        movs r0, #0
+        adds r2, r0, #0
+        bl StrWidth
+        cmp r6, r0
+        bhs 2f
+        adds r6, r0, #0
+        {"bl Frame" if b == "width calls" else ""}
+    2:  adds r0, r7, #0
+        adds r0, #0x9b
+        ldrb r0, [r0]
+        adds r4, r4, #1
+        adds r5, #8
+        cmp r4, r0
+        blt 1b
+    3:  adds r6, #0xc
+        adds r0, r6, #0
+        pop {{r3, r4, r5, r6, r7, pc}}
+    """)
+    # ScrCmd_MoveTutorChooseMove, its calls cut down to the ones that matter
+    put(0x400, f"""
+        push {{r4, r5, r6, r7, lr}}
+        sub sp, #{0x6c if b != "tutor prologue" else 0x70}
+        str r0, [sp, #0x14]
+        adds r0, #0x80
+        ldr r0, [r0]
+        str r0, [sp, #0x28]
+        bl {"GetList" if b != "tutor slot" else "Attr"}
+        bl Attr
+        bl GetVar
+        bl Create
+        bl AddItem
+        ldr r3, =0xFFFD
+        bl AddItem
+        ldr r3, =0xFFFE
+        bl AddItem
+        bl GetVar
+        adds r3, r0, #0
+        ldr r0, [sp, #0x28]
+        movs r1, #3
+        movs r2, #{7 if b != "tutor state" else 3}
+        bl {"SetState" if b != "tutor setter" else "SetCb"}
+        ldr r0, [sp, #0x14]
+        ldr r1, =Wait + 1
+        bl Setup
+        bl GetVar
+        movs r0, #1
+        add sp, #0x6c
+        pop {{r4, r5, r6, r7, pc}}
+        .pool
+    """)
+    # NativeScript_WaitMoveTutorMenu
+    put(0x500, f"""
+        push {{r4, r5, r6, lr}}
+        adds r5, r0, #0
+        adds r0, #0x80
+        ldr r6, [r0]
+        adds r0, r6, #0
+        bl GetList
+        bl GetVar
+        ldrh r1, [r0]
+        ldr r0, ={0xEEEE if b != "tutor wait" else 0xEEEF}
+        cmp r1, r0
+        bne 1f
+        movs r0, #0
+        pop {{r4, r5, r6, pc}}
+    1:  movs r0, #1
+        pop {{r4, r5, r6, pc}}
+        .pool
+    """)
     menu_exec = assemble(f"""
         push {{r3, r4, r5, lr}}
         adds r4, r0, #0
@@ -794,21 +1437,21 @@ def fake_rom_for_lists(break_check=None):
         bl GetVar
         adds r3, r0, #0
         movs r1, #3
-        movs r2, #{7 if break_check != "state" else 6}
+        movs r2, #{7 if b != "state" else 6}
         adds r0, r5, #0
         bl SetState
         ldr r1, =0x02047909
         adds r0, r5, #0
         bl SetCb
-        ldr r1, ={0x020478D1 if break_check != "pool" else 0x020478D5}
+        ldr r1, ={0x020478D1 if b != "pool" else 0x020478D5}
         adds r0, r4, #0
         bl Setup
         movs r0, #1
         pop {{r3, r4, r5, pc}}
         .pool
     """, 0x02001000, defs)
-    list_exec = assemble("""
-        push {r4, lr}
+    list_exec = assemble(f"""
+        push {{r4, lr}}
         adds r4, r0, #0
         adds r0, #0x80
         ldr r0, [r0]
@@ -816,41 +1459,112 @@ def fake_rom_for_lists(break_check=None):
         bl Attr
         ldr r0, [r0]
         bl ShowList
-        ldr r1, =0x020418B5
+        ldr r1, ={0x020418B5 if b != "list pool" else 0x020418B9}
         adds r0, r4, #0
-        bl Setup
+        bl {"Setup" if b != "list setup" else "GetVar"}
         movs r0, #1
-        pop {r4, pc}
+        pop {{r4, pc}}
         .pool
     """, 0x02001100, defs)
+    # String_c_str and FontID_String_GetWidth (pret sub_02002F30)
+    cstr = assemble(f"""
+        push {{r4, lr}}
+        adds r4, r0, #0
+        bne 1f
+        bl AssertFail
+    1:  ldr r1, [r4, #4]
+        ldr r0, ={0xB6F8D2EC if b != "magic" else 0xB6F8D2ED}
+        cmp r1, r0
+        beq 2f
+        bl AssertFail
+    2:  adds r4, #8
+        adds r0, r4, #0
+        pop {{r4, pc}}
+        .pool
+    """, 0x02002000, defs)
+    str_width = assemble(f"""
+        push {{r4, r5, r6, lr}}
+        lsls r4, r0, #2
+        ldr r0, =0x0211188C
+        adds r5, r1, #0
+        ldr r0, [r0]
+        adds r6, r2, #0
+        adds r0, r0, r4
+        adds r0, #{0x9c if b != "font" else 0x98}
+        ldr r0, [r0]
+        cmp r0, #0
+        bne 1f
+        bl AssertFail
+    1:  adds r0, r5, #0
+        bl CStr
+        adds r1, r0, #0
+        ldr r0, =0x0211188C
+        adds r2, r6, #0
+        ldr r0, [r0]
+        adds r0, r0, r4
+        adds r0, #0x9c
+        ldr r0, [r0]
+        bl GetStringWidth
+        pop {{r4, r5, r6, pc}}
+        .pool
+    """, 0x02002F30, defs)
     arm9 = bytearray(0x8000)
     arm9[0x200:0x204] = bytes.fromhex("00207047")    # the do-nothing command
     arm9[0x1000:0x1000 + len(menu_exec)] = menu_exec
     arm9[0x1100:0x1100 + len(list_exec)] = list_exec
+    arm9[0x2000:0x2000 + len(cstr)] = cstr
+    arm9[0x2F30:0x2F30 + len(str_width)] = str_width
     table = 0x4000
     for k in range(regions.SCRIPT_CMD_COUNT):
         struct.pack_into("<I", arm9, table + 4 * k, 0x02000201)
     struct.pack_into("<I", arm9, table + 4 * 71, 0x02001101)
+    struct.pack_into("<I", arm9, table + 4 * 653,
+                     defs["Tutor"] if b != "tutor elsewhere" else 0x02001001)
     struct.pack_into("<I", arm9, table + 4 * 752, 0x02001001)
-    return bytes(arm9), {1: FakeOverlay(ov1_base, bytes(ov1))}, defs
+    overlays = {1: FakeOverlay(ov1_base, bytes(ov1))} if b != "no overlay 1" else {}
+    return bytes(arm9), overlays, defs
 
 
 def test_patcher_finds_the_native_list_functions():
     from onescreen import regions
     arm9, overlays, defs = fake_rom_for_lists()
-    values, site, detail = regions.resolve_native_lists(arm9, overlays)
-    assert values == {"menu_exec_orig": 0x02001001, "show_list": defs["ShowList"],
-                      "list_items_width": defs["Width"],
-                      "setup_native": defs["Setup"]}, (values, detail)
-    assert site == 0x02004000 + 4 * 752
-    for broken in ("state", "pool"):
+    values, redirects, detail = regions.resolve_native_lists(arm9, overlays)
+    assert values == {"menu_exec_orig": 0x02001001, "open_list": defs["OpenList"],
+                      "string_width": defs["StrWidth"], "setup_native": defs["Setup"],
+                      "tutor_exec_orig": defs["Tutor"]}, (values, detail)
+    assert redirects == [(0x02004000 + 4 * 752, "OneScreen_MenuExec"),
+                         (0x02004000 + 4 * 653, "OneScreen_TutorExec")], redirects
+    # the lists' own functions: any of them off and nothing is redirected
+    for broken in ("state", "pool", "list pool", "list setup", "show list",
+                   "show list calls", "with width", "open list", "frame", "width",
+                   "width calls", "font", "magic", "no overlay 1"):
         arm9, overlays, _defs = fake_rom_for_lists(broken)
-        values, site, why = regions.resolve_native_lists(arm9, overlays)
-        assert values is None and site is None, broken
+        values, redirects, why = regions.resolve_native_lists(arm9, overlays)
+        assert values is None and redirects == [], (broken, values)
+    # the tutors' command: off and only the tutors keep the touch screen
+    for broken in ("tutor prologue", "tutor slot", "tutor state", "tutor setter",
+                   "tutor wait", "tutor elsewhere"):
+        arm9, overlays, _defs = fake_rom_for_lists(broken)
+        values, redirects, why = regions.resolve_native_lists(arm9, overlays)
+        assert values is not None and values["tutor_exec_orig"] == 0, (broken, values)
+        assert redirects == [(0x02004000 + 4 * 752, "OneScreen_MenuExec")], broken
+        assert "tutors keep the touch screen" in why, why
     arm9, overlays, _defs = fake_rom_for_lists()
     damaged = bytearray(arm9)
     damaged[0x4000 + 4 * 400] = 0                     # a gap in the table
     assert regions.find_script_table(bytes(damaged)) is None
+    assert regions.resolve_native_lists(bytes(damaged), overlays)[:2] == (None, [])
+
+
+def test_config_fields_match_the_hook():
+    """CONFIG_FIELDS and OneScreen_Config are positional; nothing else ties them."""
+    from onescreen import inject
+    h = Hook()
+    base = h.var("OneScreen_Config")
+    labels = {"screens_flipped": "cfg_screens_flip"}
+    for i, name in enumerate(inject.CONFIG_FIELDS):
+        assert h.var(labels.get(name, f"cfg_{name}")) == base + 4 * i, name
+    assert h.var("pad_held") == base + 4 * len(inject.CONFIG_FIELDS)
 
 
 # --- Oak's speech ---------------------------------------------------------------

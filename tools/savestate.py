@@ -208,7 +208,9 @@ HOOK_VARS = ["pad_held", "pad_new", "prev_pad", "menu_swapped", "last_app",
              "dex_last", "dex_mode", "pc_frames", "script_menu", "field_yn_drawn",
              "evolution_drawn", "field_restore",
              "map_frames", "map_pending", "prev_task", "sm_drawn",
-             "sm_shown", "list_ctrl", "list_drawn", "list_rect", "list_hold"]
+             "sm_shown", "list_ctrl", "list_drawn", "list_rect", "list_hold",
+             "intro_hold_until", "wl_ret", "wl_last", "oak_blink_held", "bt_band",
+             "evo_band"]
 
 
 def cmd_hook(args):

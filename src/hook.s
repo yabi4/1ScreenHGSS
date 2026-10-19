@@ -20,7 +20,7 @@ SWAP_BIT    = 0x8000            @ bit 15: 1 = engine A -> top LCD
 @ BSS and overlay bases move, uniformly (US = FR - 0x20).
 @
 @ So rather than ship one payload per region, the region-dependent addresses and
-@ patch-time values (23 words) live in OneScreen_Config below, which the patcher fills in from the ROM it is
+@ patch-time values (24 words) live in OneScreen_Config below, which the patcher fills in from the ROM it is
 @ patching. The DEF_ values are the French ones, so an unconfigured payload is
 @ still correct for French.
 @ The "state block" is pret's `struct System gSystem` (include/system.h), at
@@ -53,9 +53,10 @@ DEF_INTRO_CLOCK = 0
 DEF_THEME_BAND = 0              @ BGR555 for a selected band, 0 = leave the
                                 @ game's own palettes untouched
 DEF_MENU_EXEC_ORIG = 0          @ ScrCmd_MenuExec and the three game functions
-DEF_SHOW_LIST = 0               @ the native list needs; the patcher finds them
-DEF_LIST_ITEMS_WIDTH = 0        @ through the script command table, 0 = leave
+DEF_OPEN_LIST = 0               @ the native list needs; the patcher finds them
+DEF_STRING_WIDTH = 0            @ through the script command table, 0 = leave
 DEF_SETUP_NATIVE = 0            @ every script menu exactly as it was
+DEF_TUTOR_EXEC_ORIG = 0         @ ScrCmd_MoveTutorChooseMove, 0 = leave the tutors
 
 KEY_A       = 0x001
 KEY_B       = 0x002
@@ -502,6 +503,7 @@ CHOICE_CALLBACK_ARG_OFF = 0x3A0 @ TouchscreenChoiceMenuData.selectionCallbackArg
 SCRIPT_MENU_COUNT_OFF = 0x9B    @ ScriptMenu.count
 SCRIPT_MENU_FLAGS_OFF = 0x97    @ ScriptMenu: cancellable bit 0 .. anchorRight bit 6
 SCRIPT_MENU_X_OFF = 0x98        @ ScriptMenu.x
+SCRIPT_MENU_Y_OFF = 0x99        @ ScriptMenu.y
 SCRIPT_MENU_RET_OFF = 0xA0      @ ScriptMenu.ret_p, the script's result var
 SCRIPT_MENU_ITEMS_OFF = 0x1C4   @ ScriptMenu.items[28], ListMenuItem {text, value}
 SCRIPT_MENU_SIZE = 0x2E0        @ sizeof(ScriptMenu)
@@ -515,8 +517,30 @@ LIST_NONE = 0xEEEE              @ the script's "nothing chosen yet"
 LIST_CANCEL = 0xFFFE            @ ScriptMenu_ListTask's B
 LIST_RIGHT_EDGE = 31            @ last tile column a list window may reach
 SCRIPT_MENU_STRBUFS_OFF = 0x1C  @ ScriptMenu.strbufs
+CHOICE_RESULT_OFF = 0x04        @ TouchscreenChoiceMenuData.result
+STRING_MAXSIZE_OFF = 0
 STRING_SIZE_OFF = 2
+STRING_MAGIC_OFF = 4
 STRING_DATA_OFF = 8
+STRING_MAGIC = 0xB6F8D2EC       @ String_c_str asserts it, even in the retail build
+
+@ What a list entry may hold beyond plain characters (include/constants/charcode.h,
+@ src/string_control_code.c, src/render_text.c). A control is EXT_CTRL_CODE_BEGIN,
+@ its id, a count of arguments and the arguments; the text printer handles 0x0203,
+@ CURSOR_X, by setting the pen to its argument - an absolute x in the window. A
+@ CHAR_LF drops the pen a line, onto the row below in a ListMenu.
+CHAR_LF = 0xE000
+CHAR_SPACE = 0x01DE
+CHAR_NARROW_SPACE = 0x01E2
+CTRL_BEGIN = 0xFFFE
+STRING_EOS = 0xFFFF
+CTRL_CURSOR_X = 0x0203
+CTRL_CURSOR_X_LEN = 4           @ BEGIN, 0x0203, 1, x
+FMT_MAX = 80                    @ String_New(80): every ScriptMenu entry's buffer
+FMT_ITEM_X = 12                 @ listTemplate.item_X, where an entry's text starts
+FMT_GAP = 8                     @ between a folded entry's two halves, in pixels
+FMT_MARK = 0xFFFF               @ the column, before it is known
+FMT_MIN_INDENT = 3              @ spaces after a CHAR_LF that make it a column
 
 @ The panel's record, written by onescreen/labels.py::_listmenu.
 LIST_RECORD_OFF = 272
@@ -667,6 +691,31 @@ BAND_DEST_OAK    = 0x050000D8
 BAND_DEST_BATTLE = 0x05000178
 BAND_DEST_FIELD  = 0x05000198
 
+@ Palette RAM is not the last word in a battle or the evolution scene. Both keep
+@ a PaletteData with autoTransparent set (battle_main.c, evolution_scene.c), and
+@ their VBlank callback - which the main loop calls after its second VBlank
+@ wait - pushes the whole main-BG `transparent` buffer back to palette RAM every
+@ logic frame. A band written only to 0x05000178 lasted until that push: the
+@ next video frame showed the game's colour 12 until the following exec wrote
+@ ours again, which reaches the window's rows only when the exec runs early.
+@ So the band also goes into that buffer, and comes out of it again - from the
+@ `opaque` copy, the game's own unfaded colour - when the box is taken down.
+@
+@     struct PaletteData { PaletteBuffer buffers[14]; ... }
+@     struct PaletteBuffer { u16 *opaque; u16 *transparent; u32 size; ... }
+@
+@ buffers[PLTTBUF_MAIN_BG] is the first, so it starts the struct.
+PLTT_OPAQUE_OFF      = 0x00     @ PaletteData.buffers[MAIN_BG].opaque
+PLTT_FADED_OFF       = 0x04     @ .transparent, what the VBlank callback pushes
+PLTT_SIZE_OFF        = 0x08     @ .size, in bytes
+BAND_ENTRY_OFF       = BAND_DEST_BATTLE - 0x05000000   @ palette 11, colour 12
+BS_PALETTE_OFF       = 0x28     @ BattleSystem.palette
+BS_MSG_ICON_OFF      = 0x1B0    @ BattleSystem.msgIcon, a PaletteBlink on palette 11
+EVOLUTION_PLTT_OFF   = 0x14     @ EvolutionTaskData.paletteData
+EVOLUTION_BLINK_OFF  = 0x58     @ EvolutionTaskData.paletteBlink, also palette 11
+BAND_IN_BUFFER       = 1        @ bt_band / evo_band: the buffer holds our colour
+BAND_BLINK_HELD      = 2        @                     we paused the scene's blink
+
 OAK_STATE_OFF = 0x0C            @ OakSpeechData.state
 OAK_DATA_OFF = 0x08             @ manager->data, from &proc_state (+0x14)
 OAK_TUTORIAL_HI = 7             @ 0..7: the tutorial menu
@@ -713,6 +762,7 @@ BLINK_RESTART       = 0
 BLINK_RUN           = 1
 BLINK_PAUSE         = 2
 BLINK_PALETTE_OAK   = 6
+BLINK_PALETTE_WINDOW = 11       @ the battle and evolution message window
 
 @ Field script menus - the PC option list, shop lists, NPC yes/no choices. All
 @ of these are drawn on the touch screen by the running script, inside the field
@@ -805,7 +855,7 @@ EVOLUTION_TASK_ORIG     = 0x02075D09 @ sub_02075D08, Thumb
     .global OneScreen_Signature
 OneScreen_Signature:
     .ascii  "1SGS"
-    .word   0x0000001F          @ payload version
+    .word   0x00000021          @ payload version
 
 @ Filled in by the patcher from the ROM being patched. Defaults are French, so
 @ an unconfigured payload still works there. Keep the field order in step with
@@ -832,9 +882,10 @@ cfg_intro_c_exec:   .word DEF_INTRO_C_EXEC
 cfg_intro_clock:    .word DEF_INTRO_CLOCK
 cfg_theme_band:     .word DEF_THEME_BAND
 cfg_menu_exec_orig: .word DEF_MENU_EXEC_ORIG
-cfg_show_list:      .word DEF_SHOW_LIST
-cfg_list_items_width: .word DEF_LIST_ITEMS_WIDTH
+cfg_open_list:      .word DEF_OPEN_LIST
+cfg_string_width:   .word DEF_STRING_WIDTH
 cfg_setup_native:   .word DEF_SETUP_NATIVE
+cfg_tutor_exec_orig: .word DEF_TUTOR_EXEC_ORIG
 
 pad_held:       .word 0
 pad_new:        .word 0         @ newly pressed this frame
@@ -874,9 +925,11 @@ list_drawn:     .word 0         @ 1 once a list menu's pool is in VRAM
 list_rect:      .word 0         @ x | cols<<8 | rows<<16 of the panel last drawn
 list_hold:      .word 0         @ frames left to keep a panel that stopped confirming
 intro_hold_until: .word 0       @ tick the last intro sequence stops, 0 = idle
-wl_ret:         .word 0         @ the result var of the list OneScreen_MenuExec opened
+wl_ret:         .word 0         @ the result var of the list OneScreen_ListOpen opened
 wl_last:        .word 0         @ that list's last value, which B stands for
 oak_blink_held: .word 0         @ 1 while we hold Oak's palette blink paused
+bt_band:        .word 0         @ BAND_* bits for the battle's palette buffer and blink
+evo_band:       .word 0         @ the same for the evolution scene's
 
 @ Kept below the word variables above, not among them: tools/savestate.py reads
 @ that run as a flat array of words and a six-byte table in the middle of it
@@ -898,6 +951,14 @@ cursor_cmd:
 @ Colosseum, Battle Tower partner room.
 sm_layout_class:
     .hword  0x180, 0x090, 0x090, 0x090, 0x110, 0x190, 0x190
+    .align  2
+
+@ A list entry as OneScreen_ListFormat will leave it, built here first so it can
+@ be measured, and only copied over the real entry once the list is certain to
+@ open on top. A whole String - header and all - because the game measures it
+@ through FontID_String_GetWidth, whose String_c_str checks the magic.
+fmt_buf:
+    .space  STRING_DATA_OFF + 2 * (FMT_MAX + 1)
     .align  2
 
 
@@ -1177,6 +1238,8 @@ OneScreen_AutoBattle:
     str     r0, [r4]
     movs    r0, #0                  @ drop the BattleSystem: the heap it lives
     ldr     r1, =bt_system          @ in is freed when the battle ends
+    str     r0, [r1]
+    ldr     r1, =bt_band
     str     r0, [r1]
     bl      OneScreen_ResetBattleUi
 28: pop     {r4, r5, pc}
@@ -1463,7 +1526,11 @@ OneScreen_BattleDraw:
     @ game has not restored yet and ATTAQUE would flash. Holding the image the
     @ player last confirmed is also simply correct - the game restores the cursor
     @ to that same choice. ResetBattleUi drops it when the turn actually runs.
-41: ldr     r0, =bt_drawn
+    @ The band comes out of the palette buffer whether or not the labels are
+    @ still counted as up: ResetBattleUi forgets them without a VRAM write.
+41: movs    r0, #0
+    bl      OneScreen_BattleBand
+    ldr     r0, =bt_drawn
     ldr     r1, [r0]
     adds    r2, r1, #1
     beq     42f                     @ was -1: nothing of ours on screen
@@ -1516,8 +1583,8 @@ OneScreen_BattleDraw:
     movs    r4, r0
 48: ldr     r0, =bt_drawn
     str     r4, [r0]
-    ldr     r0, =BAND_DEST_BATTLE   @ colour the selected band before drawing on it
-    bl      OneScreen_BandTheme
+    movs    r0, #1                  @ colour the selected band before drawing on it
+    bl      OneScreen_BattleBand
     movs    r0, r4
     bl      OneScreen_BattleMenu
 42: pop     {r4, r5, pc}
@@ -1593,6 +1660,8 @@ OneScreen_BattleExec:
     ldr     r4, [r4, #BATTLE_DATA_OFF]
     b       46f
 44: movs    r4, #0                  @ no BattleSystem to speak of
+    ldr     r0, =bt_band            @ nor its palette: forget any band in it
+    str     r4, [r0]
 46: ldr     r0, =bt_system
     str     r4, [r0]
 
@@ -2016,8 +2085,8 @@ OneScreen_EvolutionPrompt:
     ldr     r1, =evolution_drawn
     str     r0, [r1]
     push    {r0}
-    ldr     r0, =BAND_DEST_BATTLE   @ the evolution prompt borrows that window
-    bl      OneScreen_BandTheme
+    movs    r0, #1
+    bl      OneScreen_EvolutionBand
     pop     {r0}
     bl      OneScreen_BattleMenu    @ redraw after the evolution frame work
     movs    r0, #0
@@ -2025,6 +2094,8 @@ OneScreen_EvolutionPrompt:
     b       .Levolution_done
 
 .Levolution_wipe:
+    movs    r0, #0                  @ nothing if the band never went in
+    bl      OneScreen_EvolutionBand
     ldr     r4, =evolution_drawn
     ldr     r0, [r4]
     adds    r0, #1
@@ -2042,6 +2113,9 @@ OneScreen_EvolutionPrompt:
     movs    r0, #0
     mvns    r0, r0
     str     r0, [r1]                @ app left: no write into its successor's VRAM
+    ldr     r1, =evo_band           @ ...nor into its freed palette buffer
+    movs    r0, #0
+    str     r0, [r1]
 .Levolution_done:
     pop     {r4, pc}
     .align  2
@@ -2231,6 +2305,201 @@ OneScreen_BandTheme:
     beq     83f
     strh    r1, [r0]
 83: bx      lr
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ void OneScreen_BandBuffer(r0 = PaletteData *, r1 = PaletteBlink *,
+@                           r2 = &bt_band or &evo_band, r3 = 1 put / 0 take down)
+@
+@ Keep the theme's band in palette 11 colour 12 of a scene that pushes its
+@ palette buffer every frame - see the note at PLTT_OPAQUE_OFF.
+@
+@ The scene's PaletteBlink on the same palette (battle_main.c's msgIcon, the
+@ evolution scene's paletteBlink) is the other writer: on ticks 0 and 24 of
+@ its cycle it loads colours 11-14 into both buffers, colour 12 included, and
+@ it runs on the main SysTask queue after the battle's exec. So putting the
+@ band also holds a RUNNING blink paused, as OneScreen_OakBlink does for Oak,
+@ and taking it down restarts it - only a pause this made. A blink the game has
+@ paused itself is left alone: the evolution scene pauses its own for good
+@ once the evolution starts, wherever its cycle is, so colour 12 can be stuck
+@ on white there; the buffer write is what keeps the band visible.
+@
+@ Every pointer is checked first, and the blink must belong to this
+@ PaletteData, be on the top screen and be on palette 11. Without a theme it
+@ does nothing at all, as OneScreen_BandTheme does.
+@ ---------------------------------------------------------------------------
+    .thumb_func
+OneScreen_BandBuffer:
+    push    {r4, r5, r6, r7, lr}
+    movs    r4, r0                  @ PaletteData
+    movs    r5, r1                  @ PaletteBlink
+    movs    r6, r2                  @ &state
+    movs    r7, r3                  @ 1 put, 0 take down
+    cmp     r7, #0
+    bne     70f
+    ldr     r0, [r6]
+    cmp     r0, #0
+    beq     79f                     @ taking down what was never put
+    b       71f
+70: ldr     r0, =cfg_theme_band
+    ldr     r0, [r0]
+    cmp     r0, #0
+    beq     79f                     @ no theme: the game's own colour, as before
+
+    @ --- the buffer the VBlank callback pushes ---
+71: movs    r0, r4
+    movs    r1, #PLTT_SIZE_OFF
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     74f
+    ldr     r0, [r4, #PLTT_SIZE_OFF]
+    ldr     r1, =(BAND_ENTRY_OFF + 2)
+    cmp     r0, r1
+    blo     74f                     @ too small to hold palette 11
+    ldr     r0, [r4, #PLTT_OPAQUE_OFF]
+    ldr     r1, =BAND_ENTRY_OFF
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     74f
+    ldr     r0, [r4, #PLTT_FADED_OFF]
+    ldr     r1, =BAND_ENTRY_OFF
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     74f
+    ldr     r2, =BAND_ENTRY_OFF
+    ldr     r3, [r4, #PLTT_FADED_OFF]
+    adds    r3, r3, r2              @ -> the entry that reaches the screen
+    ldr     r1, [r6]
+    cmp     r7, #0
+    beq     72f
+    ldr     r0, =cfg_theme_band
+    ldr     r0, [r0]
+    strh    r0, [r3]
+    movs    r0, #BAND_IN_BUFFER
+    orrs    r1, r0
+    str     r1, [r6]
+    b       74f
+72: movs    r0, #BAND_IN_BUFFER
+    tst     r1, r0
+    beq     74f
+    ldr     r0, [r4, #PLTT_OPAQUE_OFF]
+    ldrh    r0, [r0, r2]            @ the game's own colour, unfaded
+    strh    r0, [r3]
+
+    @ --- the blink on the same palette ---
+74: movs    r0, r5
+    movs    r1, #BLINK_SIZE
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     78f
+    ldr     r0, [r5, #BLINK_PLTT_OFF]
+    cmp     r0, r4
+    bne     78f                     @ not this scene's blink
+    movs    r2, #BLINK_BYTES_OFF
+    adds    r2, r5, r2              @ -> screen, palette, state, timer
+    ldrb    r0, [r2]
+    cmp     r0, #0
+    bne     78f                     @ PM_LCD_TOP
+    ldrb    r0, [r2, #1]
+    cmp     r0, #BLINK_PALETTE_WINDOW
+    bne     78f
+    ldrb    r0, [r2, #3]
+    cmp     r0, #32
+    bhs     78f
+    ldrb    r0, [r2, #2]            @ its state
+    ldr     r1, [r6]
+    cmp     r7, #0
+    beq     76f
+    cmp     r0, #BLINK_RUN          @ hold: only a running blink, so one the game
+    bne     79f                     @ paused or is restarting is not ours
+    movs    r0, #BLINK_PAUSE
+    strb    r0, [r2, #2]
+    movs    r0, #BAND_BLINK_HELD
+    orrs    r1, r0
+    str     r1, [r6]
+    b       79f
+76: movs    r3, #BAND_BLINK_HELD
+    tst     r1, r3
+    beq     78f
+    cmp     r0, #BLINK_PAUSE
+    bne     78f
+    movs    r0, #BLINK_RESTART
+    strb    r0, [r2, #2]
+78: cmp     r7, #0
+    bne     79f
+    movs    r0, #0                  @ taken down: nothing of ours is left in it
+    str     r0, [r6]
+79: pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ void OneScreen_BattleBand(r0 = 1 put / 0 take down) - OneScreen_BandBuffer
+@ for the live BattleSystem, plus this frame's write to palette RAM.
+    .thumb_func
+OneScreen_BattleBand:
+    push    {r4, r5, r6, lr}
+    movs    r6, r0
+    cmp     r6, #0
+    beq     80f
+    ldr     r0, =BAND_DEST_BATTLE   @ what this frame shows, before the next push
+    bl      OneScreen_BandTheme
+80: ldr     r4, =bt_system
+    ldr     r4, [r4]
+    movs    r0, r4
+    ldr     r1, =(BS_GRAPHICS_MODE_OFF + 1)
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     82f
+    cmp     r6, #0
+    bne     81f
+    @ The bag and the party pause the blink themselves before their fade, and
+    @ restart it when they close (Task_PlayerSelectItem, Task_PlayerShowMonList).
+    @ Once one owns the screen, a pause we see may be theirs: let go of ours
+    @ without restarting it.
+    ldr     r0, =BS_GRAPHICS_MODE_OFF
+    ldrb    r0, [r4, r0]
+    cmp     r0, #0
+    beq     81f
+    ldr     r2, =bt_band
+    ldr     r0, [r2]
+    movs    r1, #BAND_BLINK_HELD
+    bics    r0, r1
+    str     r0, [r2]
+81: ldr     r0, [r4, #BS_PALETTE_OFF]
+    ldr     r1, =BS_MSG_ICON_OFF
+    ldr     r1, [r4, r1]
+    ldr     r2, =bt_band
+    movs    r3, r6
+    bl      OneScreen_BandBuffer
+    pop     {r4, r5, r6, pc}
+82: ldr     r0, =bt_band            @ no battle to write to: forget it
+    movs    r1, #0
+    str     r1, [r0]
+    pop     {r4, r5, r6, pc}
+    .align  2
+    .pool
+
+@ void OneScreen_EvolutionBand(r0 = 1 put / 0 take down) - the same for the
+@ evolution scene. Only called once OneScreen_EvolutionChoice has vouched for
+@ the task data this frame, so gSystem.vBlankIntrArg is the checked block.
+    .thumb_func
+OneScreen_EvolutionBand:
+    push    {r4, lr}
+    movs    r4, r0
+    cmp     r4, #0
+    beq     84f
+    ldr     r0, =BAND_DEST_BATTLE   @ the evolution prompt borrows that window
+    bl      OneScreen_BandTheme
+84: ldr     r0, =cfg_app_callback
+    ldr     r0, [r0]
+    ldr     r2, [r0, #4]            @ EvolutionTaskData
+    ldr     r0, [r2, #EVOLUTION_PLTT_OFF]
+    ldr     r1, [r2, #EVOLUTION_BLINK_OFF]
+    ldr     r2, =evo_band
+    movs    r3, r4
+    bl      OneScreen_BandBuffer
+    pop     {r4, pc}
     .align  2
     .pool
 
@@ -3409,11 +3678,8 @@ OneScreen_ListHash:
 @
 @ Recognised menus (the shop, the PC) go to the original command, so they keep
 @ the themed panel OneScreen_ListMenu draws. So does anything this cannot vouch
-@ for: the choice app not up and idle, a menu pointer it cannot follow, an
-@ entry holding a line break (the touch list lays it out in two lines) or a
-@ control code such as a CURSOR_X column, neither of which ListMenu's one row
-@ per entry can show, or a list that would land on a window the script already
-@ has on the top screen (OneScreen_ListRoom).
+@ for: the choice app not up and idle, a menu pointer it cannot follow, and
+@ whatever OneScreen_ListOpen turns down.
 @
 @ The two paths differ in exactly one result: the touch list's B picks the last
 @ entry, ScriptMenu_ListTask's B writes 0xFFFE. Scripts are written for the
@@ -3425,19 +3691,10 @@ OneScreen_ListHash:
     .thumb_func
 OneScreen_MenuExec:
     push    {r4, r5, r6, r7, lr}
-    sub     sp, #8                  @ [sp] tiles across, [sp, #4] tile rows
     movs    r7, r0                  @ ScriptContext
-    ldr     r0, =cfg_show_list
-    ldr     r0, [r0]
-    cmp     r0, #0
-    beq     59f
-    ldr     r0, =cfg_setup_native
-    ldr     r0, [r0]
-    cmp     r0, #0
-    beq     59f
     bl      OneScreen_FieldSys
     movs    r6, r0                  @ FieldSystem
-    beq     59f
+    beq     70f
     movs    r1, #BSAPP_CHOICE_MENU
     bl      OneScreen_BottomApp
     movs    r5, r0                  @ TouchscreenChoiceMenuData
@@ -3458,20 +3715,167 @@ OneScreen_MenuExec:
     cmp     r0, #0
     beq     70f
     movs    r0, #SCRIPT_MENU_COUNT_OFF
-    ldrb    r5, [r4, r0]            @ count
-    cmp     r5, #0
-    beq     70f
+    ldrb    r5, [r4, r0]            @ count: 1..28, the strbufs[] there are. (An
+    cmp     r5, #0                  @ empty list would also measure 0 pixels and be
+    beq     70f                     @ turned down by ListOpen.)
     cmp     r5, #SCRIPT_MENU_MAX
     bhi     70f
     movs    r0, r4
     bl      OneScreen_ListMatch
     cmp     r0, #0
     bne     70f                     @ ours: the themed panel draws it
-    movs    r0, r4
-    movs    r1, r5
-    bl      OneScreen_ListPlain
+    movs    r0, r7
+    movs    r1, r4
+    movs    r2, r5
+    bl      OneScreen_ListOpen
     cmp     r0, #0
-    beq     70f                     @ two-line or formatted entries
+    bne     72f
+
+70: movs    r0, r7                  @ anything else: exactly as before
+    ldr     r3, =cfg_menu_exec_orig
+    ldr     r3, [r3]
+    blx     r3
+72: pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ BOOL OneScreen_TutorExec(ScriptContext *ctx)
+@
+@ Installed in place of ScrCmd_MoveTutorChooseMove (command 653), the Battle
+@ Frontier tutors' move list. The command builds its own ScriptMenu - every move
+@ the Pokemon can learn there with its price, then NEXT (0xFFFD) when there is
+@ another page, then QUIT (0xFFFE) - and opens the touch list on it directly:
+@
+@     FieldSystem_SetTouchscreenChoiceMenuState(fieldSystem, 3, 7, result);
+@     SetupNativeScript(ctx, NativeScript_WaitMoveTutorMenu);
+@
+@ That setter does nothing but write the choice controller's state and result
+@ pointer (src/field/bottom_screen_app.c); the list appears only when the
+@ controller's own task next runs and finds state 7. So the real command runs
+@ first, untouched, and the list is taken back afterwards if the game's
+@ top-screen list can have it: state and result put back as they were, and the
+@ native wait replaced by OneScreen_WaitList. Its NativeScript_WaitMoveTutorMenu
+@ would free the menu that ScriptMenu_CloseList has already freed.
+@
+@ B needs nothing extra here. ScriptMenu_Create made the menu cancellable, the
+@ touch list's B picks the last row, QUIT, and QUIT's value is the 0xFFFE that
+@ ScriptMenu_ListTask writes for B.
+@
+@ Anything this cannot vouch for, before or after, leaves the command's own
+@ result alone and the touch list goes up as it always did.
+@ ---------------------------------------------------------------------------
+    .global OneScreen_TutorExec
+    .thumb_func
+OneScreen_TutorExec:
+    push    {r4, r5, r6, r7, lr}
+    sub     sp, #8                  @ [sp] the controller's result pointer before,
+    movs    r7, r0                  @ [sp, #4] what the command returned
+    movs    r5, #0                  @ the controller, once vouched for
+    bl      OneScreen_FieldSys
+    movs    r6, r0
+    beq     80f
+    movs    r1, #BSAPP_CHOICE_MENU
+    bl      OneScreen_BottomApp
+    movs    r4, r0
+    ldr     r1, =(CHOICE_SELECTION_OFF + 4)
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     80f
+    ldr     r0, [r4, #CHOICE_FS_OFF]
+    cmp     r0, r6
+    bne     80f
+    ldr     r0, [r4, #CHOICE_STATE_OFF]
+    cmp     r0, #CHOICE_IDLE
+    bne     80f
+    ldr     r0, [r4, #CHOICE_RESULT_OFF]
+    str     r0, [sp]
+    movs    r5, r4
+
+80: movs    r0, r7                  @ the real command, whatever happens next
+    ldr     r3, =cfg_tutor_exec_orig
+    ldr     r3, [r3]
+    blx     r3
+    str     r0, [sp, #4]
+    cmp     r5, #0
+    beq     89f                     @ no idle controller beforehand: hands off
+
+    @ It must have asked for exactly the list it built: state 7, its own result
+    @ var, and the menu in the controller's slot.
+    ldr     r0, [r5, #CHOICE_STATE_OFF]
+    cmp     r0, #CHOICE_SHOW_LIST
+    bne     89f
+    ldr     r4, [r5, #CHOICE_MENU_OFF]
+    movs    r0, r4
+    ldr     r1, =SCRIPT_MENU_SIZE
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     89f
+    ldr     r0, =SCRIPT_MENU_RET_OFF
+    ldr     r0, [r4, r0]
+    ldr     r1, [r5, #CHOICE_RESULT_OFF]
+    cmp     r0, r1
+    bne     89f
+    movs    r0, #SCRIPT_MENU_COUNT_OFF
+    ldrb    r2, [r4, r0]
+    cmp     r2, #0
+    beq     89f
+    cmp     r2, #SCRIPT_MENU_MAX
+    bhi     89f
+    movs    r0, r7
+    movs    r1, r4
+    bl      OneScreen_ListOpen
+    cmp     r0, #0
+    beq     89f
+
+    @ The game's list has it. Take the touch list back before the controller's
+    @ task can see state 7.
+    movs    r0, #CHOICE_IDLE
+    str     r0, [r5, #CHOICE_STATE_OFF]
+    ldr     r0, [sp]
+    str     r0, [r5, #CHOICE_RESULT_OFF]
+89: ldr     r0, [sp, #4]
+    add     sp, #8
+    pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ int OneScreen_ListOpen(r0 = ScriptContext *, r1 = ScriptMenu *, r2 = count)
+@   -> 1 if the menu is now the game's top-screen list, 0 to keep the touch list.
+@
+@ What ScriptMenu_ShowList does - size the window from the widest entry, move an
+@ anchored list left or up by its own size, ScriptMenu_OpenListWindow - with the
+@ width measured by OneScreen_ListFormat instead of ScriptMenu_GetListItemsWidth.
+@ That one adds up glyph widths and skips control codes, so it sizes a window
+@ for "FRESH WATER{CURSOR_X 80}$200" as if the price came straight after the
+@ name; ListFormat follows the pen. It also folds two-line entries onto one line,
+@ which a ListMenu's 16-pixel rows need.
+@
+@ Turned down: no width function or window function, a result var it cannot
+@ follow, an entry ListFormat will not take, or a list that would land on a
+@ window the script already has on the top screen (OneScreen_ListRoom). Nothing
+@ an entry holds is changed before all of those have passed.
+@ ---------------------------------------------------------------------------
+    .thumb_func
+OneScreen_ListOpen:
+    push    {r4, r5, r6, r7, lr}
+    sub     sp, #12                 @ [sp] tiles across, [sp, #4] tile rows,
+    str     r0, [sp, #8]            @ [sp, #8] the ScriptContext
+    movs    r4, r1                  @ menu
+    movs    r5, r2                  @ count
+    ldr     r0, =cfg_open_list
+    ldr     r0, [r0]
+    cmp     r0, #0
+    beq     70f
+    ldr     r0, =cfg_string_width
+    ldr     r0, [r0]
+    cmp     r0, #0
+    beq     70f
+    ldr     r0, =cfg_setup_native
+    ldr     r0, [r0]
+    cmp     r0, #0
+    beq     70f
     ldr     r0, =SCRIPT_MENU_RET_OFF
     ldr     r6, [r4, r0]            @ ret_p, a u16 in the script's vars
     ldr     r0, =0x02000000
@@ -3482,18 +3886,15 @@ OneScreen_MenuExec:
     bhs     70f
     lsls    r0, r6, #31
     bne     70f                     @ not halfword-aligned
-    b       58f
-59: b       70f                     @ in reach of the guards at the top
-58:
 
-    @ Size the window the way ScriptMenu_OpenListWindow will: the widest entry
-    @ in tiles across, and two tile rows per entry up to a page of eight.
-    ldr     r3, =cfg_list_items_width
-    ldr     r3, [r3]
-    cmp     r3, #0
-    beq     70f                     @ cannot size it: cannot check its room
+    @ Size the window the way ScriptMenu_ShowList does: the widest entry in tiles
+    @ across, and two tile rows per entry up to a page of eight.
     movs    r0, r4
-    blx     r3                      @ widest entry + 12, in pixels
+    movs    r1, r5
+    movs    r2, #0
+    bl      OneScreen_ListFormat    @ widest entry, from the window's left edge
+    cmp     r0, #0
+    beq     70f                     @ an entry it will not take
     adds    r0, #7
     lsrs    r0, r0, #3
     str     r0, [sp]                @ tiles across
@@ -3511,7 +3912,7 @@ OneScreen_MenuExec:
     ldrb    r1, [r4, r1]
     movs    r2, #ANCHOR_RIGHT_BIT
     tst     r1, r2
-    bne     69f                     @ anchored: ShowList places it itself
+    bne     69f                     @ anchored: placed from its own size below
     movs    r1, #SCRIPT_MENU_X_OFF
     ldrb    r2, [r4, r1]
     adds    r3, r2, r0
@@ -3541,7 +3942,7 @@ OneScreen_MenuExec:
     @ the list would, or uses the tiles it would take, keep the touch list.
     movs    r1, #SCRIPT_MENU_X_OFF
     ldrb    r0, [r4, r1]            @ x
-    adds    r1, #1
+    movs    r1, #SCRIPT_MENU_Y_OFF
     ldrb    r1, [r4, r1]            @ y
     movs    r2, #SCRIPT_MENU_FLAGS_OFF
     ldrb    r2, [r4, r2]
@@ -3549,7 +3950,7 @@ OneScreen_MenuExec:
     tst     r2, r3
     beq     67f
     ldr     r3, [sp]
-    subs    r0, r0, r3              @ ShowList moves an anchored list left...
+    subs    r0, r0, r3              @ an anchored list moves left...
 67: movs    r3, #ANCHOR_BOTTOM_BIT
     tst     r2, r3
     beq     66f
@@ -3561,8 +3962,35 @@ OneScreen_MenuExec:
     cmp     r0, #0
     beq     70f                     @ something is in the way: the touch list
 
-    @ From here on the list is the game's.
-    ldr     r0, =wl_ret
+    @ From here on the list is the game's. Fold the entries for real: the same
+    @ strings, measured by the same game function a moment ago, with nothing in
+    @ between that writes to them - so the same answer.
+    movs    r0, r4
+    movs    r1, r5
+    movs    r2, #1
+    bl      OneScreen_ListFormat
+
+    @ ScriptMenu_ShowList's own placement of an anchored list.
+    movs    r2, #SCRIPT_MENU_FLAGS_OFF
+    ldrb    r2, [r4, r2]
+    movs    r3, #ANCHOR_RIGHT_BIT
+    tst     r2, r3
+    beq     65f
+    movs    r1, #SCRIPT_MENU_X_OFF
+    ldrb    r0, [r4, r1]
+    ldr     r3, [sp]
+    subs    r0, r0, r3
+    strb    r0, [r4, r1]
+65: movs    r3, #ANCHOR_BOTTOM_BIT
+    tst     r2, r3
+    beq     64f
+    movs    r1, #SCRIPT_MENU_Y_OFF
+    ldrb    r0, [r4, r1]
+    ldr     r3, [sp, #4]
+    subs    r0, r0, r3
+    strb    r0, [r4, r1]
+
+64: ldr     r0, =wl_ret
     str     r6, [r0]
     ldr     r0, =LIST_NONE
     strh    r0, [r6]
@@ -3575,23 +4003,19 @@ OneScreen_MenuExec:
     str     r0, [r1]
 
     movs    r0, r4
-    ldr     r3, =cfg_show_list
+    ldr     r1, [sp]
+    ldr     r3, =cfg_open_list
     ldr     r3, [r3]
-    blx     r3                      @ ScriptMenu_ShowList(menu)
-    movs    r0, r7
+    blx     r3                      @ ScriptMenu_OpenListWindow(menu, tiles)
+    ldr     r0, [sp, #8]
     ldr     r1, =OneScreen_WaitList
     ldr     r3, =cfg_setup_native
     ldr     r3, [r3]
     blx     r3                      @ SetupNativeScript(ctx, OneScreen_WaitList)
     movs    r0, #1
-    add     sp, #8
-    pop     {r4, r5, r6, r7, pc}
-
-70: movs    r0, r7                  @ anything else: exactly as before
-    ldr     r3, =cfg_menu_exec_orig
-    ldr     r3, [r3]
-    blx     r3
-    add     sp, #8
+    b       63f
+70: movs    r0, #0
+63: add     sp, #12
     pop     {r4, r5, r6, r7, pc}
     .align  2
     .pool
@@ -3664,7 +4088,7 @@ OneScreen_ListRoom:
     .pool
 
 @ BOOL OneScreen_WaitList(ScriptContext *) - the native-script wait for a list
-@ OneScreen_MenuExec opened: FALSE until ScriptMenu_ListTask writes a result,
+@ OneScreen_ListOpen opened: FALSE until ScriptMenu_ListTask writes a result,
 @ with B turned into the last entry's value, which is what the touch list gives.
     .global OneScreen_WaitList
     .thumb_func
@@ -3688,51 +4112,369 @@ OneScreen_WaitList:
     .align  2
     .pool
 
-@ int OneScreen_ListPlain(r0 = ScriptMenu *, r1 = count) -> 1 if every entry
-@ is plain text: readable, and with no code at or above 0xE000 (a line break or
-@ a formatting control), which the top-screen list would draw wrong.
+@ ---------------------------------------------------------------------------
+@ int OneScreen_ListFormat(r0 = ScriptMenu *, r1 = count, r2 = commit)
+@   -> how far right any entry draws, in pixels from the window's left edge, or
+@      0 if an entry holds something the top-screen list cannot show.
+@
+@ The script lists that still swapped in v0.3 were the formatted ones, about 30
+@ of the 146 MenuExec sites, and they hold exactly two things the touch list
+@ copes with and a ListMenu does not on its own:
+@
+@   CURSOR_X     "FRESH WATER{CURSOR_X 80}$200". The printer honours it - the pen
+@                jumps to x 80 of the window - but GetListItemsWidth skips control
+@                codes, so ShowList's window came out short of the price column.
+@                Measured here the way the printer moves: from item_X (12), each
+@                run of characters adds its width, each CURSOR_X sets the pen.
+@   CHAR_LF      "PROTEIN\n1 BP", "DEPOSIT\nPOKeMON". A ListMenu row is 16 pixels,
+@                the height of one line, so the second line lands on the next
+@                entry. Folded onto one line: a line break becomes a space - or,
+@                when the line after it is indented by FMT_MIN_INDENT spaces or
+@                more, as the move tutors' "{move}\n           {cost} BP" is, a
+@                CURSOR_X to one column shared by the whole list, FMT_GAP past
+@                the widest first half, so the prices line up.
+@
+@ Anything else - another control, a second line break, a code from 0xE000 up
+@ that is neither, a column that would move the pen back over text already
+@ drawn (a long translation before a CURSOR_X), a String longer than the 80
+@ codes ScriptMenu_Init gives every entry - and the whole list keeps the touch
+@ screen.
+@
+@ Each entry is rebuilt in fmt_buf and measured there with the game's own
+@ FontID_String_GetWidth, cutting the copy at each CURSOR_X to read where the
+@ pen has got to. A fold never lengthens an entry: four codes for a line break
+@ and at least three spaces, one for a break and fewer. With commit set, and
+@ only once every entry has passed, each copy is written back over its entry.
+@ ---------------------------------------------------------------------------
     .thumb_func
-OneScreen_ListPlain:
-    push    {r4, r5, r6, lr}
-    movs    r4, r0
-    movs    r5, r1
+OneScreen_ListFormat:
+    push    {r4, r5, r6, r7, lr}
+    sub     sp, #8                  @ [sp] commit, [sp, #4] the shared column
+    movs    r4, r0                  @ menu
+    movs    r5, r1                  @ count
+    str     r2, [sp]
+
+    @ Every entry must be one this can read, and the String the list will print.
     movs    r6, #0
-75: cmp     r6, r5
-    bhs     78f
+90: cmp     r6, r5
+    bhs     91f
+    lsls    r0, r6, #2
+    adds    r0, r4, r0
+    ldr     r7, [r0, #SCRIPT_MENU_STRBUFS_OFF]
+    lsls    r0, r6, #3
+    ldr     r1, =SCRIPT_MENU_ITEMS_OFF
+    adds    r0, r0, r1
+    ldr     r0, [r4, r0]            @ items[i].text, what ListMenu prints
+    cmp     r0, r7
+    bne     99f
+    movs    r0, r7
+    bl      OneScreen_FmtCheck
+    cmp     r0, #0
+    beq     99f
+    adds    r6, #1
+    b       90b
+
+    @ The column: build every entry with a placeholder where it folds, and keep
+    @ the furthest the pen gets before one.
+91: movs    r6, #0
+    movs    r7, #0
+92: cmp     r6, r5
+    bhs     93f
     lsls    r0, r6, #2
     adds    r0, r4, r0
     ldr     r0, [r0, #SCRIPT_MENU_STRBUFS_OFF]
-    push    {r0}
+    ldr     r1, =FMT_MARK
+    bl      OneScreen_FmtBuild
+    bl      OneScreen_FmtWidth
+    cmp     r7, r1
+    bhs     94f
+    movs    r7, r1
+94: adds    r6, #1
+    b       92b
+93: adds    r7, #FMT_GAP
+    str     r7, [sp, #4]
+
+    @ The width, with the column in place.
+    movs    r6, #0
+    movs    r7, #0
+95: cmp     r6, r5
+    bhs     96f
+    lsls    r0, r6, #2
+    adds    r0, r4, r0
+    ldr     r0, [r0, #SCRIPT_MENU_STRBUFS_OFF]
+    ldr     r1, [sp, #4]
+    bl      OneScreen_FmtBuild
+    bl      OneScreen_FmtWidth
+    cmp     r0, #0
+    beq     99f                     @ a column over text already drawn
+    cmp     r7, r0
+    bhs     97f
+    movs    r7, r0
+97: adds    r6, #1
+    b       95b
+
+96: ldr     r0, [sp]
+    cmp     r0, #0
+    beq     98f
+    movs    r6, #0                  @ every entry passed: now write them back
+88: cmp     r6, r5
+    bhs     98f
+    lsls    r0, r6, #2
+    adds    r0, r4, r0
+    ldr     r0, [r0, #SCRIPT_MENU_STRBUFS_OFF]
+    ldr     r1, [sp, #4]
+    bl      OneScreen_FmtBuild
+    lsls    r0, r6, #2
+    adds    r0, r4, r0
+    ldr     r0, [r0, #SCRIPT_MENU_STRBUFS_OFF]
+    bl      OneScreen_FmtStore
+    adds    r6, #1
+    b       88b
+98: movs    r0, r7
+    b       87f
+99: movs    r0, #0
+87: add     sp, #8
+    pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ int OneScreen_FmtCheck(r0 = String *) -> 1 if OneScreen_FmtBuild can take it:
+@ readable, no longer than FMT_MAX, and holding nothing from 0xE000 up but one
+@ CHAR_LF and whole CURSOR_X controls.
+    .thumb_func
+OneScreen_FmtCheck:
+    push    {r4, r5, r6, lr}
+    movs    r4, r0
     movs    r1, #STRING_DATA_OFF
     bl      OneScreen_MainRamRange
-    pop     {r2}
     cmp     r0, #0
-    beq     79f
-    ldrh    r3, [r2, #STRING_SIZE_OFF]
-    push    {r2, r3}
-    movs    r0, r2
-    lsls    r1, r3, #1
+    beq     85f
+    ldrh    r5, [r4, #STRING_SIZE_OFF]
+    ldrh    r0, [r4, #STRING_MAXSIZE_OFF]
+    cmp     r5, r0
+    bhi     85f
+    cmp     r0, #FMT_MAX
+    bhi     85f
+    movs    r0, r4
+    lsls    r1, r5, #1
     adds    r1, #STRING_DATA_OFF
-    bl      OneScreen_MainRamRange
-    pop     {r2, r3}
+    bl      OneScreen_MainRamRange  @ and all of its characters
     cmp     r0, #0
-    beq     79f
-    adds    r2, #STRING_DATA_OFF
-    ldr     r1, =0xE000
-76: cmp     r3, #0
-    beq     77f
-    ldrh    r0, [r2]
+    beq     85f
+    adds    r4, #STRING_DATA_OFF
+    lsls    r5, r5, #1
+    adds    r5, r4, r5              @ the end
+    movs    r6, #0                  @ line breaks seen
+80: cmp     r4, r5
+    bhs     84f
+    ldrh    r0, [r4]
+    ldr     r1, =CHAR_LF
     cmp     r0, r1
-    bhs     79f
-    adds    r2, #2
-    subs    r3, #1
-    b       76b
-77: adds    r6, #1
-    b       75b
-78: movs    r0, #1
+    blo     82f
+    beq     81f
+    ldr     r1, =CTRL_BEGIN
+    cmp     r0, r1
+    bne     85f
+    ldrh    r0, [r4, #2]            @ a control cut off by the end reads the EOS
+    ldr     r2, =CTRL_CURSOR_X      @ here, or as its count below - inside the
+    cmp     r0, r2                  @ range already checked either way
+    bne     85f
+    ldrh    r0, [r4, #4]
+    cmp     r0, #0
+    beq     85f                     @ CURSOR_X without its x
+    lsls    r0, r0, #1
+    adds    r4, #6
+    adds    r4, r4, r0              @ BEGIN, id, count and arguments, all inside
+    cmp     r4, r5
+    bhi     85f
+    b       80b
+81: adds    r6, #1
+    cmp     r6, #1
+    bhi     85f
+82: adds    r4, #2
+    b       80b
+84: movs    r0, #1
     pop     {r4, r5, r6, pc}
-79: movs    r0, #0
+85: movs    r0, #0
     pop     {r4, r5, r6, pc}
+    .align  2
+    .pool
+
+@ void OneScreen_FmtBuild(r0 = String *, r1 = column) - the entry, folded onto
+@ one line, into fmt_buf. Only ever after OneScreen_FmtCheck has passed it.
+    .thumb_func
+OneScreen_FmtBuild:
+    push    {r4, r5, r6, r7, lr}
+    movs    r7, r1                  @ column
+    ldrh    r5, [r0, #STRING_SIZE_OFF]
+    movs    r4, r0
+    adds    r4, #STRING_DATA_OFF
+    lsls    r5, r5, #1
+    adds    r5, r4, r5              @ end of the source
+    ldr     r6, =fmt_buf
+    movs    r0, #FMT_MAX
+    strh    r0, [r6, #STRING_MAXSIZE_OFF]
+    ldr     r0, =STRING_MAGIC
+    str     r0, [r6, #STRING_MAGIC_OFF]
+    adds    r6, #STRING_DATA_OFF
+80: cmp     r4, r5
+    bhs     89f
+    ldrh    r0, [r4]
+    ldr     r1, =CTRL_BEGIN
+    cmp     r0, r1
+    bne     82f
+    ldrh    r2, [r4, #4]            @ a control: copied whole, arguments and all
+    adds    r2, #3
+81: ldrh    r0, [r4]
+    strh    r0, [r6]
+    adds    r4, #2
+    adds    r6, #2
+    subs    r2, #1
+    bne     81b
+    b       80b
+82: ldr     r1, =CHAR_LF
+    cmp     r0, r1
+    beq     83f
+    strh    r0, [r6]                @ an ordinary character
+    adds    r4, #2
+    adds    r6, #2
+    b       80b
+83: adds    r4, #2                  @ a line break, and the spaces after it
+    movs    r2, #0
+84: cmp     r4, r5
+    bhs     86f
+    ldrh    r0, [r4]
+    ldr     r1, =CHAR_SPACE
+    cmp     r0, r1
+    beq     85f
+    ldr     r1, =CHAR_NARROW_SPACE
+    cmp     r0, r1
+    bne     86f
+85: adds    r4, #2
+    adds    r2, #1
+    b       84b
+86: cmp     r2, #FMT_MIN_INDENT
+    blo     87f
+    ldr     r0, =CTRL_BEGIN         @ an indented second line: the column
+    strh    r0, [r6]
+    ldr     r0, =CTRL_CURSOR_X
+    strh    r0, [r6, #2]
+    movs    r0, #1
+    strh    r0, [r6, #4]
+    strh    r7, [r6, #6]
+    adds    r6, #(2 * CTRL_CURSOR_X_LEN)
+    b       80b
+87: ldr     r0, =CHAR_SPACE         @ a wrapped line: one space
+    strh    r0, [r6]
+    adds    r6, #2
+    b       80b
+89: ldr     r0, =STRING_EOS
+    strh    r0, [r6]
+    ldr     r0, =(fmt_buf + STRING_DATA_OFF)
+    subs    r6, r6, r0
+    lsrs    r6, r6, #1
+    ldr     r0, =fmt_buf
+    strh    r6, [r0, #STRING_SIZE_OFF]
+    pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ OneScreen_FmtWidth(void) -> r0 = how far right fmt_buf draws, or 0 if one of its
+@ CURSOR_X moves the pen back over text already drawn; r1 = where the pen was at
+@ the FMT_MARK placeholder, 0 if there is none. Since a column may only
+@ move the pen right, where it ends is as far right as it went.
+    .thumb_func
+OneScreen_FmtWidth:
+    push    {r4, r5, r6, r7, lr}
+    sub     sp, #8                  @ [sp] width before the last column,
+    movs    r0, #0                  @ [sp, #4] furthest placeholder
+    str     r0, [sp]
+    str     r0, [sp, #4]
+    movs    r7, #0                  @ 1 once a column went backwards
+    ldr     r4, =fmt_buf
+    movs    r5, #0                  @ index
+    movs    r6, #FMT_ITEM_X         @ the pen
+80: ldrh    r0, [r4, #STRING_SIZE_OFF]
+    cmp     r5, r0
+    bhs     84f
+    lsls    r1, r5, #1
+    adds    r1, r4, r1
+    ldrh    r0, [r1, #STRING_DATA_OFF]
+    ldr     r2, =CTRL_BEGIN
+    cmp     r0, r2
+    beq     81f
+    adds    r5, #1
+    b       80b
+81: ldr     r0, =STRING_EOS         @ a CURSOR_X: cut the copy here to see how
+    strh    r0, [r1, #STRING_DATA_OFF]  @ much text comes before it
+    bl      OneScreen_FmtMeasure
+    lsls    r1, r5, #1
+    adds    r1, r4, r1
+    ldr     r2, =CTRL_BEGIN
+    strh    r2, [r1, #STRING_DATA_OFF]
+    ldr     r2, [sp]
+    str     r0, [sp]
+    subs    r0, r0, r2
+    adds    r6, r6, r0              @ the pen after the run before this column
+    ldrh    r0, [r1, #(STRING_DATA_OFF + 6)]   @ the column
+    ldr     r2, =FMT_MARK
+    cmp     r0, r2
+    bne     83f
+    str     r6, [sp, #4]            @ the placeholder: FmtCheck allows one per entry
+    b       85f
+83: cmp     r6, r0
+    bls     85f
+    movs    r7, #1
+85: movs    r6, r0                  @ the pen jumps to the column
+    ldrh    r0, [r1, #(STRING_DATA_OFF + 4)]   @ past BEGIN, id, count, x
+    adds    r5, r5, r0
+    adds    r5, #3
+    b       80b
+84: bl      OneScreen_FmtMeasure    @ and the run after the last column
+    ldr     r2, [sp]
+    subs    r0, r0, r2
+    adds    r0, r6, r0
+    cmp     r7, #0
+    beq     86f
+    movs    r0, #0
+86: ldr     r1, [sp, #4]
+    add     sp, #8
+    pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ int OneScreen_FmtMeasure(void) - FontID_String_GetWidth(0, fmt_buf, 0), the call
+@ ScriptMenu_GetListItemsWidth makes for each entry: font 0, no letter spacing.
+    .thumb_func
+OneScreen_FmtMeasure:
+    push    {r3, lr}
+    movs    r0, #0
+    ldr     r1, =fmt_buf
+    movs    r2, #0
+    ldr     r3, =cfg_string_width
+    ldr     r3, [r3]
+    blx     r3
+    pop     {r3, pc}
+    .align  2
+    .pool
+
+@ void OneScreen_FmtStore(r0 = String *) - fmt_buf's text over the entry's own.
+@ Never longer than the entry was, so always inside its buffer.
+    .thumb_func
+OneScreen_FmtStore:
+    ldr     r1, =fmt_buf
+    ldrh    r2, [r1, #STRING_SIZE_OFF]
+    strh    r2, [r0, #STRING_SIZE_OFF]
+    adds    r2, #1                  @ and the EOS
+    adds    r0, #STRING_DATA_OFF
+    adds    r1, #STRING_DATA_OFF
+80: ldrh    r3, [r1]
+    strh    r3, [r0]
+    adds    r0, #2
+    adds    r1, #2
+    subs    r2, #1
+    bne     80b
+    bx      lr
     .align  2
     .pool
 

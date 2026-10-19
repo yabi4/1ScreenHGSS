@@ -173,20 +173,22 @@ def patch(rom_bytes: bytes, log=print, auto_battle=True,
         values["theme_band"] = themes.get(theme)["band"]
 
         # NPC lists the patch does not draw itself go to the game's own
-        # top-screen list instead of taking the screen: one entry of the script
-        # command table is pointed at OneScreen_MenuExec. Found by shape and
-        # cross-checked; anything unexpected and the lists swap as before.
-        for field in ("menu_exec_orig", "show_list", "list_items_width",
-                      "setup_native"):
+        # top-screen list instead of taking the screen: script command 752 is
+        # pointed at OneScreen_MenuExec, and the move tutors' 653 at
+        # OneScreen_TutorExec. Found by shape and cross-checked; anything
+        # unexpected and the lists swap as before.
+        for field in ("menu_exec_orig", "open_list", "string_width",
+                      "setup_native", "tutor_exec_orig"):
             values[field] = 0
         if touch_lists:
             log("  Lists    : touch screen (--touch-lists)")
         else:
-            native, site, detail = regions.resolve_native_lists(arm9, overlays)
+            native, redirects, detail = regions.resolve_native_lists(arm9, overlays)
             if native:
                 values.update(native)
-                struct.pack_into("<I", arm9, site - 0x02000000,
-                                 meta["symbols"]["OneScreen_MenuExec"] | 1)
+                for site, symbol in redirects:
+                    struct.pack_into("<I", arm9, site - 0x02000000,
+                                     meta["symbols"][symbol] | 1)
                 log(f"  Lists    : the game's top-screen list; {detail}")
             else:
                 log(f"  Lists    : {detail}; NPC lists keep the touch screen")

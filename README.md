@@ -78,10 +78,12 @@ it by its own words** — every one of them, not just the first. Anything it has
 handed to the **game's own top-screen list** instead: HGSS still contains the list window it
 inherited from Diamond and Pearl, which reads the very same menu, so an unknown NPC choice
 appears on the world in the game's own window and words rather than taking the screen.
-Lists with two-line or formatted entries (Battle Frontier prize shops, Game Corner TMs and
-coins, rankings, drink machines, the day-care's level column) keep the touch screen. So do a
-list that would land on a box the script already has up (Mom's savings), the move tutors'
-lists, which the game builds another way, and everything with `--touch-lists`.
+That includes lists whose entries are laid out in two lines or in columns on the touch
+screen — Battle Frontier prize shops, the Game Corner's coins, drink machines, the
+day-care's level column, Pokéathlon courses — which are folded onto one line, and the
+Battle Frontier move tutors' lists, whose prices line up in a column. A list that would land on a
+box the script already has up (Mom's savings), an entry holding formatting the patch does
+not know, and everything with `--touch-lists` keep the touch screen.
 
 Starting a new game works the same way. **GARÇON / FILLE** for the gender question and
 **OUI / NON** for the confirmations are drawn beside Oak's text, so the screen stays on him
@@ -163,7 +165,9 @@ Diamond/Pearl/Platinum are **not** supported — different code, different overl
 ## Status
 
 **v0.3 has not been played yet.** Its changes — the battle-menu fixes, the X menu in the
-special zones, NPC lists in the game's own top-screen window and Oak's steady prompts —
+special zones, NPC lists in the game's own top-screen window (formatted ones and the move
+tutors' included), and a steady selected band in Oak's speech, battles and the evolution
+scene —
 were built against the full decompilation and their routines unit-tested under a CPU
 emulator (`tools/test_hook.py`), but the game has not been played with them, on hardware or
 in melonDS. What follows is what v0.2b

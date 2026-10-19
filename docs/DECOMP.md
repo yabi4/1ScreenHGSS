@@ -101,6 +101,7 @@ Its layouts are `sTouchscreenMenuLayouts` (US `0x0225CFC8`), embedded in `labels
 | hook | offset | field | status |
 |---|---|---|---|
 | `CHOICE_STATE_OFF` | `+0x00` | `state` | confirmed; 3..5 yes/no, 7..10 list, 11 cancel |
+| `CHOICE_RESULT_OFF` | `+0x04` | `result`, the var the list writes | new: `OneScreen_TutorExec` puts it back after taking the tutors' list |
 | `CHOICE_MENU_OFF` | `+0x0C` | `menu`, the slot `ScrCmd_MenuInit` fills | **new — the hook now reads this** |
 | `CHOICE_FS_OFF` | `+0x24` | `fieldSystem` | confirmed |
 | `LIST_CURSOR_OFF` | `+0x394` | `selection` | confirmed |
@@ -108,6 +109,8 @@ Its layouts are `sTouchscreenMenuLayouts` (US `0x0225CFC8`), embedded in `labels
 | `CHOICE_CALLBACK_ARG_OFF` (was `LIST_MENU_OFF`) | `+0x3A0` | `selectionCallbackArg` | **was read as the menu**; only a copy, and stale for the move tutor |
 | `SCRIPT_MENU_STRBUFS_OFF` | `ScriptMenu+0x1C` | `strbufs[28]` | confirmed |
 | `SCRIPT_MENU_COUNT_OFF` | `+0x9B` | `count` | confirmed |
+| `SCRIPT_MENU_Y_OFF` | `+0x99` | `y` | new: the hook moves an anchored-bottom list up itself now |
+| `STRING_MAXSIZE_OFF`, `STRING_MAGIC_OFF` | `String+0x00`, `+0x04` | `maxsize`, `magic` (`0xB6F8D2EC`) | new: `ScriptMenu_Init` gives every entry `String_New(80)`; `String_c_str` asserts the magic in the retail build |
 
 The script command table and the functions the native lists use, found by the patcher
 from table entries 752 and 71 (`regions.resolve_native_lists`):
@@ -118,8 +121,11 @@ from table entries 752 and 71 (`regions.resolve_native_lists`):
 | `ScrCmd_MenuExec` | table[752] | five calls; pool holds `0x02047909`, `0x020478D1` |
 | `ScrCmd_ScriptListMenuExec` | table[71] | three calls; pool holds `0x020418B5` |
 | `SetupNativeScript` | last call of both | must agree |
-| `ScriptMenu_ShowList` | second call of table[71], overlay 1 | retail prologue (pret `ov01_021EDFA4`) |
-| `ScriptMenu_GetListItemsWidth` | first call of `ShowList` | |
+| `ScriptMenu_ShowList` | second call of table[71], overlay 1 | retail prologue (pret `ov01_021EDFA4`); exactly two calls |
+| `ScriptMenu_GetListItemsWidth` | first call of `ShowList` | retail code up to its one call (pret `ov01_021EE2E4`) |
+| `ScriptMenu_OpenListWindow` | second call of `ShowList` | retail prologue (pret `ov01_021EE01C`); `ShowListWithWidth` right before it is `ldr r3, =OpenListWindow; bx r3`; `0x3D9` in its pool |
+| `FontID_String_GetWidth` | the one call of `GetListItemsWidth`, ARM9 | the whole retail function (pret `sub_02002F30`); its second call, `String_c_str`, has the String magic in its pool |
+| `ScrCmd_MoveTutorChooseMove` | table[653], overlay 1 | retail prologue (pret `ScrCmd_MoveTutorChooseMove`, before `scrcmd_move_tutor.c`); first call is `MenuExec`'s menu-slot getter; ends `SetTouchscreenChoiceMenuState(fs, 3, 7, var)`, `SetupNativeScript` - both `MenuExec`'s - with a wait whose pool holds `0xEEEE`; `0xFFFD` and `0xFFFE` in its pool. Optional |
 | `ScriptMenu.x`, `.ret_p`, `.items` | `+0x98`, `+0xA0`, `+0x1C4` | the source's own offset comments, and the helper |
 
 ### Battle (`include/battle/battle.h`, `include/battle/battle_input.h`)
@@ -133,6 +139,8 @@ from table entries 752 and 71 (`regions.resolve_native_lists`):
 | `BI_MENU_CURSOR_OFF` | `+0x6DC` | `menuCursor` {enabled, menuY, menuX} | **corrected** from a learned value starting at `0x6D4` (`scrollXEnd`) |
 | `BATTLE_INPUT_SIZE` | `0x6F8` | `sizeof(BattleInput)` | new |
 | `BSTATE_BATTLE_MAIN` | `9` | `Battle_Run` state while the `BattleSystem` lives | new |
+| `BS_PALETTE_OFF` | `BattleSystem+0x28` | `palette`, a `PaletteData` with `autoTransparent` set | **new**: its VBlank callback pushes the main-BG buffer every frame |
+| `BS_MSG_ICON_OFF` | `+0x1B0` | `msgIcon`, a `PaletteBlink` on top-screen palette 11 | **new** |
 
 pret labels this region of `BattleInput` with offsets that are `0x20` to `0x28` too low; its
 *layout* is the same as the full decompilation's. Only the names drifted.
@@ -148,6 +156,18 @@ pret labels this region of `BattleInput` with offsets that are `0x20` to `0x28` 
 | `OAK_NUMOPTS_OFF`, `OAK_CURSOR_OFF` | `+0x161`, `+0x163` | `menuData.numOptions`, `.cursorPos` | confirmed |
 | `BLINK_BYTES_OFF` | `PaletteBlink+0x4C` | `screen`, `palette`, `state`, `timer` | **new**; state 0 RESTART, 1 RUN, 2 PAUSE, 3 END |
 | `BLINK_APPLY_MAIN_BG` | `0x020165A5` | `PaletteBlink_LoadMainBgPltt` | pret `sub_020165A4`, the `apply` for a top-screen hardware blink |
+
+### The selected band's palette (`include/palette.h`, `src/evolution_scene.c`)
+
+| hook | offset | field | status |
+|---|---|---|---|
+| `PLTT_OPAQUE_OFF`, `PLTT_FADED_OFF`, `PLTT_SIZE_OFF` | `PaletteData+0x00`, `+0x04`, `+0x08` | `buffers[PLTTBUF_MAIN_BG]`: `opaque`, `transparent`, `size` | **new**; `transparent` is what `PaletteData_PushTransparentBuffers` loads |
+| `EVOLUTION_PLTT_OFF` | `EvolutionTaskData+0x14` | `paletteData` | **new** |
+| `EVOLUTION_BLINK_OFF` | `+0x58` | `paletteBlink`, on top-screen palette 11 | **new**; paused by the game itself from `EVO_STATE_WAIT_CRY` on |
+
+`PaletteBlink_SetState` takes a command, not a state: 0 restarts it, 1 **pauses** it and 2
+ends it. A blink built over a `PaletteData` writes both of its buffers, so it is checked by its
+`plttData` matching the scene's own rather than by its `apply` pointer.
 
 ## What it corrected
 
@@ -179,5 +199,9 @@ pret labels this region of `BattleInput` with offsets that are `0x20` to `0x28` 
 - **Oak's flashing band** was a `PaletteBlink` on the dialog's palette rewriting all sixteen
   colours twice a second, not a race with the text printer. It is paused while his questions
   are up. The same research found the hook erasing the ends of his longer US lines.
+- **The band in battles and the evolution scene** was written to palette RAM, which both
+  scenes overwrite from their `PaletteData` every frame, and both run a `PaletteBlink` on the
+  same palette. The evolution scene pauses its own wherever the cycle happens to be, which can
+  leave colour 12 white for the rest of the scene. The band now goes into the pushed buffer.
 - **`start_menu.c` writes the X-menu cursor** on a touch, not only reads it; the touch overlay
   writes it on every D-pad move.

@@ -50,15 +50,16 @@ EVOLUTION_TASK_ORIG = 0x02075D09
 
 
 # Order must match OneScreen_Config in src/hook.s. The two are positional and
-# nothing checks them against each other, so append only, and append to both.
+# only tools/test_hook.py checks them against each other, so append only, and
+# append to both.
 CONFIG_FIELDS = ("pad_held", "app_callback", "field_callback",
                  "ov12_lo", "ov12_hi", "battle_state", "dex_exec_orig",
                  "pc_exec_orig", "field_sys", "screens_flipped",
                  "map_exec_orig", "start_menu_task", "oak_exec_orig",
                  "battle_exec_orig", "intro_a_exec", "intro_b_exec",
                  "intro_c_exec", "intro_clock",
-                 "theme_band", "menu_exec_orig", "show_list",
-                 "list_items_width", "setup_native")
+                 "theme_band", "menu_exec_orig", "open_list",
+                 "string_width", "setup_native", "tutor_exec_orig")
 
 
 def fill_config(payload: bytes, config_addr: int, load_addr: int,

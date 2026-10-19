@@ -329,13 +329,22 @@ def resolve(arm9: bytes, overlays) -> tuple[dict, int]:
 #   table[71]         ScrCmd_ScriptListMenuExec, three calls:
 #                     FieldSysGetAttrAddr, ScriptMenu_ShowList, SetupNativeScript;
 #                     its pool holds NativeScript_WaitMultichoice
-#   ShowList's first call is ScriptMenu_GetListItemsWidth.
+#   ShowList          two calls: ScriptMenu_GetListItemsWidth, then
+#                     ScriptMenu_OpenListWindow - the window the hook opens itself,
+#                     once it has measured the entries its own way
+#   GetListItemsWidth one call: FontID_String_GetWidth, which the hook measures with
+#   table[653]        ScrCmd_MoveTutorChooseMove, the Battle Frontier tutors' list;
+#                     optional - if it does not check out, the tutors keep the touch
+#                     screen and every other list still goes on top
 #
 # The pool values are ARM9 code addresses, which do not move between regions
-# (pret names them sub_02047908, sub_020478D0 and sub_020418B4). ShowList is in
-# overlay 1, so it is checked against its retail prologue rather than an address.
+# (pret names them sub_02047908, sub_020478D0 and sub_020418B4). ShowList and the
+# rest of the list code are in overlay 1, so they are checked against their retail
+# code rather than an address - every signature below is copied out of pret's
+# matching disassembly - and against each other.
 SCRIPT_CMD_COUNT = 853
 SCRCMD_LIST_MENU_EXEC = 71
+SCRCMD_TUTOR_CHOOSE_MOVE = 653
 SCRCMD_MENU_EXEC = 752
 MENU_EXEC_HELP = 0x02047909          # MenuExec_PrintItemHelp | 1
 WAIT_MENU_EXEC = 0x020478D1          # NativeScript_WaitMenuExec | 1
@@ -349,6 +358,41 @@ SHOW_LIST_SIG = bytes.fromhex(
     .replace(" ", ""))
 SHOW_LIST_MASK = bytes.fromhex(
     "ffffffff00000000ffffffffffffffffffffffffffffffffffffffffffffffff")
+
+# ScriptMenu_OpenListWindow, pret ov01_021EE01C: push {r3,r4,lr}; sub sp,#0x14;
+# mov r4,r0; add r0,#0x9b; ldrb r2,[r0]; cmp r2,#8 - one page or a scrolling one.
+# Its pool holds 0x3D9, the frame's first tile. ScriptMenu_ShowListWithWidth (pret
+# ov01_021EE014) sits right before it and is nothing but `ldr r3, =OpenListWindow;
+# bx r3`, which pins the address from a second direction.
+OPEN_LIST_SIG = bytes.fromhex("18b585b0041c9b300278082a")
+SHOW_LIST_WITH_WIDTH = bytes.fromhex("004b1847")
+LIST_FRAME_TILE = 0x3D9
+
+# ScriptMenu_GetListItemsWidth, pret ov01_021EE2E4, up to its one call:
+#   push {r3-r7,lr}; mov r7,r0; ldrb count; ...; ldr r1,[r5,#0x1C4] (items[i].text);
+#   mov r0,#0; mov r2,r0; bl FontID_String_GetWidth
+GET_WIDTH_SIG = bytes.fromhex(
+    "f8b5071c9b3000780026341c002813dd3d1c71208000295800290dd00020021c11f678ff")
+GET_WIDTH_MASK = bytes.fromhex(
+    "ffffffffffffffffffffffffffff00ffffffffffffffffffffff00ffffffffff00000000")
+
+# FontID_String_GetWidth, pret sub_02002F30 (asm/font.s before font.c existed),
+# whole: assert the font is loaded, String_c_str, GetStringWidth. ARM9 code. The
+# middle call is String_c_str, whose pool holds the String magic - the hook builds
+# the Strings it measures with it, because the retail build keeps that assert.
+STRING_WIDTH_SIG = bytes.fromhex(
+    "70b584000b480d1c0068161c00199c300068002801d111f65dff281c00f00cf8011c0448"
+    "321c006800199c30006811f651ff70bd")
+STRING_WIDTH_MASK = bytes.fromhex(
+    "ffffffff00ffffffffffffffffffffffffffffff00ff00000000ffff00000000ffff00ff"
+    "ffffffffffffffffffff00000000ffff")
+STRING_MAGIC = 0xB6F8D2EC
+
+# ScrCmd_MoveTutorChooseMove, pret's asm/scrcmd_move_tutor.s before the file was
+# decompiled: push {r4-r7,lr}; sub sp,#0x6c; str r0,[sp,#0x14]; ldr fieldSystem;
+# str r0,[sp,#0x28]; bl FieldSystem_GetTouchscreenChoiceMenuList.
+TUTOR_SIG = bytes.fromhex("f0b59bb00590803000680a9011f636ff")
+TUTOR_MASK = bytes.fromhex("ffffffffffffffffffffffff00000000")
 
 
 def _thumb_calls(code: bytes, base: int, addr: int, limit: int = 0x80):
@@ -408,49 +452,128 @@ def find_script_table(arm9: bytes):
     return hits[0] if len(hits) == 1 else None
 
 
+def _masked_match(data: bytes, off: int, sig: bytes, mask: bytes) -> bool:
+    window = data[off:off + len(sig)] if off >= 0 else b""
+    return len(window) == len(sig) and all(
+        (a & m) == (b & m) for a, b, m in zip(window, sig, mask))
+
+
 def resolve_native_lists(arm9: bytes, overlays):
-    """Return ({config values}, table_entry_address, log) or (None, None, why).
+    """Return ({config values}, [(table entry address, hook symbol)], log), or
+    (None, [], why).
 
     Every check has to pass; anything unexpected and the script lists stay on
-    the touch screen, which is what every earlier build did.
+    the touch screen, which is what every earlier build did. The move tutors'
+    command is the one optional part: if it does not check out, it is left in
+    the table untouched and only the other lists go on top.
     """
     table = find_script_table(arm9)
     if table is None:
-        return None, None, "script command table not found"
+        return None, [], "script command table not found"
     entry = lambda k: struct.unpack_from("<I", arm9, table - ARM9_RAM + 4 * k)[0]
     menu_exec, list_exec = entry(SCRCMD_MENU_EXEC), entry(SCRCMD_LIST_MENU_EXEC)
     ov1 = overlays.get(1) if overlays else None
     if ov1 is None:
-        return None, None, "overlay 1 not available"
+        return None, [], "overlay 1 not available"
     ov1_lo, ov1_hi = ov1.ramAddress, ov1.ramAddress + len(ov1.data)
     in_ov1 = lambda a: ov1_lo <= a < ov1_hi
+    data = bytes(ov1.data)
     try:
         m_calls, m_lits, m_half = _thumb_calls(arm9, ARM9_RAM, menu_exec)
         l_calls, l_lits, _l_half = _thumb_calls(arm9, ARM9_RAM, list_exec)
     except ValueError as exc:
-        return None, None, str(exc)
+        return None, [], str(exc)
     if len(m_calls) != 5 or MENU_EXEC_HELP not in m_lits or WAIT_MENU_EXEC not in m_lits:
-        return None, None, f"command {SCRCMD_MENU_EXEC} is not ScrCmd_MenuExec"
+        return None, [], f"command {SCRCMD_MENU_EXEC} is not ScrCmd_MenuExec"
     if 0x2103 not in m_half or 0x2207 not in m_half or not in_ov1(m_calls[0]):
-        return None, None, f"command {SCRCMD_MENU_EXEC} does not set the list state"
+        return None, [], f"command {SCRCMD_MENU_EXEC} does not set the list state"
     if len(l_calls) != 3 or WAIT_MULTICHOICE not in l_lits:
-        return None, None, f"command {SCRCMD_LIST_MENU_EXEC} is not the list command"
+        return None, [], f"command {SCRCMD_LIST_MENU_EXEC} is not the list command"
     setup_native = m_calls[4]
     if l_calls[2] != setup_native:
-        return None, None, "the two commands disagree on SetupNativeScript"
+        return None, [], "the two commands disagree on SetupNativeScript"
     show_list = l_calls[1]
     if not in_ov1(show_list):
-        return None, None, "ScriptMenu_ShowList is not in overlay 1"
-    data = bytes(ov1.data)
-    off = show_list - ov1.ramAddress
-    window = data[off:off + len(SHOW_LIST_SIG)]
-    if len(window) != len(SHOW_LIST_SIG) or any(
-            (a & m) != (b & m) for a, b, m in zip(window, SHOW_LIST_SIG, SHOW_LIST_MASK)):
-        return None, None, "ScriptMenu_ShowList does not match its retail prologue"
-    w_calls, _w_lits, _w_half = _thumb_calls(data, ov1.ramAddress, show_list)
-    if not w_calls or not in_ov1(w_calls[0]):
-        return None, None, "ScriptMenu_GetListItemsWidth not found"
-    values = {"menu_exec_orig": menu_exec, "show_list": show_list | 1,
-              "list_items_width": w_calls[0] | 1, "setup_native": setup_native | 1}
-    return values, table + 4 * SCRCMD_MENU_EXEC, (
-        f"table {table:#010x}, MenuExec {menu_exec:#010x}, ShowList {show_list:#010x}")
+        return None, [], "ScriptMenu_ShowList is not in overlay 1"
+    if not _masked_match(data, show_list - ov1_lo, SHOW_LIST_SIG, SHOW_LIST_MASK):
+        return None, [], "ScriptMenu_ShowList does not match its retail prologue"
+    s_calls, _s_lits, _s_half = _thumb_calls(data, ov1_lo, show_list)
+    if len(s_calls) != 2 or not all(in_ov1(a) for a in s_calls):
+        return None, [], "ScriptMenu_ShowList does not make its two calls"
+    get_width, open_list = s_calls
+
+    # ScriptMenu_OpenListWindow: its prologue, ShowListWithWidth's pointer at it,
+    # and the frame tile in its pool.
+    off = open_list - ov1_lo
+    if data[off:off + len(OPEN_LIST_SIG)] != OPEN_LIST_SIG:
+        return None, [], "ScriptMenu_OpenListWindow does not match its retail prologue"
+    if off < 8 or data[off - 8:off - 4] != SHOW_LIST_WITH_WIDTH or \
+            struct.unpack_from("<I", data, off - 4)[0] != open_list | 1:
+        return None, [], "ScriptMenu_ShowListWithWidth does not lead to OpenListWindow"
+    _o_calls, o_lits, _o_half = _thumb_calls(data, ov1_lo, open_list, limit=0x100)
+    if LIST_FRAME_TILE not in o_lits:
+        return None, [], "ScriptMenu_OpenListWindow does not draw the list frame"
+
+    # FontID_String_GetWidth, through ScriptMenu_GetListItemsWidth's one call.
+    if not _masked_match(data, get_width - ov1_lo, GET_WIDTH_SIG, GET_WIDTH_MASK):
+        return None, [], "ScriptMenu_GetListItemsWidth does not match its retail code"
+    g_calls, _g_lits, _g_half = _thumb_calls(data, ov1_lo, get_width)
+    if len(g_calls) != 1:
+        return None, [], "ScriptMenu_GetListItemsWidth makes more than its one call"
+    string_width = g_calls[0]
+    if not _masked_match(arm9, string_width - ARM9_RAM, STRING_WIDTH_SIG, STRING_WIDTH_MASK):
+        return None, [], "FontID_String_GetWidth does not match its retail code"
+    w_calls, _w_lits, _w_half = _thumb_calls(arm9, ARM9_RAM, string_width)
+    try:
+        _c_calls, c_lits, _c_half = _thumb_calls(arm9, ARM9_RAM, w_calls[1])
+    except (IndexError, ValueError):
+        c_lits = []
+    if len(w_calls) != 3 or STRING_MAGIC not in c_lits:
+        return None, [], "FontID_String_GetWidth does not take a String"
+
+    values = {"menu_exec_orig": menu_exec, "open_list": open_list | 1,
+              "string_width": string_width | 1, "setup_native": setup_native | 1,
+              "tutor_exec_orig": 0}
+    redirects = [(table + 4 * SCRCMD_MENU_EXEC, "OneScreen_MenuExec")]
+    detail = (f"table {table:#010x}, MenuExec {menu_exec:#010x}, "
+              f"OpenListWindow {open_list:#010x}")
+    tutor, why = _check_tutor(data, ov1_lo, in_ov1, entry(SCRCMD_TUTOR_CHOOSE_MOVE),
+                              m_calls, setup_native)
+    if tutor:
+        values["tutor_exec_orig"] = tutor
+        redirects.append((table + 4 * SCRCMD_TUTOR_CHOOSE_MOVE, "OneScreen_TutorExec"))
+        detail += f", tutors {tutor:#010x}"
+    else:
+        detail += f"; {why}, the move tutors keep the touch screen"
+    return values, redirects, detail
+
+
+def _check_tutor(data: bytes, base: int, in_ov1, tutor: int, m_calls, setup_native):
+    """(table[653], "") if it is ScrCmd_MoveTutorChooseMove as the hook expects it,
+    else (0, why). The hook calls it and then takes its touch list back, so what
+    matters is the ending: FieldSystem_SetTouchscreenChoiceMenuState(fs, 3, 7, var)
+    then SetupNativeScript with a wait of its own - the same two functions
+    ScrCmd_MenuExec calls - and that it fetched the menu from the same slot."""
+    if not in_ov1(tutor):
+        return 0, f"command {SCRCMD_TUTOR_CHOOSE_MOVE} is not in overlay 1"
+    if not _masked_match(data, (tutor & ~1) - base, TUTOR_SIG, TUTOR_MASK):
+        return 0, f"command {SCRCMD_TUTOR_CHOOSE_MOVE} does not match its retail prologue"
+    t_calls, t_lits, t_half = _thumb_calls(data, base, tutor, limit=0x300)
+    if len(t_calls) < 4 or t_calls[0] != m_calls[0] or t_calls[-3] != m_calls[2] or \
+            t_calls[-2] != setup_native:
+        return 0, f"command {SCRCMD_TUTOR_CHOOSE_MOVE} does not open the touch list"
+    if 0x2103 not in t_half or 0x2207 not in t_half or \
+            0xFFFD not in t_lits or 0xFFFE not in t_lits:
+        return 0, f"command {SCRCMD_TUTOR_CHOOSE_MOVE} is not the tutors' move list"
+    waits = []
+    for lit in t_lits:
+        if lit & 1 and in_ov1(lit):
+            try:
+                w_calls, w_lits, _w_half = _thumb_calls(data, base, lit)
+            except ValueError:
+                continue
+            if w_calls[:1] == [m_calls[0]] and 0xEEEE in w_lits:
+                waits.append(lit)
+    if len(waits) != 1:
+        return 0, f"command {SCRCMD_TUTOR_CHOOSE_MOVE} has no NativeScript_WaitMoveTutorMenu"
+    return tutor, ""

@@ -16,6 +16,14 @@ and corrected a handful. `docs/DECOMP.md` has the cross-reference.
 - **The highlight's position is fixed, not learned.** The hook used to discover where the
   game keeps its cursor by watching it move, starting from a wrong guess. The decompilation
   says where it is, so the guess and the learning are gone.
+- **The selected band holds its colour in battles and after an evolution.** Both scenes copy
+  their own palette buffer over palette RAM every frame, so the theme's colour, written
+  only to palette RAM, lasted until the next copy and the band could flicker back to the
+  game's salmon or white. The colour now goes into that buffer as well, and the battle's
+  message-icon blink, which rewrites the same colours twice a second, is held still while
+  the commands or a yes/no box are up. The evolution scene pauses its own blink wherever it
+  happens to be, which could leave the band white behind *Oui / Non* for the rest of the
+  scene; that is covered by the same buffer write.
 - **No more reads from freed memory.** The bag, the party and the catch naming screen free
   the structure the command menu lives in; the hook now checks the game's own
   `graphicsMode` before reading it, and only uses the battle's data while the battle proper
@@ -39,10 +47,19 @@ and corrected a handful. `docs/DECOMP.md` has the cross-reference.
   menu object the touch list reads - so the NPC lists the patch does not draw itself
   (fossils, the apricorn juice stand, the Pokéathlon Dome's counters, most one-off NPC
   choices...) are handed to it instead of taking the screen. B answers the way the touch
-  list does. Lists with two-line or formatted entries keep the touch screen, and so does a
-  list that would land on a box the script already has up there (Mom's savings); the move
-  tutors build their lists another way and keep it too. `--touch-lists` (or *Old-style NPC
-  lists* in the window) keeps all of them there.
+  list does. A list that would land on a box the script already has up there (Mom's
+  savings) keeps the touch screen. `--touch-lists` (or *Old-style NPC lists* in the window)
+  keeps all of them there.
+- **Formatted lists and the move tutors open there too** (payload v33). Entries laid out in
+  two lines on the touch screen - Battle Frontier prize shops, *DEPOSIT / POKéMON*,
+  Pokéathlon courses - are folded onto one line, an indented second line becoming a price
+  column shared by the whole list; entries that already have a `CURSOR_X` column (drink
+  machines, the Game Corner's coins, the day-care's levels) get a window wide enough for
+  it, which the game's own sizing, skipping the column, came up short of. The Battle
+  Frontier move tutors build their list with a command of their own (653); the patch lets
+  it run, then takes its list back before the touch screen shows it. An entry with any
+  other formatting keeps the touch screen, and nothing about a list is changed unless it
+  does open on top.
 - **List menus are recognised by every entry, not just the first.** The script corpus has
   a Pokéathlon mart menu, BUY / INFO / SEE YA, that shares the shop's first entry and would
   have been drawn as the shop's words. Nothing in the decompilation seems to call it; the
@@ -62,7 +79,8 @@ and corrected a handful. `docs/DECOMP.md` has the cross-reference.
 ### Development
 
 - `tools/test_hook.py` runs routines from the assembled hook against synthetic game
-  structures under an ARM emulator (`pip install unicorn`).
+  structures under an ARM emulator (`pip install unicorn`). It also checks that
+  `CONFIG_FIELDS` in `onescreen/inject.py` still lines up with the hook's config block.
 - `tools/make_payload.py` finds `arm-none-eabi` binutils on `PATH` or `$DEVKITARM`, and
   refuses a payload that would not fit in ITCM.
 - `docs/AUDIT.md` corrects overlay 5 (the link battle screens, not the party menu) and names

@@ -41,19 +41,21 @@ are the French values, so an unconfigured payload still works there.
 
 The resident code is entered from two fixed ARM9 sites, and from pointers the patcher
 finds by shape: the exec slots of five `OverlayManagerTemplate`s (Pokédex, PC box, fly map,
-Oak, battle) and script command 752, `ScrCmd_MenuExec`. The main-loop call at `0x02000DB0`
+Oak, battle) and script commands 752, `ScrCmd_MenuExec`, and 653,
+`ScrCmd_MoveTutorChooseMove`. The main-loop call at `0x02000DB0`
 drives global routing, while the callback literal at `0x02075D04` wraps the evolution
 SysTask so its mirrored Yes/No highlight is drawn after native input in the same frame.
 `inject.py` checks the displaced call/pointer before changing either fixed site.
 
 **If you add or reorder a field, update `CONFIG_FIELDS` in `onescreen/inject.py` to
-match** — the two are positional and nothing checks them against each other.
+match** — the two are positional, and only `tools/test_hook.py`
+(`test_config_fields_match_the_hook`) checks them against each other.
 
 To confirm it landed, read the block over the GDB stub after patching; it sits at the
 `OneScreen_Config` address in `hook.json`:
 
 ```bash
-powershell -File tools/probe.ps1 -Addrs "0x01FF8628:23w"
+powershell -File tools/probe.ps1 -Addrs "0x01FF8628:24w"
 ```
 
 ## Prerequisites
