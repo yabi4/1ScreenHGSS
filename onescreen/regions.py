@@ -107,19 +107,55 @@ START_MENU_TASK_SIG = bytes.fromhex(
 RELEARNER_SIG = bytes.fromhex("10b5041c606839f68ff956208000205823f63cfc3af63cfd")
 RELEARNER_MASK = bytes.fromhex("ffffffffffff00000000ffffffffffff0000000000000000")
 
+# The Pal Pad (overlay 43) and the rankings viewer (overlay 121) put every window
+# they draw on engine A, then set gSystem.screensFlipped and call the shared
+# display helper: the stock way of sending engine A to the touch screen. The
+# helper cannot be flipped, so both get an entry with swap 0, matched on the
+# VBlank callback each installs (src/application/palpad/palpad.c,
+# src/application/view_rankings.c). Each sets the flag earlier in the same call
+# that installs the callback, so the hook's one-shot swap lands after it.
+#
+# PalPad_VBlankCallback is a three-instruction tail call, too short to be unique,
+# so the signature runs on into the function after it; its literal and BLs are
+# masked. VBlankCB_ViewRankings ends in the inline IRQ-check write, whose
+# 0x027E0000 / 0x3FF8 literals are the same in every region. Measured on IPGF
+# (0x0222A168 and 0x021E5F50), one match each; a region where either does not
+# match exactly once keeps the stock routing for that app.
+#
+#   ldr r3,=PalPadGfx_VBlank / adds r0,#4 / bx r3 / nop / .word / push {r3-r5,lr}
+#   / adds r4,r1,#0 / movs r1,#0x85 / adds r5,r0,#0 / lsls r1,#2 / adds r0,r5,#4
+#   / adds r1,r5,r1 / adds r2,r4,#0 / BL / movs r1,#10 / lsls r1,#6 / ...
+PALPAD_SIG = bytes.fromhex(
+    "014b001d1847c0462da5220238b50c1c8521051c8900281d6918221c00f092f9"
+    "0a21890168186c3969182a1d")
+PALPAD_MASK = bytes.fromhex(
+    "ffffffffffffffff00000000ffffffffffffffffffffffffffffffff00000000"
+    "ffffffffffffffffffffffff")
+#   push {r4,lr} / adds r4,r0,#0 / BL / adds r0,r4,#0 / BL / BL / ldr r3,=0x027E0000
+#   / ldr r1,=0x3FF8 / movs r0,#1 / ldr r2,[r3,r1] / orrs r0,r2 / str r0,[r3,r1]
+#   / pop {r4,pc} / pool
+RANKINGS_SIG = bytes.fromhex(
+    "10b5041c25f666f9201c38f6abff3af65dfb034b034901205a581043585010bd"
+    "00007e02f83f0000")
+RANKINGS_MASK = bytes.fromhex(
+    "ffffffff00000000ffff0000000000000000ffffffffffffffffffffffffffff"
+    "ffffffffffffffff")
+
 APP_TABLE = [
     ("name entry", 0x02083141, 0,
      bytes.fromhex("08b59df76bfa88f76df8034b034901205a581043585008bd"), None, None),
     ("evolution", 0x02077271, 0,
      bytes.fromhex("38b5041c75300278201c73300178201c72300078ff231b02"), None, None),
     ("move relearner", None, 1, RELEARNER_SIG, 68, RELEARNER_MASK),
+    ("Pal Pad", None, 0, PALPAD_SIG, 43, PALPAD_MASK),
+    ("rankings", None, 0, RANKINGS_SIG, 121, RANKINGS_MASK),
 ]
 
 
 def _find_masked(data: bytes, base: int, sig: bytes, mask: bytes):
     """Addresses where `sig` matches `data`, ignoring bytes `mask` zeroes out."""
     out = []
-    for i in range(0, len(data) - len(sig), 2):
+    for i in range(0, len(data) - len(sig) + 1, 2):  # a match may end the data
         if all((data[i + k] & mask[k]) == (sig[k] & mask[k]) for k in range(len(sig))):
             out.append(base + i)
     return out

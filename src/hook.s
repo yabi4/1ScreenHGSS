@@ -855,7 +855,7 @@ EVOLUTION_TASK_ORIG     = 0x02075D09 @ sub_02075D08, Thumb
     .global OneScreen_Signature
 OneScreen_Signature:
     .ascii  "1SGS"
-    .word   0x00000021          @ payload version
+    .word   0x00000022          @ payload version
 
 @ Filled in by the patcher from the ROM being patched. Defaults are French, so
 @ an unconfigured payload still works there. Keep the field order in step with
@@ -970,9 +970,10 @@ fmt_buf:
 @
 @ The patcher fills the callback addresses in, after checking that the code at
 @ each one still matches the routine we expect - see regions.check_app_table. An
-@ entry it cannot vouch for is zeroed, which ends the table early and simply
-@ leaves that app alone rather than swapping on a wrong address. The values
-@ assembled here are the French ones, so an unconfigured payload still works.
+@ entry it cannot vouch for gets the callback 1, which no VBlank callback can
+@ be, so that app is left alone rather than swapped on a wrong address and the
+@ entries after it still work. The values assembled here are the French ones,
+@ so an unconfigured payload still works.
     .global OneScreen_AppTable
 OneScreen_AppTable:
 app_table:
@@ -997,6 +998,18 @@ evolution_app:
     @ would only ever be right for one of them. Its move list is on engine B, so
     @ 1 rather than 0.
 relearner_app:
+    .word   0, 0
+
+    @ The Pal Pad (overlay 43) and the rankings viewer (overlay 121) draw every
+    @ window they have on engine A, then set gSystem.screensFlipped and call the
+    @ shared helper - the stock way of putting engine A on the BOTTOM, for touch.
+    @ The helper cannot be flipped, so without an entry their menus land on the
+    @ touch screen. Both set the flag before installing this callback, in the
+    @ same frame, so the one-shot swap on the callback edge comes after it.
+    @ Overlay code, found by masked search like the relearner's.
+palpad_app:
+    .word   0, 0
+rankings_app:
     .word   0, 0
 
     @ Terminator. Every slot above is rewritten at patch time, and

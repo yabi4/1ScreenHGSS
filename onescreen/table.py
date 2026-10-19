@@ -24,46 +24,47 @@ SITE_INTENT = {
     0x0201A2A2: KEEP,
 }
 
-# Overlay identities, for the ones that contain a flippable site.
+# Overlay identities, for the ones that contain a flippable site. Named after
+# the objects the full decompilation's main.lsf links into each overlay.
 OVERLAY_NAMES = {
-    5: "OVY_5 (unidentified)",
+    5: "link battle preview / VS screens",
     12: "battle system - commands, HP bars, input, cursors",
-    14: "OVY_14 (unidentified)",
-    15: "OVY_15 (unidentified)",
+    14: "PC box",
+    15: "bag",
     17: "berry pots app",
     18: "pokedex app",
-    37: "OVY_37 (unidentified)",
+    37: "Union Room group drawing (stylus)",
     51: "trainer card - main interface",
     52: "trainer card - signature (stylus drawing)",
     54: "options app",
-    56: "OVY_56 (unidentified)",
-    57: "battle-related system",
-    59: "battle-related system",
-    64: "OVY_64 (unidentified)",
-    67: "OVY_67 (unidentified)",
-    68: "OVY_68 (unidentified)",
-    70: "battle-related system",
-    71: "OVY_71 (unidentified)",
-    72: "battle-related system",
-    73: "OVY_73 (unidentified)",
+    56: "mail viewer",
+    57: "Ball Capsule editor",
+    59: "apricorn box screens",
+    64: "Hall of Fame showcase",
+    67: "Battle Room results",
+    68: "move relearner",
+    70: "GTS",
+    71: "trade sequence",
+    72: "Nintendo WFC connection",
+    73: "record mixing",
     74: "main menu application",
     80: "battle frontier system",
-    82: "OVY_82 (unidentified)",
-    83: "OVY_83 (unidentified)",
-    85: "OVY_85 (unidentified)",
-    86: "OVY_86 (unidentified)",
-    87: "OVY_87 (unidentified)",
-    98: "OVY_98 (unidentified)",
+    82: "Battle Hall",
+    83: "Battle Castle",
+    85: "Spin Trade",
+    86: "Frontier records",
+    87: "scratch-off cards",
+    98: "Pokeathlon utilities",
     100: "pokegear - main interface",
     101: "pokegear - map / phone / radio",
-    102: "OVY_102 (unidentified)",
-    103: "OVY_103 (unidentified)",
-    108: "OVY_108 (unidentified)",
-    109: "OVY_109 (unidentified)",
+    102: "Easy Chat",
+    103: "mailbox",
+    108: "Safari Zone area customizer",
+    109: "photo album",
     110: "Ruins of Alph sliding puzzle (stylus)",
-    111: "OVY_111 (unidentified)",
-    112: "OVY_112 (unidentified)",
-    113: "OVY_113 (unidentified)",
+    111: "Bug Contest - swap Pokemon",
+    112: "Pokewalker",
+    113: "Unown report",
     122: "voltorb flip minigame",
 }
 
@@ -75,6 +76,8 @@ MODULE_INTENT = {
     # Stylus-mandatory: the UI must stay on the physical digitizer (lower LCD).
     "ov052": TOUCH,   # trainer card signature - freehand drawing
     "ov110": TOUCH,   # Ruins of Alph sliding puzzle
+    "ov037": TOUCH,   # Union Room group drawing - a canvas drawn on with the
+                      # stylus (drawing_session.c), wireless multiplayer only
 }
 
 # Field/overworld overlays. None of them contain a flippable site, which is why

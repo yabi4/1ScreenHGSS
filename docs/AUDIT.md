@@ -85,7 +85,7 @@ looked riskiest:
 The remaining touch-heavy files are framework, not screens: `touchscreen.c`,
 `touch_hitbox_controller.c`, `touchscreen_list_menu.c`.
 
-This is consistent with what shipped: the three screens the patch deliberately leaves on
+This is consistent with what shipped: the screens the patch deliberately leaves on
 the bottom are the trainer-card signature, the Alph puzzles and the Pokéathlon — all
 genuinely stylus-driven, and none of them fixable, because moving them to the top would
 make them visible but untappable.
@@ -187,6 +187,43 @@ they should not have too - the evolution scene (ARM9 code), the fly map and the 
 relearner (overlay 68, whose template is built on the stack) - and are handled as well. The
 rest of the table remains untested.
 
+### Each one, checked against the full decompilation (v0.3)
+
+"Sets nothing" counted `POWCNT1` writes inside the overlay. That misses the commonest way
+an app routes itself: `gSystem.screensFlipped = TRUE; GfGfx_SwapDisplay();`, which goes
+through the shared ARM9 helper the static flips must never touch (`0x02022D3C`) and sends
+**engine A to the touch screen**. So each overlay was read for three things - how it
+routes, which engine its windows and backgrounds are on, and whether it takes buttons -
+and, where it matters, what it inherits from the screen that opens it.
+
+| overlay | what it is | how it routes | verdict |
+|---|---|---|---|
+| 16 / 17 | berry pots | 17 writes `POWCNT1` itself | covered by the static flip |
+| 43 | Pal Pad | helper, flag set; every window on engine A | **was wrong - app-table entry, engine A on top** |
+| 45, 91-93 | Wi-Fi Plaza and its games | - | online only; not examined |
+| 50 | trainer card (outer) | runs 51 and 52, which have sites | covered (52, the signature, stays on touch) |
+| 53 | Oak's speech | - | handled explicitly |
+| 55 | mail | runs the viewer (56) or Easy Chat (102), both with sites | covered by the static flip |
+| 58 | apricorn box (outer) | its screens are overlay 59, with sites | covered by the static flip |
+| 61 | choose starter | helper, flag set | left alone: the question and the Pokémon are on engine B, which ends up on top; Left/Right/A choose |
+| 69 | Geonet globe | helper, flag set | left alone: the globe lands on the bottom, its text on top; offline it only shows your own entry |
+| 76 | credits | flips at every scene change by design (`FlipScreensCB`) | left alone: a two-screen show; no one-shot swap fits it |
+| 78 | certificates | none | fine: the same certificate is printed on both engines |
+| 95 | egg hatching | none | fine: all on engine A, opened from the field, which has engine A on top |
+| 96 | Pokéathlon course | helper | stays on touch, with the rest of the Pokéathlon |
+| 104, 105 | Magnet Train and ship cutscenes | helper, flag as the field left it | fine: 3D on engine A, which stays on top |
+| 121 | view rankings | helper, flag set; every window on engine A | **was wrong - app-table entry, engine A on top** |
+
+Two screens that *do* write `POWCNT1` were also reconsidered. Overlay 37 is the Union Room's
+group drawing, a canvas drawn on with the stylus; the default flip put it on top, so it is
+now `TOUCH` like the signature. Overlay 59 was labelled battle code in the patch log; it is
+the apricorn box.
+
+The app-table entries are matched on the VBlank callback each app installs, found by masked
+search in its overlay. Both apps set the flag earlier in the same call that installs the
+callback, so the hook's one-shot swap on the callback edge always comes after theirs - in
+the Pal Pad's case also when it rebuilds its screens after the naming keyboard.
+
 ### Play-test checklist
 
 For each screen: reach it, then try to do everything with the D-pad, A, B, L, R and
@@ -210,6 +247,7 @@ and the Pokégear was the largest touch surface in the whole audit at 187 refere
 - [ ] Mail writing (Easy Chat)
 - [ ] Voltorb Flip
 - [ ] Apricorn box, berry pots
+- [ ] Pal Pad, view rankings (app-table entries added in v0.3, unplayed)
 - [ ] Trainer card pages (the signature page is expected to fail)
 
 Anything that fails is fixable the same way the Pokédex was, provided it is an

@@ -236,19 +236,20 @@ On a Steam Deck, EmuDeck's melonDS works well with the same settings.
 - **Touch is physically the lower LCD.** Anything shown on the top screen cannot be
   tapped, so everything must be done with buttons. That is fine for battles, bag, party
   and menus, which are all button-navigable.
-- **Three screens deliberately stay on the bottom** because they genuinely need the
-  stylus: the trainer-card signature, the Ruins of Alph sliding puzzles, and the
-  Pokéathlon. Press L+R to reach them.
+- **Some screens deliberately stay on the bottom** because they genuinely need the
+  stylus: the trainer-card signature, the Ruins of Alph sliding puzzles, the Pokéathlon
+  and the Union Room's group drawing. Press L+R to reach them.
 - A **source-level** audit against the decompilation found the Alph puzzle to be the only
   genuinely touch-only screen it covers, and cleared everything else it covers as
   button-navigable. But 75 of 119 code overlays were still raw assembly in pret when that
   audit was done, including the bag and the PC box, so it is a lower bound rather than a
   clearance — see [AUDIT.md](AUDIT.md).
 - **19 applications set no display routing of their own** and simply inherit whatever is
-  current. Most are fine; one of them, Oak's speech, turned out not to be and is now
-  handled explicitly, as are three screens outside that list that kept a routing they
-  should not have (the evolution scene, the fly map and the move relearner). The rest are listed in
-  [AUDIT.md](AUDIT.md) and are the likeliest place for a remaining wrong screen.
+  current. All of them have been checked against the decompilation; Oak's speech, the Pal
+  Pad and the rankings viewer were wrong and are handled explicitly, as are three screens
+  outside that list (the evolution scene, the fly map and the move relearner). The
+  verdict for each is in [AUDIT.md](AUDIT.md). The ones not yet played are still the
+  likeliest place for a remaining wrong screen.
 - If a screen is on the wrong side, **L+R always works** as an escape hatch.
 
 ## Troubleshooting

@@ -76,6 +76,21 @@ and corrected a handful. `docs/DECOMP.md` has the cross-reference.
   the patch cannot draw - the save box.
 - Every pointer the X menu walks is range-checked against the size of what it points at.
 
+### Screens nobody had played
+
+- **The Pal Pad and the rankings viewer open on the top screen.** Both draw every window
+  they have on engine A and then send engine A to the touch screen through the game's
+  shared display helper, which the static flips cannot reach. They now have app-table
+  entries, like name entry and the move relearner.
+- **The Union Room's group drawing stays on the touch screen**, as the trainer-card
+  signature does: its canvas is drawn on with the stylus, and the default flip had put it
+  on top, where it cannot be tapped.
+- The rest of the 19 screens that set no routing of their own were checked against the
+  decompilation; `docs/AUDIT.md` gives the verdict for each.
+- An app-table entry whose code does not match no longer switches off the entries after
+  it, and the overlay search no longer misses a match that ends exactly at the end of an
+  overlay - which could have let a duplicate through the one-match rule.
+
 ### Development
 
 - `tools/test_hook.py` runs routines from the assembled hook against synthetic game
@@ -85,6 +100,11 @@ and corrected a handful. `docs/DECOMP.md` has the cross-reference.
   refuses a payload that would not fit in ITCM.
 - `docs/AUDIT.md` corrects overlay 5 (the link battle screens, not the party menu) and names
   the overlays pret left unnamed.
+- The patch log names every overlay it touches after the decompilation's linker spec;
+  four of the old names were wrong (57, 59, 70 and 72 are the Ball Capsule editor, the
+  apricorn box, the GTS and the Wi-Fi connection screen, not battle code).
+- A GitHub Actions workflow (`.github/workflows/payload.yml`) rebuilds the payload, checks
+  it is byte-identical to the committed one, and runs the emulated tests on every push.
 
 ## `V0.2b`
 

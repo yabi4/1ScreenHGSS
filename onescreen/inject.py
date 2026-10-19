@@ -74,13 +74,22 @@ def fill_config(payload: bytes, config_addr: int, load_addr: int,
     return bytes(buf)
 
 
+# Written for an app_table entry the patcher could not verify. Odd, so it reads
+# as Thumb code, but no function lives at address 1: the current VBlank callback
+# is never equal to it, while it is not 0, which would end the table.
+NEVER_CALLBACK = 1
+
+
 def fill_app_table(payload: bytes, table_addr: int, load_addr: int,
                    entries, table_end: int = 0) -> bytes:
     """Write validated {callback, swap} pairs into the payload's app_table.
 
     `entries` is what regions.check_app_table returned. An entry that failed its
-    signature check is written as a zero terminator, so the hook stops there and
-    leaves that app alone rather than acting on an address we cannot vouch for.
+    signature check is written with the callback NEVER_CALLBACK, which can never
+    equal a live VBlank callback, so the hook leaves that app alone rather than
+    acting on an address we cannot vouch for - and the entries after it, and the
+    slots the hook reads by name (evolution_app), stay where they are. A zero
+    callback would have ended the table there and taken every later app with it.
     """
     off = table_addr - load_addr
     need = 8 * (len(entries) + 1)          # every entry, plus the terminator
@@ -95,14 +104,13 @@ def fill_app_table(payload: bytes, table_addr: int, load_addr: int,
             f"{len(entries)} were given; add a slot in src/hook.s")
     buf = bytearray(payload)
     # The assembled payload contains French defaults for development builds.
-    # Clear every runtime record first so a failed earlier signature cannot
-    # leave a later default address reachable outside the terminated table.
+    # Clear every record first, the terminator included, so no default address
+    # survives that the checks below did not vouch for.
     for i in range(len(entries) + 1):
         struct.pack_into("<II", buf, off + i * 8, 0, 0)
     for i, (_name, callback, swap, ok) in enumerate(entries):
-        if not ok:
-            break
-        struct.pack_into("<II", buf, off + i * 8, callback, swap)
+        struct.pack_into("<II", buf, off + i * 8,
+                         callback if ok else NEVER_CALLBACK, swap if ok else 0)
     return bytes(buf)
 
 

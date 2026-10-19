@@ -494,6 +494,85 @@ def test_evolution_band_holds_a_running_blink():
     assert h.r16(faded + BAND_ENTRY) == SALMON
 
 
+# --- apps matched on their VBlank callback ------------------------------------
+
+POWCNT1 = 0x04000304
+PALPAD_CB, RANKINGS_CB, RELEARNER_CB = 0x0222A169, 0x021E5F51, 0x021E5B8D
+
+
+def app_table_hook(entries):
+    """A payload whose app_table the patcher filled from `entries`."""
+    from onescreen import inject
+    h = Hook()
+    payload = h.read(h.load, h.meta["size"])
+    filled = inject.fill_app_table(payload, h.var("OneScreen_AppTable"), h.load,
+                                   entries, h.var("OneScreen_AppTableEnd"))
+    h = Hook(payload=filled)
+    gsys = h.alloc(0x80)
+    h.w32(h.var("cfg_app_callback"), gsys)
+    return h, gsys
+
+
+def test_app_table_puts_pal_pad_and_rankings_on_top():
+    """Both send engine A - every window they have - to the touch screen
+    through the shared helper; their entry puts it back on top."""
+    entries = [("name entry", 0x02083141, 0, True), ("evolution", 0x02077271, 0, True),
+               ("move relearner", RELEARNER_CB, 1, True),
+               ("Pal Pad", PALPAD_CB, 0, True), ("rankings", RANKINGS_CB, 0, True)]
+    for cb in (PALPAD_CB, RANKINGS_CB):
+        h, gsys = app_table_hook(entries)
+        h.w32(gsys, cb)
+        h.w16(POWCNT1, 0x020F)                         # as the helper left it
+        h.call("OneScreen_AppIntent")
+        assert h.r16(POWCNT1) & 0x8000, hex(cb)        # engine A on top
+        h.w16(POWCNT1, 0x020F)
+        h.call("OneScreen_AppIntent")                  # same app: one-shot only
+        assert h.r16(POWCNT1) == 0x020F
+
+
+def test_app_table_survives_an_entry_that_failed():
+    """An unverified entry must not take the ones after it down with it, nor
+    move the evolution scene out of the slot the hook reads by name."""
+    from onescreen import inject
+    entries = [("name entry", 0x02083141, 0, True), ("evolution", 0x02077271, 0, True),
+               ("move relearner", RELEARNER_CB, 1, False),
+               ("Pal Pad", PALPAD_CB, 0, True), ("rankings", RANKINGS_CB, 0, False)]
+    h, gsys = app_table_hook(entries)
+    table = h.var("OneScreen_AppTable")
+    words = [h.r32(table + 4 * i) for i in range(12)]
+    assert words == [0x02083141, 0, 0x02077271, 0, inject.NEVER_CALLBACK, 0,
+                     PALPAD_CB, 0, inject.NEVER_CALLBACK, 0, 0, 0], [hex(w) for w in words]
+    assert h.r32(h.var("evolution_app")) == 0x02077271
+    for cb, swaps in ((RELEARNER_CB, False), (PALPAD_CB, True), (RANKINGS_CB, False)):
+        h.w32(gsys, cb)
+        h.w32(h.var("last_app"), 0)
+        h.w16(POWCNT1, 0x020F)
+        h.call("OneScreen_AppIntent")
+        assert bool(h.r16(POWCNT1) & 0x8000) == swaps, hex(cb)
+
+
+def test_app_table_signatures_need_exactly_one_match():
+    from onescreen import regions
+
+    class Ov:
+        def __init__(self, data, ram):
+            self.data, self.ramAddress = data, ram
+
+    def check(name, blob, ram):
+        ovy = {"Pal Pad": 43, "rankings": 121}[name]
+        out = regions.check_app_table(bytes(0x100000), {ovy: Ov(blob, ram)})
+        return next(e for e in out if e[0] == name)
+
+    for name, sig in (("Pal Pad", regions.PALPAD_SIG), ("rankings", regions.RANKINGS_SIG)):
+        blob = bytes(0x40) + sig + bytes(0x40)
+        assert check(name, blob, 0x02200000) == (name, 0x02200041, 0, True), name
+        twice = blob + sig
+        assert check(name, twice, 0x02200000)[3] is False, name
+        broken = bytearray(blob)
+        broken[0x40 + 1] ^= 0xFF                       # a fixed byte changed
+        assert check(name, bytes(broken), 0x02200000)[3] is False, name
+
+
 # --- the field ----------------------------------------------------------------
 
 def field(h: Hook, task_func=START_MENU_TASK, state=3, inhibit=0x180):

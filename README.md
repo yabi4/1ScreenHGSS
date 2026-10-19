@@ -192,14 +192,15 @@ and the Pokégear, which was the largest touch surface found anywhere in the aud
 Known gaps, in order of how likely you are to meet them:
 
 - **19 applications set no display routing of their own** and inherit whatever is current.
-  One, Oak's speech, turned out to be wrong and is now handled, as are three screens outside
-  that list that kept a routing they should not have (the evolution scene, the fly map and,
-  most recently, the move relearner). The rest are listed in [docs/AUDIT.md](docs/AUDIT.md)
-  and are untested. Berry pots, the
-  apricorn box and the Pal Pad are the ones a normal playthrough will reach.
-- **Three screens deliberately stay on the touch screen** because they genuinely need the
-  stylus — the trainer-card signature, the Ruins of Alph puzzles and the Pokéathlon. These
-  are not fixable: moving them up would make them visible but untappable.
+  Each has now been checked against the decompilation: Oak's speech, the Pal Pad and the
+  rankings viewer were wrong and are handled, as are three screens outside that list (the
+  evolution scene, the fly map and the move relearner). The verdict for every one is in
+  [docs/AUDIT.md](docs/AUDIT.md); the Pal Pad, the rankings, berry pots, the apricorn box
+  and mail have still not been played.
+- **Some screens deliberately stay on the touch screen** because they genuinely need the
+  stylus — the trainer-card signature, the Ruins of Alph puzzles, the Pokéathlon and the
+  Union Room's group drawing. These are not fixable: moving them up would make them
+  visible but untappable.
 - **Safari Zone, Pal Park, Bug Contest and first-rival battles** hand the command menu to
   the touch screen instead of drawing it, because their options are not FIGHT / BAG /
   POKéMON / RUN and the patch only has those four labels.
