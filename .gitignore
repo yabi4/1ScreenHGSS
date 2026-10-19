@@ -10,6 +10,8 @@ out/
 
 # Build artefacts
 build/
+tools/testsaves/bin/
+tools/testsaves/obj/
 # The GUI's PyInstaller output. Kept out of build/, which already holds unpacked
 # ROM modules.
 dist-gui/

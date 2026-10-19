@@ -405,13 +405,16 @@ YN_CELL_W = YN_COLS * 8         # 24 px
 
 BLOB_MAGIC = b"1SLB"
 
-# Four unique sets of images, referenced by five geometry records in the blob
-# header so the hook carries no dimensions of its own:
+# Image sets, referenced by the geometry records in the blob header so the hook
+# carries no dimensions of its own:
 #
-#   set 0, 14 tiles wide   0..3 the root command menu, one per command
+#   set 0, 14 tiles wide   0..3 the root command menu, one per command - banded,
+#                               so one plain image and four rectangles
 #                          4    all paper, to take the menu down
 #   set 1, 3 tiles wide    0,1  the two-option prompt, top and bottom
 #                          2    all paper
+#
+# Sets 5-9 (EXTRA_GEOS) are banded like set 0 and drawn in the same box.
 #
 # The battle and field yes/no geometries both reference set 1. Their tile data
 # is identical, but their rows live in different MAIN BG character bases.
@@ -440,9 +443,39 @@ def _row_addrs(char_base, base_tile, base_col):
 OAK_IMAGES = 3                  # yes/no pair, wipe
 GENDER_IMAGES = 3               # the two options, wipe
 GEO_RECORD = 28                 # data_off, image_bytes, row_bytes, images, 4 row addrs
-GEO_COUNT = 5                   # command, battle yes/no, Oak, gender, field yes/no
+GEO_HEAD_COUNT = 5              # command, battle yes/no, Oak, gender, field yes/no
 SM_PLANS_OFF = 528              # u8 strip[8] per touch layout; see _startmenu
-BLOB_HEADER = SM_PLANS_OFF + 8 * len(TOUCH_LAYOUTS)
+
+# The command box's other sets, whose records cannot sit with the first five -
+# the start menu's record follows those directly - so they get a table of their
+# own after the layout plans. The hook's OneScreen_GeoRecord finds either.
+#
+#   5  FIGHT / BAG / POKeMON / CANCEL   a double's second battler (cancelShown)
+#   6  BALL / BAIT / MUD / RUN          the Safari Zone
+#   7  FIGHT / BALL / POKeMON / RUN     the Bug Contest
+#   8  BALL over RUN                    Pal Park
+#   9  FIGHT alone                      the first rival battle
+#
+# Where those words come from: BattleInput_CreateMainMenuObjects
+# (src/battle/battle_input.c) picks them by battle type, and the Pal Park and
+# FIGHT-only menus are the same objects with the other words hidden.
+EXTRA_GEO_OFF = SM_PLANS_OFF + 8 * len(TOUCH_LAYOUTS)
+EXTRA_GEOS = ("cancel", "safari", "bug", "park", "rival")
+GEO_COUNT = GEO_HEAD_COUNT + len(EXTRA_GEOS)
+BLOB_HEADER = EXTRA_GEO_OFF + GEO_RECORD * len(EXTRA_GEOS)
+
+# A record whose image count has this bit is BANDED: it stores one plain image
+# and, after it, a 4-byte (x, y, w, h) rectangle per choice. A selected image
+# differs from the plain one only in that rectangle, where every paper pixel is
+# band instead - glyph pixels are never paper - so the hook rebuilds it exactly
+# (OneScreen_BandRect). Four 1792-byte images become one, which is what makes
+# room for the sets above. build() checks the identity for every choice.
+BANDED = 0x8000
+CANCEL_MSGS = (924, 925, 926, 928)
+SAFARI_MSGS = (931, 932, 933, 927)
+BUG_MSGS = (924, 1270, 926, 927)
+PARK_MSGS = (1223, 927)
+RIVAL_MSGS = (924,)
 
 # The start menu's record does not fit the shape above - it describes a pool of
 # tiles and a tilemap rather than finished images - so it gets its own block at a
@@ -506,10 +539,6 @@ YN_ROW_BYTES = YN_COLS * 32
 YN_IMAGE_BYTES = YN_ROW_BYTES * GRID_ROWS
 GENDER_ROW_BYTES = GENDER_COLS * 32
 GENDER_IMAGE_BYTES = GENDER_ROW_BYTES * GRID_ROWS
-BLOB_SIZE = (BLOB_HEADER + CMD_IMAGES * CMD_IMAGE_BYTES
-             + (YN_IMAGES + OAK_IMAGES) * YN_IMAGE_BYTES
-             + GENDER_IMAGES * GENDER_IMAGE_BYTES)
-
 
 class LabelError(Exception):
     """The labels could not be built from this ROM."""
@@ -671,6 +700,34 @@ def _layout(font: Font, labels):
     return [top, b_bag, b_pokemon, b_run]
 
 
+SPARSE_PAD = 6                  # px of band either side of a lone bottom word
+
+
+def _layout_sparse(font: Font, top, run=None):
+    """Place a command menu with the BAG and POKEMON slots hidden.
+
+    Pal Park's menu and the first rival battle's are the ordinary command menu
+    with words switched off (BattleInput_CreatePalParkMenuObjects and
+    ..._CreateMainMenuFightObject hide their text objects), so the top word keeps
+    the FIGHT slot and RUN, where there is one, its place in the middle of the
+    bottom row. Returned in command order like _layout, with empty entries for
+    the hidden slots so image indices still mean the same thing.
+    """
+    w = _text_width(font, top)
+    out = [((CELL_W - w) // 2, 0, top, (0, 0, CELL_W, ROW_H))]
+    empty = (0, ROW_H, [], (0, ROW_H, 0, 0))
+    out += [empty, empty]
+    if run is None:
+        out.append(empty)
+    else:
+        w = _text_width(font, run)
+        if w + 2 * SPARSE_PAD > CELL_W:
+            raise LabelError(f"{w}px of RUN does not fit in {CELL_W}px")
+        x = (CELL_W - w) // 2
+        out.append((x, ROW_H, run, (x - SPARSE_PAD, ROW_H, w + 2 * SPARSE_PAD, ROW_H)))
+    return out
+
+
 def _layout_yesno(font: Font, choices):
     """Place the two-option prompt: one choice above the other, both centred.
 
@@ -744,6 +801,43 @@ def _render(font: Font, placed, selected, width=CELL_W, invert=False):
                     canvas[ty][tx] = v
             x += w
     return canvas
+
+
+def _clip_rect(rect, width, height=CELL_H):
+    """A choice's band rectangle, clipped to its box, as (x, y, w, h)."""
+    x0, y0, w, h = rect
+    x1, y1 = min(x0 + w, width), min(y0 + h, height)
+    x0, y0 = max(x0, 0), max(y0, 0)
+    return x0, y0, max(x1 - x0, 0), max(y1 - y0, 0)
+
+
+def _band(canvas, rect):
+    """What OneScreen_BandRect does to the plain image in VRAM: paper inside the
+    rectangle becomes band. The reference the hook is tested against."""
+    x0, y0, w, h = rect
+    out = [row[:] for row in canvas]
+    for y in range(y0, y0 + h):
+        for x in range(x0, x0 + w):
+            if out[y][x] == PAPER:
+                out[y][x] = HILITE
+    return out
+
+
+def _banded_set(font: Font, placed, width, cols):
+    """One plain image and a rectangle per choice - see BANDED.
+
+    Raises LabelError unless banding the plain image reproduces _render's image
+    of every choice exactly, so a set that does not have that shape (an inverted
+    one, say) can never be stored this way.
+    """
+    plain = _render(font, placed, None, width)
+    rects = []
+    for sel, item in enumerate(placed):
+        rect = _clip_rect(item[3], width)
+        if _band(plain, rect) != _render(font, placed, sel, width):
+            raise LabelError(f"choice {sel} is not its plain image banded")
+        rects.append(rect)
+    return _to_tiles(plain, cols), b"".join(struct.pack("<4B", *r) for r in rects)
 
 
 def _render_strip(font: Font, codes, width, height):
@@ -1249,12 +1343,13 @@ def build(rom, log=print, theme=themes.DEFAULT_THEME, overlays=None) -> bytes:
         raise LabelError(f"{FONT_NARC} has no file {FONT_FILE}")
     font = Font(fonts[FONT_FILE])
 
-    # Each image set: its layout, how many highlighted variants, pixel width and
-    # tile width. A geometry then pairs one of those sets with its destination
-    # rows. Keeping those concepts separate lets the field yes/no geometry alias
-    # the battle yes/no images without copying them into the blob a second time.
+    # Each image set: its layout, how many highlighted variants, pixel width,
+    # tile width, and whether it is banded (BANDED). A geometry then pairs one
+    # of those sets with its destination rows. Keeping those concepts separate
+    # lets the field yes/no geometry alias the battle yes/no images without
+    # copying them into the blob a second time.
     sets = [
-        (_layout(font, labels), 4, CELL_W, GRID_COLS, False),
+        (_layout(font, labels), 4, CELL_W, GRID_COLS, True),
         (_layout_yesno(font, choices), 2, YN_CELL_W, YN_COLS, False),
         # Oak's two prompts used to invert - white ink, no shadow - because the
         # band was whatever saturated colour his intro happened to be using, and
@@ -1266,47 +1361,86 @@ def build(rom, log=print, theme=themes.DEFAULT_THEME, overlays=None) -> bytes:
         (_layout_row(font, gender, GENDER_CELL_W), 2, GENDER_CELL_W, GENDER_COLS,
          False),
     ]
-
+    battle_rows = _row_addrs(BATTLE_CHAR_BASE, WIN_BASE_TILE, GRID_BASE_COL)
     geometries = [
-        (0, _row_addrs(BATTLE_CHAR_BASE, WIN_BASE_TILE, GRID_BASE_COL)),
+        (0, battle_rows),
         (1, _row_addrs(BATTLE_CHAR_BASE, WIN_BASE_TILE, YN_BASE_COL)),
         (2, _row_addrs(OAK_CHAR_BASE, OAK_BASE_TILE, YN_BASE_COL)),
         (3, _row_addrs(OAK_CHAR_BASE, OAK_BASE_TILE, GENDER_BASE_COL)),
         (1, _row_addrs(FIELD_CHAR_BASE, FIELD_BASE_TILE, YN_BASE_COL)),
     ]
-    if len(geometries) != GEO_COUNT:
+    if len(geometries) != GEO_HEAD_COUNT:
         raise LabelError(
-            f"there are {len(geometries)} geometries, expected {GEO_COUNT}")
+            f"there are {len(geometries)} geometries, expected {GEO_HEAD_COUNT}")
+
+    # The special command menus. Each is optional: a word this ROM does not have,
+    # or a row it cannot fit, leaves that record empty, and the hook hands that
+    # menu to the touch screen exactly as before.
+    def words(msgs):
+        out = [_decode_message(archive[MSGDATA_FILE], m) for m in msgs]
+        if not all(out):
+            raise LabelError(f"msg_0197 {msgs} has an empty entry")
+        return out
+
+    extra_layouts = {
+        "cancel": lambda: _layout(font, words(CANCEL_MSGS)),
+        "safari": lambda: _layout(font, words(SAFARI_MSGS)),
+        "bug": lambda: _layout(font, words(BUG_MSGS)),
+        "park": lambda: _layout_sparse(font, *words(PARK_MSGS)),
+        "rival": lambda: _layout_sparse(font, *words(RIVAL_MSGS)),
+    }
+    extra_missing = []
+    for name in EXTRA_GEOS:
+        try:
+            placed = extra_layouts[name]()
+            _banded_set(font, placed, CELL_W, GRID_COLS)
+        except (LabelError, IndexError, KeyError) as exc:
+            extra_missing.append(f"{name} ({exc})")
+            geometries.append((None, battle_rows))
+            continue
+        sets.append((placed, 4, CELL_W, GRID_COLS, True))
+        geometries.append((len(sets) - 1, battle_rows))
 
     # Allocate offsets only for unique image sets. Geometry 4 deliberately gets
     # the same offset as geometry 1, while retaining its own destination rows.
+    # The wipe is NOT stored. It is one image of solid paper per set, and four of
+    # them came to 3840 bytes of 0xFF in a blob with no room to spare, so the hook
+    # fills instead of copying when asked for the last image. The records still
+    # count it, so nothing that asks for a wipe changed.
     off = BLOB_HEADER
-    set_offsets = []
-    for _placed, variants, _w, cols, _inv in sets:
+    set_offsets, set_data = [], []
+    for placed, variants, width, cols, banded in sets:
+        set_offsets.append(off)
+        if banded:
+            plain, rects = _banded_set(font, placed, width, cols)
+            data = plain + rects
+        else:
+            data = b"".join(_to_tiles(_render(font, placed, sel, width), cols)
+                            for sel in range(variants))
+        set_data.append(data)
+        off += len(data)
+
+    def record(set_id, addrs):
+        if set_id is None:                          # a special menu left out
+            return struct.pack("<IIHH", 0, 0, GRID_COLS * 32, 0) + \
+                struct.pack(f"<{GRID_ROWS}I", *addrs)
+        if not 0 <= set_id < len(sets):
+            raise LabelError(f"geometry references missing image set {set_id}")
+        _placed, variants, _width, cols, banded = sets[set_id]
         row_bytes = cols * 32
         image_bytes = row_bytes * GRID_ROWS
-        set_offsets.append(off)
-        # The wipe is NOT stored. It is one image of solid paper per set, and
-        # four of them came to 3840 bytes of 0xFF in a blob with no room to
-        # spare, so the hook fills instead of copying when asked for the last
-        # image. The records still count it, so nothing that asks for a wipe
-        # changed.
-        off += variants * image_bytes
+        return struct.pack("<IIHH", set_offsets[set_id], image_bytes, row_bytes,
+                           (variants + 1) | (BANDED if banded else 0)) + \
+            struct.pack(f"<{GRID_ROWS}I", *addrs)
 
     blob = bytearray(struct.pack("<4sBBH", BLOB_MAGIC, GRID_ROWS,
                                  len(geometries), 0))
-    for set_id, addrs in geometries:
-        if not 0 <= set_id < len(sets):
-            raise LabelError(f"geometry references missing image set {set_id}")
-        _placed, variants, _width, cols, _invert = sets[set_id]
-        row_bytes = cols * 32
-        image_bytes = row_bytes * GRID_ROWS
-        blob += struct.pack("<IIHH", set_offsets[set_id], image_bytes,
-                            row_bytes, variants + 1)
-        blob += struct.pack(f"<{GRID_ROWS}I", *addrs)
+    for set_id, addrs in geometries[:GEO_HEAD_COUNT]:
+        blob += record(set_id, addrs)
     if len(blob) > SM_RECORD_OFF:
         raise LabelError(f"the geometry records reach {len(blob)}, over the start "
                          f"menu record at {SM_RECORD_OFF}")
+    extra_records = b"".join(record(s, a) for s, a in geometries[GEO_HEAD_COUNT:])
 
     # `off` now points past the last image, which is where the panel's own data
     # goes, so the record can carry absolute blob offsets like the others.
@@ -1329,16 +1463,16 @@ def build(rom, log=print, theme=themes.DEFAULT_THEME, overlays=None) -> bytes:
                          f"plans at {SM_PLANS_OFF}")
     blob += b"\0" * (SM_PLANS_OFF - len(blob))
     blob += sm_plans
-    blob += b"\0" * (BLOB_HEADER - len(blob))
+    if len(blob) != EXTRA_GEO_OFF:
+        raise LabelError(f"the layout plans end at {len(blob)}, not at the extra "
+                         f"geometry records' {EXTRA_GEO_OFF}")
+    blob += extra_records
     if len(blob) != BLOB_HEADER:
         raise LabelError(f"header is {len(blob)} bytes, expected {BLOB_HEADER}")
 
-    images_bytes = 0
-    for placed_set, variants, width, cols, invert in sets:
-        for sel in range(variants):
-            blob += _to_tiles(
-                _render(font, placed_set, sel, width, invert), cols)
-        images_bytes += variants * cols * 32 * GRID_ROWS
+    for data in set_data:
+        blob += data
+    images_bytes = sum(len(d) for d in set_data)
     blob += sm_payload
     blob += list_payload
     expect = BLOB_HEADER + images_bytes + len(sm_payload) + len(list_payload)
@@ -1350,6 +1484,10 @@ def build(rom, log=print, theme=themes.DEFAULT_THEME, overlays=None) -> bytes:
     log(f"  Labels   : commands {fmt(labels)} px, battle yes/no {fmt(choices)} px, "
         f"field alias, Oak yes/no {fmt(oak)} px, gender {fmt(gender)} px, "
         f"{len(blob)} bytes")
+    drawn = [n for n in EXTRA_GEOS if not any(m.startswith(n + " ") for m in extra_missing)]
+    log(f"  Battles  : also drawn - {', '.join(drawn) or 'none'}"
+        + (f"; left to the touch screen - {'; '.join(extra_missing)}"
+           if extra_missing else ""))
     log(f"  Theme    : {chosen['label']}, panel paper "
         f"{SM_PAL_NORM_RGB[PAPER]:#06x}, band {chosen['band']:#06x}")
     log(f"  X menu   : {len(sm_labels)} labels, widest "

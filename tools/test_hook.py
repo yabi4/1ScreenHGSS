@@ -324,7 +324,139 @@ def palette_blink(h: Hook, pd, state=1, **kw):
     return b
 
 
+def inked_font(glyphs=0x200, width=6) -> "labels.Font":
+    """A font whose glyphs have ink, shadow and paper in them, so a band laid
+    under a word has something to go around."""
+    head = struct.pack("<IIIBBBB", 16, 16 + glyphs * 64, glyphs, 2, 2, 2, 2)
+    body = bytes((0x1B + 37 * i) & 0xFF for i in range(glyphs * 64))
+    return labels.Font(head + body + bytes([width]) * glyphs)
+
+
+COMMAND_WORDS = {                      # geometry -> words, in command order
+    0: ["ATTAQUE", "SAC", "POKEMON", "FUITE"],
+    5: ["ATTAQUE", "SAC", "POKEMON", "ANNULER"],
+    6: ["BALL", "APPAT", "BOUE", "FUITE"],
+    7: ["ATTAQUE", "BALL", "POKEMON", "FUITE"],
+    8: ["BALL", "FUITE"],
+    9: ["ATTAQUE"],
+}
+
+
+def command_layout(font, geo):
+    words = [a(w) for w in COMMAND_WORDS[geo]]
+    if geo in (8, 9):
+        return labels._layout_sparse(font, *words)
+    return labels._layout(font, words)
+
+
+def geo_record_addr(base, geo):
+    if geo < labels.GEO_HEAD_COUNT:
+        return base + 8 + geo * labels.GEO_RECORD
+    return base + labels.EXTRA_GEO_OFF + (geo - labels.GEO_HEAD_COUNT) * labels.GEO_RECORD
+
+
+def put_command_sets(h: Hook, font=None, leave_out=()):
+    """The command box's banded sets and the battle yes/no set, as build()
+    writes them, into the payload's blob. Returns (font, battle rows)."""
+    font = font or inked_font()
+    base = blank_blob(h)
+    h.w8(base + 4, labels.GRID_ROWS)
+    h.w8(base + 5, labels.GEO_COUNT)
+    rows = labels._row_addrs(labels.BATTLE_CHAR_BASE, labels.WIN_BASE_TILE,
+                             labels.GRID_BASE_COL)
+    off = labels.BLOB_HEADER
+    for geo in COMMAND_WORDS:
+        rec = geo_record_addr(base, geo)
+        if geo in leave_out:
+            h.write(rec, struct.pack("<IIHH4I", 0, 0, labels.CMD_ROW_BYTES, 0, *rows))
+            continue
+        plain, rects = labels._banded_set(font, command_layout(font, geo),
+                                          labels.CELL_W, labels.GRID_COLS)
+        h.write(base + off, plain + rects)
+        h.write(rec, struct.pack("<IIHH4I", off, len(plain), labels.CMD_ROW_BYTES,
+                                 5 | labels.BANDED, *rows))
+        off += len(plain) + len(rects)
+    yn = labels._layout_yesno(font, [a("OUI"), a("NON")])
+    yn_rows = labels._row_addrs(labels.BATTLE_CHAR_BASE, labels.WIN_BASE_TILE,
+                                labels.YN_BASE_COL)
+    data = b"".join(labels._to_tiles(labels._render(font, yn, s, labels.YN_CELL_W),
+                                     labels.YN_COLS) for s in range(2))
+    h.write(base + off, data)
+    h.write(geo_record_addr(base, 1), struct.pack(
+        "<IIHH4I", off, labels.YN_IMAGE_BYTES, labels.YN_ROW_BYTES, 3, *yn_rows))
+    return font, rows
+
+
+def drawn_box(h: Hook, rows, row_bytes=labels.CMD_ROW_BYTES):
+    return b"".join(h.read(r, row_bytes) for r in rows)
+
+
+def test_banded_images_match_the_renderer():
+    """Every choice of every banded set, drawn by the hook - plain image, then
+    OneScreen_BandRect - is byte for byte what labels._render makes of it."""
+    h = Hook()
+    font, rows = put_command_sets(h)
+    for geo in COMMAND_WORDS:
+        placed = command_layout(font, geo)
+        for sel in range(4):
+            if not placed[sel][2]:
+                continue                               # a hidden slot
+            h.call("OneScreen_BattleMenu", (geo << 4) | sel)
+            want = labels._to_tiles(labels._render(font, placed, sel, labels.CELL_W),
+                                    labels.GRID_COLS)
+            assert drawn_box(h, rows) == want, (geo, sel)
+        h.call("OneScreen_BattleMenu", (geo << 4) | 4)  # the wipe
+        assert drawn_box(h, rows) == b"\xff" * len(want), geo
+        assert h.call("OneScreen_BattleWipe", geo) == (geo << 4) | 4, geo
+    # out of range: past the choices, past the records - nothing written
+    h.write(rows[0], b"\x5a" * 4)
+    for code in ((0 << 4) | 5, (10 << 4) | 0, (12 << 4) | 0):
+        h.call("OneScreen_BattleMenu", code)
+        assert h.read(rows[0], 4) == b"\x5a" * 4, hex(code)
+    assert signed(h.call("OneScreen_BattleWipe", 12)) == -1
+
+
+def test_battle_image_picks_the_words_the_game_shows():
+    SAFARI, PARK, BUG = 0x20, 0x200, 0x1000
+    cases = [  # menu, battle type, cancelShown, menuY, menuX -> image
+        (1, 0, 0, 0, 0, 0x00), (3, 0, 0, 1, 1, 0x03), (4, 0, 0, 1, 2, 0x02),
+        (2, 2, 1, 1, 1, 0x53),                      # a double's second battler
+        (7, SAFARI, 0, 1, 0, 0x61), (1, SAFARI, 0, 0, 1, 0x60),
+        (19, BUG, 0, 1, 0, 0x71), (20, BUG, 0, 1, 2, 0x72),
+        (9, PARK, 0, 0, 0, 0x80), (10, PARK, 0, 1, 0, 0x83),
+        (5, 0, 0, 1, 2, 0x90), (6, 0, 0, 0, 0, 0x90),
+        (14, 0, 0, 1, 0, 0x11),                     # yes/no, as before
+        (3, PARK, 0, 0, 0, -1),                     # the park's words on 3x2
+        (11, 0, 0, 0, 0, -1), (12, 0, 0, 0, 0, -1), (0, 0, 0, 0, 0, -1),
+        (0xFF, 0, 0, 0, 0, -1), (21, 0, 0, 0, 0, -1),
+    ]
+    for menu, btype, cancel, y, x, want in cases:
+        h = Hook()
+        put_command_sets(h)
+        bs, bi = battle(h, menu_id=menu, menu_y=y, menu_x=x)
+        h.w32(bs + 0x2C, btype)
+        h.w8(bi + 0x68F, cancel)
+        got = signed(h.call("OneScreen_BattleImage", signed(menu if menu < 0x80 else menu - 0x100)))
+        assert got == want, (menu, btype, cancel, hex(got))
+    # a set the blob does not hold swaps, as every special menu used to
+    h = Hook()
+    put_command_sets(h, leave_out=(6,))
+    bs, _bi = battle(h, menu_id=7)
+    h.w32(bs + 0x2C, SAFARI)
+    assert signed(h.call("OneScreen_BattleImage", 7)) == -1
+    # and no blob at all: every menu swaps rather than being drawn as nothing
+    h = Hook()
+    battle(h, menu_id=1)
+    assert signed(h.call("OneScreen_BattleImage", 1)) == -1
+    # nor anything once the bag has freed BattleInput
+    h = Hook()
+    put_command_sets(h)
+    bs, _bi = battle(h, menu_id=1, graphics_mode=3)
+    assert signed(h.call("OneScreen_BattleImage", 1)) == -1
+
+
 def battle_with_palette(h: Hook, theme=BAND, blink_state=1, **blink):
+    put_command_sets(h)
     bs, bi = battle(h, menu_id=1)
     pd, opaque, faded = palette_data(h)
     b = palette_blink(h, pd, blink_state, **blink)

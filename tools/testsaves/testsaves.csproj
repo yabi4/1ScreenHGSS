@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Builds play-test saves from a complete HGSS save; see docs/DEVELOPMENT.md.
+       PKHeX.Core is the save library everyone uses for Gen IV; pinned so a
+       rebuild makes the same save. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="PKHeX.Core" Version="26.8.26" />
+  </ItemGroup>
+
+</Project>

@@ -139,6 +139,8 @@ from table entries 752 and 71 (`regions.resolve_native_lists`):
 | `BI_MENU_CURSOR_OFF` | `+0x6DC` | `menuCursor` {enabled, menuY, menuX} | **corrected** from a learned value starting at `0x6D4` (`scrollXEnd`) |
 | `BATTLE_INPUT_SIZE` | `0x6F8` | `sizeof(BattleInput)` | new |
 | `BSTATE_BATTLE_MAIN` | `9` | `Battle_Run` state while the `BattleSystem` lives | new |
+| `BS_BATTLE_TYPE_OFF` | `BattleSystem+0x2C` | `battleType` - Safari `0x20`, Pal Park `0x200`, Bug Contest `0x1000` | **new**; retail `BattleSystem_GetBattleType` is `ldr r0,[r0,#0x2c]` |
+| `BI_CANCEL_SHOWN_OFF` | `BattleInput+0x68F` | `cancelShown` - CANCEL in RUN's place | **new**; the sixth of the one-byte fields the literal census counted |
 | `BS_PALETTE_OFF` | `BattleSystem+0x28` | `palette`, a `PaletteData` with `autoTransparent` set | **new**: its VBlank callback pushes the main-BG buffer every frame |
 | `BS_MSG_ICON_OFF` | `+0x1B0` | `msgIcon`, a `PaletteBlink` on top-screen palette 11 | **new** |
 
@@ -181,7 +183,9 @@ ends it. A blink built over a `PaletteData` writes both of its buffers, so it is
   the link stages `manager->data` is something else, and after the battle it is freed.
 - **Menu ids 5..8 are not the ordinary command menu.** 5/6 are the first rival battle (FIGHT
   only) and 7/8 the Safari Zone (BALL / BAIT / MUD / RUN), which were drawn as
-  FIGHT / BAG / POKéMON / RUN. They now swap, like the Bug Contest's 19/20 already did.
+  FIGHT / BAG / POKéMON / RUN. The words are picked by battle type, not menu id
+  (`BattleInput_CreateMainMenuObjects`), and RUN becomes CANCEL when `cancelShown` is set;
+  v0.3 draws each of them with its own words.
 - **The X menu in the special zones** was thought unreachable: the layout lives in the touch
   app's own data. The decompilation names that data and the path to it, so the panel now
   draws the game's own grid in all seven layouts, and its "normal layout" test - the RETIRE

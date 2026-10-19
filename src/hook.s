@@ -150,8 +150,7 @@ BATTLE_INPUT_SIZE = 0x6F8       @ sizeof(BattleInput), for the range check
 BSTATE_BATTLE_MAIN = 9          @ Battle_Run's state while BattleSystem lives
 
 @ enum BattleMenuID (include/constants/battle_menu.h). sBattleMenuTemplates
-@ (src/battle/battle_input.c) gives the main-menu cursor to ten ids, but only
-@ four of them show FIGHT / BAG / POKEMON / RUN:
+@ (src/battle/battle_input.c) gives the main-menu cursor to ten ids:
 @
 @     1 MAIN_INITIAL, 2 MAIN      the first opening this battle (1 for the
 @                                 first battler, 2 for the second in a double)
@@ -159,17 +158,34 @@ BSTATE_BATTLE_MAIN = 9          @ Battle_Run's state while BattleSystem lives
 @                                 list or the bag lands here
 @     5, 6                        the first rival battle: FIGHT alone, a 1x1
 @                                 cursor
-@     7, 8                        the Safari Zone: BALL / BAIT / MUD / RUN
-@     19, 20                      the Bug Contest: BALL in place of BAG
+@     7, 8                        the Safari Zone
+@     19, 20                      the Bug Contest
+@     9, 10                       Pal Park: BALL above RUN, a 1x2 cursor
 @
-@ The patch only has FIGHT/BAG/POKEMON/RUN pixels, and drawing them over a
-@ Safari or first-rival menu would label choices the game is not offering -
-@ worse than swapping. So 5..8 and 19/20 swap like any other menu. 9/10 are
-@ Pal Park (BALL / RUN), 11 the move list and 12 target select. 0 is
+@ The words are not tied to those ids. BattleInput_CreateMainMenuObjects, which
+@ every one of them uses, picks them by battle type - BALL / BAIT / MUD in the
+@ Safari Zone, BALL for BAG in the Bug Contest - and puts CANCEL in RUN's place
+@ when BattleInput.cancelShown says so, for a double's second battler. So
+@ OneScreen_BattleImage reads the type for all eight 3x2 ids rather than
+@ trusting the id. 11 is the move list and 12 target select. 0 is
 @ BATTLE_MENU_0, the blank menu that is up while the intro text plays and while
 @ the turn runs; -1 (NONE) only exists inside the game's own menu change.
 BATTLE_MENU_ROOT_LO = 1
 BATTLE_MENU_ROOT_HI = 4
+BATTLE_MENU_RIVAL_LO = 5
+BATTLE_MENU_RIVAL_HI = 6
+BATTLE_MENU_SAFARI_LO = 7
+BATTLE_MENU_SAFARI_HI = 8
+BATTLE_MENU_PARK_LO = 9
+BATTLE_MENU_PARK_HI = 10
+BATTLE_MENU_BUG_LO = 19
+BATTLE_MENU_BUG_HI = 20
+BS_BATTLE_TYPE_OFF = 0x2C       @ BattleSystem.battleType
+BATTLE_TYPE_SAFARI = 0x20       @ include/constants/battle.h
+BATTLE_TYPE_PAL_PARK = 0x200
+BATTLE_TYPE_BUG_CONTEST = 0x1000
+BI_CANCEL_SHOWN_OFF = 0x68F     @ BattleInput.cancelShown: CANCEL in RUN's place
+BATTLE_RUN_IMAGE = 3            @ image index of the RUN slot, bottom middle
 
 @ 13..17 are the binary prompts - YES_NO, KEEP_FORGET_MOVE, GIVE_UP_ON_MOVE,
 @ SWITCH_OR_FLEE, SWITCH_OR_KEEP. sBattleMenuTemplates gives all five
@@ -208,11 +224,23 @@ LABEL_GEO_OAK    = 2            @ Oak's yes/no, stacked - the generic multichoic
 LABEL_GEO_GENDER = 3            @ boy/girl, side by side - the gender handler moves
                                 @ on LEFT and RIGHT, so stacking implied wrong keys
 LABEL_GEO_FIELD  = 4            @ field-dialog Oui/Non; aliases LABEL_GEO_YN pixels
-LABEL_GEO_COUNT  = 5
+LABEL_GEO_COUNT  = 5            @ the records at +8; any more are at LABEL_GEO_EXTRA_OFF
+@ The command box's other word sets (labels.EXTRA_GEOS). They are drawn exactly
+@ like set 0, in the same box, and a ROM that cannot supply one leaves its
+@ record with no images - that menu then swaps, as every one of them used to.
+LABEL_GEO_CANCEL = 5            @ CANCEL in RUN's place: a double's second battler
+LABEL_GEO_SAFARI = 6            @ BALL / BAIT / MUD / RUN
+LABEL_GEO_BUG    = 7            @ BALL in BAG's place
+LABEL_GEO_PARK   = 8            @ Pal Park: BALL, and RUN below it
+LABEL_GEO_RIVAL  = 9            @ the first rival battle: FIGHT alone
+@ A record's image count with this bit set is BANDED: one plain image, then one
+@ (x, y, w, h) byte rectangle per choice. Image i is the plain image with the
+@ paper inside rectangle i turned to band - see OneScreen_BandRect.
+LABEL_GEO_BANDED = 0x8000
 @ Reserved space for the label images; the patcher refuses rather than overrun it.
-@ The five geometry records, start-menu record and four unique localized image
-@ sets fit here with headroom. The field geometry aliases the battle Yes/No set.
-LABEL_BLOB_SIZE = 19456         @ reserved; the patcher refuses rather than overrun it
+@ The ten geometry records, the start-menu and list records, the banded command
+@ sets and the yes/no sets fit here. The field geometry aliases the battle Yes/No.
+LABEL_BLOB_SIZE = 22912         @ reserved; the patcher refuses rather than overrun it
 
 @ The main-loop call we displace: `bl 0x0200110C` at 0x02000DB0.
 ORIG_LOOP_FN = 0x0200110C + 1   @ +1 = Thumb
@@ -443,6 +471,7 @@ SM_N_LAYOUTS       = 7
 SM_PLANS_OFF       = 528        @ in the label blob: u8 strip[8] per layout
 SM_PLAN_UNDRAWABLE = 0xFE       @ cell 0 of a layout the patcher cannot label
 SM_CELLS           = 8
+LABEL_GEO_EXTRA_OFF = SM_PLANS_OFF + SM_CELLS * SM_N_LAYOUTS  @ labels.EXTRA_GEO_OFF
 SM_SP_CELLS        = 16         @ OneScreen_StartMenu's frame: the cell plan,
 SM_SP_HI           = 24         @ the highlighted cell,
 SM_FRAME_SP        = 28         @ and the frame's size
@@ -855,7 +884,7 @@ EVOLUTION_TASK_ORIG     = 0x02075D09 @ sub_02075D08, Thumb
     .global OneScreen_Signature
 OneScreen_Signature:
     .ascii  "1SGS"
-    .word   0x00000022          @ payload version
+    .word   0x00000023          @ payload version
 
 @ Filled in by the patcher from the ROM being patched. Defaults are French, so
 @ an unconfigured payload still works there. Keep the field order in step with
@@ -1223,13 +1252,10 @@ OneScreen_AutoBattle:
     cmp     r0, #0
     bne     25f
 
-    subs    r0, r5, #BATTLE_MENU_ROOT_LO
-    cmp     r0, #(BATTLE_MENU_ROOT_HI - BATTLE_MENU_ROOT_LO)
-    bls     26f                     @ 1..4: the root command menu
-    movs    r0, r5                  @ 3-bit immediate cannot reach 13
-    subs    r0, #BATTLE_MENU_TWO_LO
-    cmp     r0, #(BATTLE_MENU_TWO_HI - BATTLE_MENU_TWO_LO)
-    bls     26f                     @ 13..17: a yes/no prompt, drawn on the scene
+    movs    r0, r5
+    bl      OneScreen_BattleImage
+    adds    r0, #1
+    bne     26f                     @ a menu we draw on the scene: keep it
     cmp     r5, #0
     ble     28f                     @ -1 / 0: no menu is up, leave the scene alone
 
@@ -1398,6 +1424,104 @@ OneScreen_BattleCursor:
     .pool
 
 @ ---------------------------------------------------------------------------
+@ int OneScreen_BattleImage(int menu_id)
+@   -> r0 = the label image to draw on the scene for this menu, or -1 when the
+@      patch has nothing for it and the touch screen should take it.
+@
+@ The one place that decides which menus are drawn, for OneScreen_AutoBattle
+@ (keep the scene or swap) and OneScreen_BattleDraw (what to blit) alike, so
+@ the two cannot disagree. A set the blob does not hold - an old blob, or a ROM
+@ whose words for it could not be read - answers -1, and that menu swaps.
+@ ---------------------------------------------------------------------------
+    .thumb_func
+OneScreen_BattleImage:
+    push    {r4, r5, r6, lr}
+    movs    r4, r0                  @ menu id
+    bl      OneScreen_BattleInput
+    movs    r6, r0                  @ BattleInput
+    beq     99f                     @ freed, or no battle: nothing to read
+    movs    r0, r4
+    subs    r0, #BATTLE_MENU_TWO_LO
+    cmp     r0, #(BATTLE_MENU_TWO_HI - BATTLE_MENU_TWO_LO)
+    bhi     91f
+    bl      OneScreen_BattleYesNo   @ 13..17: a code in LABEL_GEO_YN already
+    b       97f
+
+91: movs    r5, #LABEL_GEO_RIVAL
+    movs    r0, r4
+    subs    r0, #BATTLE_MENU_RIVAL_LO
+    cmp     r0, #(BATTLE_MENU_RIVAL_HI - BATTLE_MENU_RIVAL_LO)
+    bls     95f                     @ FIGHT alone: always image 0
+    movs    r0, r4
+    subs    r0, #BATTLE_MENU_PARK_LO
+    cmp     r0, #(BATTLE_MENU_PARK_HI - BATTLE_MENU_PARK_LO)
+    bhi     92f
+    movs    r5, #LABEL_GEO_PARK     @ Pal Park: BALL in FIGHT's slot, RUN in
+    ldr     r1, =(BI_MENU_CURSOR_OFF + 1)   @ RUN's - one column, so menuY says
+    ldrb    r0, [r6, r1]
+    cmp     r0, #0
+    beq     95f
+    movs    r0, #BATTLE_RUN_IMAGE
+    b       96f
+
+    @ The 3x2 menus: which words, by battle type and cancelShown.
+92: movs    r0, r4
+    subs    r0, #BATTLE_MENU_ROOT_LO
+    cmp     r0, #(BATTLE_MENU_SAFARI_HI - BATTLE_MENU_ROOT_LO)
+    bls     93f                     @ 1..8, less 5/6 and the park handled above
+    movs    r0, r4
+    subs    r0, #BATTLE_MENU_BUG_LO
+    cmp     r0, #(BATTLE_MENU_BUG_HI - BATTLE_MENU_BUG_LO)
+    bhi     99f                     @ the move list, target select, ...
+93: ldr     r0, =bt_system
+    ldr     r0, [r0]                @ checked by OneScreen_BattleInput above
+    ldr     r0, [r0, #BS_BATTLE_TYPE_OFF]
+    movs    r5, #LABEL_GEO_SAFARI
+    movs    r1, #BATTLE_TYPE_SAFARI
+    tst     r0, r1
+    bne     94f
+    ldr     r1, =BATTLE_TYPE_PAL_PARK
+    tst     r0, r1
+    bne     99f                     @ the park's words on a 3x2 menu: not ours
+    movs    r5, #LABEL_GEO_BUG
+    ldr     r1, =BATTLE_TYPE_BUG_CONTEST
+    tst     r0, r1
+    bne     94f
+    movs    r5, #LABEL_GEO_CANCEL
+    ldr     r1, =BI_CANCEL_SHOWN_OFF
+    ldrb    r0, [r6, r1]
+    cmp     r0, #0
+    bne     94f
+    movs    r5, #0                  @ FIGHT / BAG / POKEMON / RUN
+94: bl      OneScreen_BattleCursor
+    b       96f
+95: movs    r0, #0
+96: lsls    r5, r5, #4
+    orrs    r0, r5                  @ (set << 4) | index
+
+    @ Only an image the blob actually holds.
+97: movs    r4, r0
+    lsrs    r0, r0, #4
+    bl      OneScreen_GeoRecord
+    cmp     r0, #0
+    beq     99f
+    ldrh    r0, [r0, #10]
+    lsls    r0, r0, #17             @ less LABEL_GEO_BANDED
+    lsrs    r0, r0, #17
+    subs    r0, #1                  @ less the wipe: -1 for a set left out
+    movs    r1, #15
+    ands    r1, r4
+    cmp     r1, r0
+    bge     99f                     @ signed, so -1 refuses every index
+    movs    r0, r4
+    pop     {r4, r5, r6, pc}
+99: movs    r0, #0
+    mvns    r0, r0
+    pop     {r4, r5, r6, pc}
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
 @ void OneScreen_BattleMenu(int image)
 @
 @ Blit one of the label images into the battle message window. This is the whole
@@ -1418,6 +1542,10 @@ OneScreen_BattleCursor:
     .thumb_func
 OneScreen_BattleMenu:
     push    {r4, r5, r6, r7, lr}
+    sub     sp, #8                  @ [sp] the record, [sp, #4] choice to band
+    movs    r4, #0
+    mvns    r4, r4
+    str     r4, [sp, #4]            @ -1: no band unless a banded set says so
     ldr     r7, =OneScreen_Labels
     ldr     r1, [r7]
     ldr     r2, =LABEL_MAGIC
@@ -1425,36 +1553,38 @@ OneScreen_BattleMenu:
     bne     39f                     @ blob never filled in: draw nothing at all
     ldrb    r6, [r7, #4]            @ rows
 
-    lsrs    r1, r0, #4              @ which set
-    ldrb    r2, [r7, #5]            @ number of geometry records
-    cmp     r1, r2
-    bhs     39f                     @ bad image code: stay inside the header
-    movs    r2, #LABEL_GEO_SIZE
-    muls    r1, r2
-    adds    r1, #8
-    adds    r1, r7, r1              @ -> its geometry record
-    movs    r2, #15
-    ands    r0, r2                  @ index within the set
+    movs    r5, r0                  @ the image code
+    lsrs    r0, r0, #4              @ which set
+    bl      OneScreen_GeoRecord
+    movs    r1, r0                  @ -> its geometry record
+    beq     39f                     @ bad image code: stay inside the header
+    str     r1, [sp]
+    movs    r0, #15
+    ands    r0, r5                  @ index within the set
     ldrh    r2, [r1, #10]           @ images in this set, including its wipe
-    cmp     r0, r2
+    lsls    r3, r2, #17
+    lsrs    r3, r3, #17             @ less LABEL_GEO_BANDED
+    cmp     r0, r3
     bhs     39f                     @ bad index: stay inside its image data
-
-    ldr     r3, [r1, #4]            @ bytes per image
-    muls    r3, r0
-    ldr     r2, [r1]                @ where this set's images start
-    adds    r3, r3, r2
-    adds    r4, r7, r3              @ src
-    ldrh    r5, [r1, #8]            @ bytes per tile row
 
     @ The last image of every set is the wipe: solid paper, and not stored. Four
     @ of them was 3840 bytes of 0xFF in a blob that had none to spare, so it is
     @ filled here instead. Asking for it is unchanged - the records still count it.
-    ldrh    r2, [r1, #10]           @ images, wipe included
-    subs    r2, #1
-    cmp     r0, r2
-    bne     34f
     movs    r4, #0                  @ 0 = fill, and r4 is the source otherwise
-34: movs    r7, r1                  @ 3-bit immediate cannot reach 12
+    subs    r3, #1
+    cmp     r0, r3
+    beq     34f
+    ldr     r4, [r1]                @ where this set's images start
+    lsls    r2, r2, #16             @ LABEL_GEO_BANDED -> N
+    bmi     32f
+    ldr     r3, [r1, #4]            @ bytes per image
+    muls    r3, r0
+    adds    r4, r4, r3              @ that image
+    b       31f
+32: str     r0, [sp, #4]            @ banded: the plain image, then this band
+31: adds    r4, r7, r4              @ src
+34: ldrh    r5, [r1, #8]            @ bytes per tile row
+    movs    r7, r1                  @ 3-bit immediate cannot reach 12
     adds    r7, #12                 @ -> the row address table
 
     movs    r3, #0
@@ -1477,7 +1607,41 @@ OneScreen_BattleMenu:
     bne     33b
 38: adds    r3, #1
     b       35b
-39: pop     {r4, r5, r6, r7, pc}
+39: ldr     r1, [sp, #4]
+    adds    r0, r1, #1
+    beq     30f                     @ nothing to band
+    ldr     r0, [sp]
+    bl      OneScreen_BandRect
+30: add     sp, #8
+    pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ void *OneScreen_GeoRecord(int set) -> that set's geometry record in the label
+@ blob, or 0 past the blob's own count. The first LABEL_GEO_COUNT sit at +8, any
+@ more at LABEL_GEO_EXTRA_OFF. Uses r0-r2 only.
+    .thumb_func
+OneScreen_GeoRecord:
+    ldr     r1, =OneScreen_Labels
+    ldrb    r2, [r1, #5]            @ records in this blob
+    cmp     r0, r2
+    bhs     29f
+    cmp     r0, #LABEL_GEO_COUNT
+    bhs     28f
+    movs    r2, #LABEL_GEO_SIZE
+    muls    r0, r2
+    adds    r0, #8
+    adds    r0, r1, r0
+    bx      lr
+28: subs    r0, #LABEL_GEO_COUNT
+    movs    r2, #LABEL_GEO_SIZE
+    muls    r0, r2
+    ldr     r2, =LABEL_GEO_EXTRA_OFF
+    adds    r0, r0, r2
+    adds    r0, r1, r0
+    bx      lr
+29: movs    r0, #0
+    bx      lr
     .align  2
     .pool
 
@@ -1486,22 +1650,123 @@ OneScreen_BattleMenu:
 @ rather than known here.
     .thumb_func
 OneScreen_BattleWipe:
-    lsls    r3, r0, #4
-    ldr     r1, =OneScreen_Labels
-    ldrb    r2, [r1, #5]
-    cmp     r0, r2
-    bhs     38f                     @ missing geometry: return an invalid code
-    movs    r2, #LABEL_GEO_SIZE
-    muls    r0, r2
-    adds    r0, #8
-    adds    r0, r1, r0
+    push    {r4, lr}
+    lsls    r4, r0, #4
+    bl      OneScreen_GeoRecord
+    cmp     r0, #0
+    beq     38f                     @ missing geometry: return an invalid code
     ldrh    r0, [r0, #10]           @ images in the set
+    lsls    r0, r0, #17             @ less LABEL_GEO_BANDED
+    lsrs    r0, r0, #17
     subs    r0, #1
-    orrs    r0, r3
-    bx      lr
+    orrs    r0, r4
+    pop     {r4, pc}
 38: movs    r0, #0
     mvns    r0, r0                  @ blitter's set-count check rejects -1
-    bx      lr
+    pop     {r4, pc}
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ void OneScreen_BandRect(r0 = geometry record, r1 = choice)
+@
+@ Turn the paper (colour 15) inside one choice's rectangle into band (colour
+@ 12), in VRAM, over the plain image OneScreen_BattleMenu has just copied - the
+@ whole difference between a banded set's plain image and its image of that
+@ choice selected (labels.BANDED). The rectangle is the record's: data offset
+@ plus one image is where the (x, y, w, h) bytes start.
+@
+@ A word at a time - one 8-pixel row of one tile - because VRAM takes no byte
+@ writes. 0xF -> 0xC clears a nibble's two low bits, and a word's 0xF nibbles
+@ are the bits 4i that survive w & w>>1 & w>>2 & w>>3, so a tile row is one
+@ read, a handful of ALU operations and one write.
+@ ---------------------------------------------------------------------------
+    .thumb_func
+OneScreen_BandRect:
+    push    {r4, r5, r6, r7, lr}
+    sub     sp, #16                 @ [sp] x0, [sp, #4] x1, [sp, #8] rows, [sp, #12] y1
+    ldr     r2, [r0]                @ data offset
+    ldr     r3, [r0, #4]            @ the plain image's size: the rects follow it
+    adds    r2, r2, r3
+    lsls    r1, r1, #2
+    adds    r2, r2, r1
+    ldr     r3, =OneScreen_Labels
+    adds    r2, r3, r2              @ -> x, y, w, h
+    ldrh    r4, [r0, #8]            @ bytes per tile row
+    lsrs    r4, r4, #2              @ = pixels across
+    adds    r0, #12
+    str     r0, [sp, #8]            @ -> the row address table
+    ldrb    r5, [r2]                @ x0
+    ldrb    r6, [r2, #2]            @ w
+    adds    r6, r5, r6              @ x1
+    cmp     r6, r4
+    bls     20f
+    movs    r6, r4                  @ never past the box
+20: str     r5, [sp]
+    str     r6, [sp, #4]
+    ldrb    r6, [r2, #1]            @ y
+    ldrb    r7, [r2, #3]            @ h
+    adds    r7, r6, r7              @ y1
+    ldrb    r4, [r3, #4]            @ tile rows in a box
+    lsls    r4, r4, #3
+    cmp     r7, r4
+    bls     21f
+    movs    r7, r4
+21: str     r7, [sp, #12]
+
+22: ldr     r0, [sp, #12]
+    cmp     r6, r0
+    bhs     29f                     @ every row done
+    ldr     r0, [sp, #8]
+    lsrs    r1, r6, #3
+    lsls    r1, r1, #2
+    ldr     r0, [r0, r1]            @ this tile row's first tile
+    movs    r1, #7
+    ands    r1, r6
+    lsls    r1, r1, #2
+    adds    r5, r0, r1              @ -> this pixel row, in the first tile
+    ldr     r4, [sp]                @ x
+23: ldr     r0, [sp, #4]
+    cmp     r4, r0
+    bhs     28f                     @ the row is done
+    lsrs    r1, r4, #3
+    lsls    r1, r1, #5
+    adds    r3, r5, r1              @ -> the word holding x
+    movs    r1, #7
+    ands    r1, r4                  @ lo: first pixel inside, within the tile
+    movs    r2, #7
+    orrs    r2, r4
+    adds    r2, #1                  @ the tile's end...
+    cmp     r2, r0
+    bls     24f
+    movs    r2, r0                  @ ...or the rectangle's
+24: subs    r0, r2, r4
+    adds    r0, r0, r1              @ hi: one past the last pixel inside
+    movs    r4, r2                  @ the next x
+    lsls    r0, r0, #2
+    lsls    r1, r1, #2
+    movs    r2, #1
+    lsls    r2, r0                  @ 1 << 4hi, which is 0 for a whole tile
+    movs    r0, #1
+    lsls    r0, r1                  @ 1 << 4lo
+    subs    r2, r2, r0              @ every nibble from lo to hi
+    ldr     r0, [r3]                @ the eight pixels
+    lsrs    r1, r0, #1
+    ands    r1, r0
+    lsrs    r7, r1, #2
+    ands    r1, r7                  @ bit 4i: nibble i is 0xF, paper
+    ldr     r7, =0x11111111
+    ands    r1, r7
+    ands    r1, r2                  @ ...and inside the rectangle
+    lsls    r7, r1, #1
+    orrs    r1, r7                  @ its two low bits
+    bics    r0, r1                  @ 0xF -> 0xC, the band
+    str     r0, [r3]
+    b       23b
+28: adds    r6, #1
+    b       22b
+29: add     sp, #16
+    pop     {r4, r5, r6, r7, pc}
     .align  2
     .pool
 
@@ -1525,13 +1790,10 @@ OneScreen_BattleDraw:
     bl      OneScreen_BattleSubOpen
     cmp     r0, #0
     bne     41f                     @ the bag or party owns the screen
-    subs    r1, r5, #BATTLE_MENU_ROOT_LO
-    cmp     r1, #(BATTLE_MENU_ROOT_HI - BATTLE_MENU_ROOT_LO)
-    bls     40f
-    movs    r1, r5                  @ 3-bit immediate cannot reach 13
-    subs    r1, #BATTLE_MENU_TWO_LO
-    cmp     r1, #(BATTLE_MENU_TWO_HI - BATTLE_MENU_TWO_LO)
-    bls     44f
+    movs    r0, r5
+    bl      OneScreen_BattleImage
+    adds    r1, r0, #1
+    bne     45f                     @ ours to draw: r0 is the image
 
     @ Nothing of ours belongs on screen: take down whichever box is up. The lock
     @ deliberately SURVIVES this. Going into the bag and back out is not a phase
@@ -1555,9 +1817,6 @@ OneScreen_BattleDraw:
     bl      OneScreen_BattleMenu
     b       42f
 
-40: bl      OneScreen_BattleCursor
-    b       45f
-44: bl      OneScreen_BattleYesNo
 45: movs    r4, r0
 
     @ Confirming a choice resets the game's cursor before the menu id changes, so

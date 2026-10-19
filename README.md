@@ -45,7 +45,7 @@ FIGHT / BAG / POKéMON / RUN without the patcher knowing which is which.
 | New game | Oak's speech, with his questions answered on his own screen |
 | Flying, Dig, Escape Rope | the animation, from the moment you confirm |
 | Evolution | the Pokémon, its move-learning text, and compact **Yes / No** choices |
-| **Battles** | the scene, with the commands drawn on it; the screen only moves once you choose |
+| **Battles** | the scene, with the commands drawn on it - the Safari Zone's, the Bug Contest's and Pal Park's too; the screen only moves once you choose |
 
 Battles are the interesting part. The scene never leaves the top screen while you are
 choosing: **FIGHT / BAG / POKéMON / RUN are drawn onto it**, laid out the way the game's
@@ -201,9 +201,6 @@ Known gaps, in order of how likely you are to meet them:
   stylus — the trainer-card signature, the Ruins of Alph puzzles, the Pokéathlon and the
   Union Room's group drawing. These are not fixable: moving them up would make them
   visible but untappable.
-- **Safari Zone, Pal Park, Bug Contest and first-rival battles** hand the command menu to
-  the touch screen instead of drawing it, because their options are not FIGHT / BAG /
-  POKéMON / RUN and the patch only has those four labels.
 
 If you find a screen on the wrong side, a savestate makes it quick to diagnose —
 see [docs/USAGE.md](docs/USAGE.md#troubleshooting).

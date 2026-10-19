@@ -95,6 +95,29 @@ python patch.py roms/ipgf.nds -o build/check.nds
 
 Both `IPGF` and `IPKF` were verified this way against the tested v15 builds.
 
+## Play-test saves
+
+`tools/testsaves/` turns a complete save into one that reaches a test in seconds rather
+than hours. Today it builds the evolution test: Caterpie, Weedle and Wurmple at level 6 and
+Kricketot at 9, one EXP point short, each with four moves - so each evolution teaches a
+move it cannot fit (Harden, Fury Cutter) and asks the move-learning questions the evolution
+scene's band is drawn on. The four party Pokémon they replace go to the first empty PC
+slots. A complete save already has the money, coins and BP every other test needs.
+
+It uses [PKHeX.Core](https://github.com/kwsch/PKHeX) (`.NET 10`), then `fixsave.py`:
+
+```bash
+dotnet run --project tools/testsaves -- roms/complete.sav build/evolution-pkhex.sav
+python tools/testsaves/fixsave.py roms/complete.sav build/evolution-pkhex.sav out/evolution.sav
+```
+
+The second step matters. PKHeX rewrites the day of the save's RTC record
+(`SysInfo.rtc_info.date`, general block +0x1C) as a value no month has, and reports a
+perfectly good save as having a bad checksum. `fixsave.py` puts the RTC record back and
+re-checksums every block with the game's own CRC - CRC-16-CCITT from 0xFFFF over the block
+less its 16-byte footer (`SaveArray_CalcCRC16MinusFooter`, `src/save.c`) - and lists every
+byte range that changed, which should be the party, the PC slots and the two checksums.
+
 ## Development toolchain (`tools/`)
 
 Most of these expect an unpacked ROM tree, produced by:

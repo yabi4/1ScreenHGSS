@@ -9,10 +9,17 @@ and corrected a handful. `docs/DECOMP.md` has the cross-reference.
 
 ### Battles
 
-- **Safari Zone and first-rival battles swap instead of mislabelling.** Their command menus
-  are BALL / BAIT / MUD / RUN and FIGHT alone, and were drawn as FIGHT / BAG / POKéMON /
-  RUN. Until there are labels for them they get the touch screen, as the Bug Contest's
-  already did.
+- **The Safari Zone, the Bug Contest, Pal Park and the first rival battle draw their own
+  commands on the scene** - BALL / BAIT / MUD / RUN, BALL in place of BAG, BALL above RUN,
+  and FIGHT alone - in the game's own words, where they used to be drawn as
+  FIGHT / BAG / POKéMON / RUN (Safari, first rival) or handed to the touch screen. The words
+  are chosen the way the game chooses them, by battle type.
+- **A double battle's second Pokémon shows CANCEL**, as the touch screen does, instead of
+  RUN.
+- To make room, the command images are stored once, plain, with a rectangle per choice:
+  the hook lays the band under the selected word itself. Every image it draws was checked
+  byte for byte against the patcher's own rendering. A ROM whose words for one of these
+  menus cannot be read just leaves that menu to the touch screen.
 - **The highlight's position is fixed, not learned.** The hook used to discover where the
   game keeps its cursor by watching it move, starting from a wrong guess. The decompilation
   says where it is, so the guess and the learning are gone.
@@ -103,6 +110,8 @@ and corrected a handful. `docs/DECOMP.md` has the cross-reference.
 - The patch log names every overlay it touches after the decompilation's linker spec;
   four of the old names were wrong (57, 59, 70 and 72 are the Ball Capsule editor, the
   apricorn box, the GTS and the Wi-Fi connection screen, not battle code).
+- `tools/testsaves/` builds play-test saves from a complete one with PKHeX.Core - today the
+  evolution test - and puts back the RTC date PKHeX rewrites, re-checksumming the game's way.
 - A GitHub Actions workflow (`.github/workflows/payload.yml`) rebuilds the payload, checks
   it is byte-identical to the committed one, and runs the emulated tests on every push.
 

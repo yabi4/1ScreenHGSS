@@ -1082,7 +1082,29 @@ which the full decompilation shows was too wide: `sBattleMenuTemplates` gives th
 main-menu cursor to ten ids, but 5/6 are the first rival battle (FIGHT alone, a 1x1
 cursor), 7/8 the Safari Zone (BALL / BAIT / MUD / RUN) and 19/20 the Bug Contest (BALL in
 place of BAG). Drawing FIGHT / BAG / POKéMON / RUN over those labels choices the game is
-not offering, so from v0.3 they swap like any other menu.
+not offering.
+
+### Every command menu, in its own words (v0.3)
+
+The words on the touch buttons come from `BattleInput_CreateMainMenuObjects`, which every
+3x2 menu id shares, and it picks them by **battle type**, not menu id: msg_0197 931/932/933
+(BALL / BAIT / MUD) in the Safari Zone, 1270 (BALL) for BAG in the Bug Contest, and 928
+(CANCEL) for RUN whenever `BattleInput.cancelShown` is set - a double battle's second
+Pokémon. Pal Park's menu (9/10) and the first rival's (5/6) are the same objects with
+words hidden: BALL (1223) above RUN, and FIGHT alone. So the hook reads
+`BattleSystem.battleType` (+0x2C) and `cancelShown` (+0x68F) and draws the matching set,
+in the same box; Pal Park's 1x2 cursor picks the top word or RUN by `menuY`.
+
+Room was the problem: a set is four 1792-byte images, and the blob had under 1 KB spare.
+But a selected image differs from the plain one only inside the selected word's
+rectangle, where paper (15) becomes band (12) - glyph pixels are never paper. So a
+**banded** set stores the plain image and four 4-byte rectangles, and
+`OneScreen_BandRect` lays the band in VRAM after the copy, a tile row at a time: VRAM
+takes no byte writes, and 0xF -> 0xC is clearing a nibble's two low bits, which a word
+can do for all eight pixels at once. The command set went banded too, which paid for the
+five new ones. `labels._banded_set` refuses any set where banding the plain image does
+not reproduce `_render`'s image exactly, and `tools/test_hook.py` compares every image
+the hook draws with `_render`, byte for byte.
 
 **Two things the menu id cannot see**, both found by playing:
 
