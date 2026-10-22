@@ -8,9 +8,9 @@ Play **Pokémon HeartGold / SoulSilver** on a single screen.
 and font — nothing is swapped in from the touch screen — and takes its colours from the
 theme you choose when patching.*
 
-> **v0.2b** — playable start to finish on French SoulSilver and HeartGold, and
-> play-tested on US HeartGold. See
-> [Compatibility](#compatibility) and [Status](#status).
+> **v0.3** — play-tested on French SoulSilver. v0.2b was played start to finish on French
+> SoulSilver and HeartGold, and play-tested on US HeartGold. A few of v0.3's new screens
+> have not been played yet. See [Compatibility](#compatibility) and [Status](#status).
 
 The DS puts half of HGSS on the touch screen — the bag, the party, the Pokédex, and
 critically the battle command menu. That makes the game awkward on a handheld like the
@@ -38,17 +38,20 @@ FIGHT / BAG / POKéMON / RUN without the patcher knowing which is which.
 | PC box | the box itself — moving Pokémon, item storage |
 | Shops and the PC | their menus **drawn on the world**; the screen only moves when you choose |
 | Field binary questions | the world, with **Yes / No** drawn in the dialogue window |
-| Field lists | longer NPC choices — their UI |
+| Field lists | the world, with the game's **own top-screen list** on it — fossil revival, the apricorn juice stand and most one-off NPC choices |
 | Overworld menu (**X**) | the world, with the menu **drawn on it**; **B** closes it |
 | Name entry | the keyboard |
 | New game | Oak's speech, with his questions answered on his own screen |
 | Flying, Dig, Escape Rope | the animation, from the moment you confirm |
 | Evolution | the Pokémon, its move-learning text, and compact **Yes / No** choices |
-| **Battles** | the scene, with the commands drawn on it; the screen only moves once you choose |
+| **Battles** | the scene, with the commands drawn on it - the Safari Zone's, the Bug Contest's and Pal Park's too; the screen only moves once you choose |
 
 Battles are the interesting part. The scene never leaves the top screen while you are
 choosing: **FIGHT / BAG / POKéMON / RUN are drawn onto it**, laid out the way the game's
-own cursor moves, and the highlight follows the D-pad. The screen only changes once you
+own cursor moves, and the highlight follows the D-pad. The Safari Zone, the Bug Contest,
+Pal Park and the first rival battle get their own words (BALL / BAIT / MUD / RUN, BALL in
+place of BAG, FIGHT alone), and a double battle's second Pokémon gets CANCEL, as on the
+touch screen. The screen only changes once you
 have actually picked something — the move list, the bag and the party come up then, and
 the scene returns the instant the turn starts. Binary prompts ("… changer de Pokémon?")
 get a small **Oui / Non** box in the same message window instead of taking the screen.
@@ -59,9 +62,7 @@ out from under you.
 Binary questions in the overworld work the same way. Nurse Joy's offer, and every other
 field prompt that uses the shared two-button controller, keeps the world visible and puts
 **Yes / No** or **Oui / Non** in the right-hand end of the dialogue window. Up and down
-move the game's own selection; A and B keep their normal meanings. Longer lists such as
-the PC options, shops and multichoice questions still take the screen because they need
-the room.
+move the game's own selection; A and B keep their normal meanings.
 
 The move-learning questions after an evolution use a separate controller, but receive the
 same treatment. When the game asks whether to forget a move, or later whether to stop
@@ -70,13 +71,23 @@ tiles mirror the game's own selection. The patch does not handle the buttons or 
 
 The overworld menu works the same way: **X** draws it in the top-right corner of the world
 instead of taking the screen, laid out two columns by four because that is the grid the
-game's own cursor walks. Picking an entry opens it on the top screen exactly as before.
+game's own cursor walks. In the Safari Zone, the Bug Contest, Pal Park and the Union Room
+it is drawn in each one's own arrangement, as the touch screen shows it. Picking an entry
+opens it on the top screen exactly as before.
 
 **Shops and the PC** are drawn the same way — the clerk's `ACHETER / VENDRE / QUITTER`, and
 all three of the PC's menus including its 2×3 storage grid. These are the same object
 underneath, so one renderer covers them, but a menu is only drawn if the patch **recognises
-it by its own words**. Anything it has not seen swaps as before, which is what keeps an
-unknown NPC choice from ever appearing with the wrong labels on it.
+it by its own words** — every one of them, not just the first. Anything it has not seen is
+handed to the **game's own top-screen list** instead: HGSS still contains the list window it
+inherited from Diamond and Pearl, which reads the very same menu, so an unknown NPC choice
+appears on the world in the game's own window and words rather than taking the screen.
+That includes lists whose entries are laid out in two lines or in columns on the touch
+screen — Battle Frontier prize shops, the Game Corner's coins, drink machines, the
+day-care's level column, Pokéathlon courses — which are folded onto one line, and the
+Battle Frontier move tutors' lists, whose prices line up in a column. A list that would land on a
+box the script already has up (Mom's savings) and an entry holding formatting the patch
+does not know keep the touch screen.
 
 Starting a new game works the same way. **GARÇON / FILLE** for the gender question and
 **OUI / NON** for the confirmations are drawn beside Oak's text, so the screen stays on him
@@ -86,7 +97,9 @@ indicator is suppressed before it can flash.
 The tutorial menu still swaps: three options of running text will not fit beside the
 question the way two words do.
 
-**L + R** swaps the screens manually at any time, as an escape hatch.
+**L + R** swaps the screens manually at any time, as an escape hatch. The game never sees
+those two keys, so the swap does not also turn a bag pocket or, with the *L=A* button mode,
+press A; a lone L or R reaches the game a tenth of a second late.
 
 ## Themes
 
@@ -101,21 +114,23 @@ world, and the band behind whichever choice is selected:
 
 ![The three colour themes](docs/img/themes.png)
 
-Colour only: nothing moves and no wording changes. The patcher picks the theme matching
-your game, and you can override it.
+Colour only: nothing moves and no wording changes. The window picks the theme matching
+your game, and you can override it; `patch.py` uses `classic` unless you pass `--theme`.
 
 ## Requirements
 
-- Your own dump of Pokémon HeartGold or SoulSilver (**French versions are the tested
-  ones** — see [Compatibility](#compatibility))
-- Nothing else, if you use `1ScreenHGSS.exe`
+- Your own dump of Pokémon HeartGold or SoulSilver (**French SoulSilver/HeartGold and US
+  HeartGold are the tested ones** — see [Compatibility](#compatibility))
+- Nothing else, if you use the standalone patcher for Windows, macOS or Linux
 - To run from source: [Python 3.9+](https://www.python.org/) and
   [ndspy](https://github.com/RoadrunnerWMC/ndspy) — `pip install ndspy`
 
 ## Use
 
-**Windows:** download `1ScreenHGSS.exe`, drop your ROM on the window and press Patch.
-Nothing to install - it picks the theme to match your game, and you can override it.
+**Windows, macOS, Linux:** download the patcher for your system, drop your ROM on the window
+and press Patch. Nothing to install - it picks the theme to match your game, and you can
+override it. Each system also has a command-line version that takes the same arguments as
+`patch.py`. See [docs/USAGE.md](docs/USAGE.md#the-easy-way) for which file is which.
 
 **From source:**
 
@@ -157,6 +172,16 @@ Diamond/Pearl/Platinum are **not** supported — different code, different overl
 
 ## Status
 
+**v0.3 has been played on French SoulSilver** in melonDS: Oak's speech, ordinary battles,
+evolutions, the X menu, saving, shops, the PC, drink machines, the day-care, field
+questions and L + R, with the Pokédex, PC boxes, Fly, Dig and Escape Rope, the Pokégear and
+the opening cinematic checked again. Its other changes were built against the full
+decompilation and their routines unit-tested under a CPU emulator (`tools/test_hook.py`),
+but have not been played: the Safari Zone, Bug Contest, Pal Park and first-rival battle
+menus, double battles, the X menu in those zones and the Union Room, the Battle Frontier
+lists and move tutors, the Game Corner and Mom's savings. What follows is what v0.2b was
+played through.
+
 Everything below has been played through, not merely implemented: the overworld and its
 menus, battles including sub-screens, the bag through every pocket, the party menu
 including reordering and summaries, the Pokédex with its area map, the PC boxes for
@@ -169,26 +194,22 @@ PC's — were each play-tested through several rounds of correction, as were the
 post-evolution prompts, the opening cinematic, the move relearner and saving from the
 overworld menu. The three colour themes were checked on both editions.
 
-Notably that covers the bag, the party menu and the PC box, which are still raw assembly
-in the decompilation — nothing but play could have cleared them — and the Pokégear, which
-was the largest touch surface found anywhere in the audit.
+Notably that covers the bag and the PC box, which were still raw assembly in pret's
+decompilation when the source audit was done — nothing but play could have cleared them —
+and the Pokégear, which was the largest touch surface found anywhere in the audit.
 
 Known gaps, in order of how likely you are to meet them:
 
 - **19 applications set no display routing of their own** and inherit whatever is current.
-  Four turned out to be wrong and are now handled — most recently the move relearner; the
-  rest are listed in [docs/AUDIT.md](docs/AUDIT.md) and are untested. Berry pots, the
-  apricorn box and the Pal Pad are the ones a normal playthrough will reach.
-- **Three screens deliberately stay on the touch screen** because they genuinely need the
-  stylus — the trainer-card signature, the Ruins of Alph puzzles and the Pokéathlon. These
-  are not fixable: moving them up would make them visible but untappable.
-- **The Safari Zone, the Bug Contest and Pal Park** arrange the overworld menu differently,
-  in a way that cannot be reproduced from outside the touch overlay. The patch detects them
-  and swaps the screen there rather than drawing something wrong.
-- **Oak's two questions flicker.** The band behind the selected choice alternates with the
-  game's own highlight for the few seconds those prompts are up. Cosmetic, understood, and
-  written up in [docs/FINDINGS.md](docs/FINDINGS.md); fixing it needs more invasive work
-  than it is worth.
+  Each has now been checked against the decompilation: Oak's speech, the Pal Pad and the
+  rankings viewer were wrong and are handled, as are three screens outside that list (the
+  evolution scene, the fly map and the move relearner). The verdict for every one is in
+  [docs/AUDIT.md](docs/AUDIT.md); the Pal Pad, the rankings, berry pots, the apricorn box
+  and mail have still not been played.
+- **Some screens deliberately stay on the touch screen** because they genuinely need the
+  stylus — the trainer-card signature, the Ruins of Alph puzzles, the Pokéathlon and the
+  Union Room's group drawing. These are not fixable: moving them up would make them
+  visible but untappable.
 
 If you find a screen on the wrong side, a savestate makes it quick to diagnose —
 see [docs/USAGE.md](docs/USAGE.md#troubleshooting).
@@ -199,16 +220,19 @@ Touch is physically the *lower* LCD, so anything shown on top cannot be tapped �
 screen the patch moves up has to be fully navigable with buttons.
 
 A source-level audit against the decomp found the Ruins of Alph puzzle to be the only
-genuinely touch-only app it covers, and cleared everything else it covers. The bag, party
-menu and PC box are raw assembly there and could only be cleared by playing them, which
-has now been done. See **[docs/AUDIT.md](docs/AUDIT.md)** for the method, the results and
+genuinely touch-only app it covers, and cleared everything else it covers. The bag and PC
+box were raw assembly there and could only be cleared by playing them, which has now been
+done. See **[docs/AUDIT.md](docs/AUDIT.md)** for the method, the results and
 what is still unchecked.
 
 ## Development
 
 The whole toolchain is here: ROM unpacking, the display-site scanner, savestate diffing,
 build and emulator-driving helpers. `patch-gui.py` is the window; `tools/build_exe.py`
-freezes it into the released executable and `tools/make_icon.py` draws its icon. See **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** to
+freezes it into the released Windows, macOS and Linux builds and `tools/make_icon.py` draws its icon.
+`tools/test_hook.py` runs the resident hook's routines under an ARM emulator; GitHub
+Actions rebuilds the hook and runs those tests on every push, and a `v*` tag builds the
+patcher on every system and drafts the release. See **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** to
 get set up, **[docs/AUDIT.md](docs/AUDIT.md)** for the button-navigation audit and what
 the decomp says about the game's own screen routing, and
 **[docs/FINDINGS.md](docs/FINDINGS.md)** for the reverse-engineering
@@ -226,6 +250,9 @@ Tooling is MIT licensed — see [LICENSE](LICENSE).
 ## Credits
 
 Overlay identities come from [pret/pokeheartgold](https://github.com/pret/pokeheartgold),
-whose overlay numbering matches the retail ROM. ROM handling uses
+whose overlay numbering matches the retail ROM. Struct layouts and the names in
+[docs/DECOMP.md](docs/DECOMP.md) were checked against the full decompilation at
+[ctrl-cheeb-del/pokeheartgold](https://github.com/ctrl-cheeb-del/pokeheartgold); it is used
+as a reference only, and nothing from it is copied here. ROM handling uses
 [ndspy](https://github.com/RoadrunnerWMC/ndspy). Built and tested against
 [melonDS](https://melonds.kuribo64.net/).

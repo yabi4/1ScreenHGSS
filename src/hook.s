@@ -19,8 +19,8 @@ SWAP_BIT    = 0x8000            @ bit 15: 1 = engine A -> top LCD
 @ the same anchors at the same addresses in French and US HeartGold. Only data,
 @ BSS and overlay bases move, uniformly (US = FR - 0x20).
 @
-@ So rather than ship one payload per region, the six address-valued constants
-@ live in OneScreen_Config below, which the patcher fills in from the ROM it is
+@ So rather than ship one payload per region, the region-dependent addresses and
+@ patch-time values (24 words) live in OneScreen_Config below, which the patcher fills in from the ROM it is
 @ patching. The DEF_ values are the French ones, so an unconfigured payload is
 @ still correct for French.
 @ The "state block" is pret's `struct System gSystem` (include/system.h), at
@@ -29,7 +29,7 @@ SWAP_BIT    = 0x8000            @ bit 15: 1 = engine A -> top LCD
 @     +0x00  GFIntrCB vBlankIntr    each app installs its own, so it identifies
 @                                   the running app - what we call app_callback
 @     +0x38  int heldKeysRaw        the pad, before button-mode remapping
-@     +0x44  int newKeys            (unused here; we derive edges ourselves)
+@     +0x48  int newKeys            (unused here; we derive edges ourselves)
 @     +0x69  u8  screensFlipped     the game's OWN routing flag - see the note
 @                                   at the top of OneScreen_SetSwap
 DEF_PAD_HELD       = 0x021D1164 @ gSystem.heldKeysRaw
@@ -52,6 +52,11 @@ DEF_INTRO_C_EXEC = 0
 DEF_INTRO_CLOCK = 0
 DEF_THEME_BAND = 0              @ BGR555 for a selected band, 0 = leave the
                                 @ game's own palettes untouched
+DEF_MENU_EXEC_ORIG = 0          @ ScrCmd_MenuExec and the three game functions
+DEF_OPEN_LIST = 0               @ the native list needs; the patcher finds them
+DEF_STRING_WIDTH = 0            @ through the script command table, 0 = leave
+DEF_SETUP_NATIVE = 0            @ every script menu exactly as it was
+DEF_TUTOR_EXEC_ORIG = 0         @ ScrCmd_MoveTutorChooseMove, 0 = leave the tutors
 
 KEY_A       = 0x001
 KEY_B       = 0x002
@@ -75,7 +80,8 @@ TOGGLE_MASK = (KEY_L | KEY_R)   @ L+R together; unused by HGSS gameplay
 @
 @ and specifically main-region slot 3's overlay id. The battle loads a different
 @ overlay for each phase, so that one word tracks the phase:
-@     0x0A  overlay 10 - the command menu / move list
+@     0x0A  overlay 10 - the trainer AI, which the battle loads for exactly
+@           the command-selection phase (BattleSystem_SetTrainerAIOverlayLoaded)
 @     0x08  overlay 8  - a sub-screen (bag category, item list, party)
 @     0x07  overlay 7  - the turn is executing
 @     0x1B  a stale id left over from before the battle; the slot is inactive
@@ -97,77 +103,89 @@ BATTLE_STATE_SUB  = 0x08        @ bag category, item list, party
 
 @ --- The top-screen command menu -------------------------------------------
 @ Offsets into the live battle structs, all reached from the BattleSystem the
-@ battle app's exec trampoline hands us. Taken from pret's headers, and the ones
-@ that matter are pinned by fields the decomp named after their own offsets:
+@ battle app's exec trampoline hands us. Every one is now fixed by the full
+@ decompilation (include/battle/battle.h, include/battle/battle_input.h; see
+@ docs/DECOMP.md), and each agrees with what was measured from the retail ROM:
 @
-@   struct BattleSystem (include/battle/battle.h:527)
-@       +0x04 BgConfig *bgConfig      \ both confirmed independently in the retail
-@       +0x08 Window   *window        / ov12: `ldr r0,[r4,#4]` / `ldr r1,[r4,#8]`
-@       +0x19C BattleInput *battleInput   (unk17C[2] before it, unk1A0 after)
+@   struct BattleSystem
+@       +0x04   BgConfig *bgConfig      \ both confirmed independently in the retail
+@       +0x08   Window   *window        / ov12: `ldr r0,[r4,#4]` / `ldr r1,[r4,#8]`
+@       +0x19C  BattleInput *battleInput
+@       +0x23FD u8 graphicsMode         0 normal; 3 while the bag or party owns
+@                                       engine B; 1/2 around the catch naming
+@                                       screen. battleInput is FREED unless 0.
 @
-@   struct BattleInput (include/battle/battle_input.h:169)
-@       +0x66B s8 curMenuId       (unused_668, unused_669 before; unk66F after)
-@       +0x6B4 BattleMenuCursor { u8 enabled; s8 menuY; s8 menuX; u8 unused; }
+@   struct BattleInput                  (sizeof 0x6F8)
+@       +0x68B  s8 curMenuId
+@       +0x6D8  BattleCursor *cursor    the sprite cursor
+@       +0x6DC  BattleMenuCursor menuCursor { u8 enabled; s8 menuY; s8 menuX; }
 @
-@ Both offsets are 0x20 HIGHER than walking pret's struct suggests, which is the
-@ drift battle_input.h:168 warns about ("at some point here my counting was off
-@ so some of the listed offsets may be wrong"). Reading the computed 0x66B gave a
-@ zero byte, and a 160-byte window around it contained no menu id at all.
-@
-@ The real values were measured out of the ROM instead of guessed. Offsets this
-@ large cannot be reached by a Thumb immediate, so every access to these fields
-@ has to load the offset from a literal pool - which makes the pool a census of
-@ the struct. Scanning ov12's word-aligned literals in [0x500,0x800) shows:
+@ pret's battle_input.h names its fields after offsets that are 0x20 to 0x28
+@ low in this region ("my counting was off"), which is why both of these were
+@ first measured out of the ROM rather than read off the header. The measuring
+@ was right; only pret's labels drifted. Offsets this large cannot be reached by
+@ a Thumb immediate, so every access loads the offset from a literal pool, and a
+@ census of ov12's word-aligned literals in [0x500,0x800) reads:
 @
 @     0x68a x9   0x68b x6   0x68c x5   0x68d x1   0x68e x3   0x68f x2
 @
-@ six consecutive single-byte offsets, which is exactly pret's run of six u8
-@ fields - battlerType, curMenuId, monTargetType, gender, isTouchDisabled,
-@ unk66F. What confirms the alignment rather than merely fitting it: 0x688 and
-@ 0x689 are absent from the pool entirely, and those are the two pret calls
-@ unused_668 / unused_669. Unreferenced fields leave no literals.
+@ six consecutive single-byte fields, battlerType .. cancelShown, with 0x688 and
+@ 0x689 (two unused bytes) absent. The census also showed 0x6d8 x8 and 0x6dc x7,
+@ which are `cursor` and `&menuCursor`.
 @
-@ The same +0x20 lands the cursor on 0x6d4, and the fields after it corroborate:
-@ 0x6d8 (keyPressed, x8), 0x6dc (tutorial.finger, x7), 0x6e4/0x6e8/0x6ec (the
-@ three ManagedSprite pointers that close the struct, x5/x1/x2). Two fields
-@ agreeing on one delta, with the gaps in the right places.
+@ The cursor used to be LEARNED at runtime from a starting guess of 0x6D4 -
+@ which is BattleInput.scrollXEnd - by watching which byte moved on UP/DOWN. The
+@ decompilation settles it at 0x6DC, the same place the learner's own test (an
+@ `enabled` byte of 1, then menuY 0/1, then menuX <= 2) converges on. Fixing it
+@ also removes a hazard: the learner kept running while the bag was open, when
+@ battleInput is freed and the window it diffed was reused heap.
 @
 @ Identical in IPGF, IPKF and IPKE - these are code-derived, so unlike data they
 @ do not move between regions.
-BATTLE_INPUT_OFF  = 0x19C
-BI_CURMENU_OFF    = 0x68B
-BI_CURSOR_OFF     = 0x6D4
+BATTLE_INPUT_OFF  = 0x19C       @ BattleSystem.battleInput
+BS_GRAPHICS_MODE_OFF = 0x23FD   @ BattleSystem.graphicsMode
+BI_CURMENU_OFF    = 0x68B       @ BattleInput.curMenuId
+BI_MENU_CURSOR_OFF = 0x6DC      @ BattleInput.menuCursor
+BATTLE_INPUT_SIZE = 0x6F8       @ sizeof(BattleInput), for the range check
+BSTATE_BATTLE_MAIN = 9          @ Battle_Run's state while BattleSystem lives
 
-@ The cursor offset is the one value here that the literal census cannot settle.
-@ curMenuId was pinned by a run of six consecutive byte offsets with the two
-@ unused ones missing; menuCursor has no such signature, and three candidates
-@ (0x6d4, 0x6d8, 0x6dc) all have plausible reference counts and plausible
-@ neighbours. Picking one and shipping it is how the highlight ended up welded to
-@ ATTAQUE: a wrong offset reads bytes that clamp to menuY 0, which is the whole
-@ top row.
+@ enum BattleMenuID (include/constants/battle_menu.h). sBattleMenuTemplates
+@ (src/battle/battle_input.c) gives the main-menu cursor to ten ids:
 @
-@ So BI_CURSOR_OFF is only a starting guess, and the hook corrects it from the
-@ game itself - see OneScreen_BattleLearn. The window it watches has to contain
-@ every candidate.
-BI_WIN_BASE  = 0x680
-BI_WIN_SIZE  = 128              @ 0x680..0x700
-KEY_UPDOWN   = 0x0C0            @ up | down
-
-@ enum BattleMenuID (include/constants/battle_menu.h:58). Ids 1..8 are ALL the
-@ root command menu, not just the two the enum bothers to name: sBattleMenuTemplates
-@ (src/battle/battle_input.c:581) gives every one of them
-@ sTouchscreenRectMainMenuButtons and BattleInput_CursorMove_MainMenu, and 3 and 4
-@ differ from 1 and 2 only in calling BattleInput_CreateMainMenuObjects instead of
-@ ...Initial - which is to say they are the "put the menu back up" states you land
-@ on after backing out of the move list or the bag. 5 and 6 get named outright in
-@ the cursor mover's own switch.
+@     1 MAIN_INITIAL, 2 MAIN      the first opening this battle (1 for the
+@                                 first battler, 2 for the second in a double)
+@     3, 4                        every later opening - backing out of the move
+@                                 list or the bag lands here
+@     5, 6                        the first rival battle: FIGHT alone, a 1x1
+@                                 cursor
+@     7, 8                        the Safari Zone
+@     19, 20                      the Bug Contest
+@     9, 10                       Pal Park: BALL above RUN, a 1x2 cursor
 @
-@ Testing only 1 and 2 is what made backing out of a submenu leave the screens
-@ swapped with no labels: the menu was up, we just did not recognise the id.
-@ 9/10 are Pal Park, 11+ are the move list, target select and the prompts.
-@ -1 is BATTLE_MENU_NONE, which is live while the battle intro text plays.
+@ The words are not tied to those ids. BattleInput_CreateMainMenuObjects, which
+@ every one of them uses, picks them by battle type - BALL / BAIT / MUD in the
+@ Safari Zone, BALL for BAG in the Bug Contest - and puts CANCEL in RUN's place
+@ when BattleInput.cancelShown says so, for a double's second battler. So
+@ OneScreen_BattleImage reads the type for all eight 3x2 ids rather than
+@ trusting the id. 11 is the move list and 12 target select. 0 is
+@ BATTLE_MENU_0, the blank menu that is up while the intro text plays and while
+@ the turn runs; -1 (NONE) only exists inside the game's own menu change.
 BATTLE_MENU_ROOT_LO = 1
-BATTLE_MENU_ROOT_HI = 8
+BATTLE_MENU_ROOT_HI = 4
+BATTLE_MENU_RIVAL_LO = 5
+BATTLE_MENU_RIVAL_HI = 6
+BATTLE_MENU_SAFARI_LO = 7
+BATTLE_MENU_SAFARI_HI = 8
+BATTLE_MENU_PARK_LO = 9
+BATTLE_MENU_PARK_HI = 10
+BATTLE_MENU_BUG_LO = 19
+BATTLE_MENU_BUG_HI = 20
+BS_BATTLE_TYPE_OFF = 0x2C       @ BattleSystem.battleType
+BATTLE_TYPE_SAFARI = 0x20       @ include/constants/battle.h
+BATTLE_TYPE_PAL_PARK = 0x200
+BATTLE_TYPE_BUG_CONTEST = 0x1000
+BI_CANCEL_SHOWN_OFF = 0x68F     @ BattleInput.cancelShown: CANCEL in RUN's place
+BATTLE_RUN_IMAGE = 3            @ image index of the RUN slot, bottom middle
 
 @ 13..17 are the binary prompts - YES_NO, KEEP_FORGET_MOVE, GIVE_UP_ON_MOVE,
 @ SWITCH_OR_FLEE, SWITCH_OR_KEEP. sBattleMenuTemplates gives all five
@@ -206,14 +224,49 @@ LABEL_GEO_OAK    = 2            @ Oak's yes/no, stacked - the generic multichoic
 LABEL_GEO_GENDER = 3            @ boy/girl, side by side - the gender handler moves
                                 @ on LEFT and RIGHT, so stacking implied wrong keys
 LABEL_GEO_FIELD  = 4            @ field-dialog Oui/Non; aliases LABEL_GEO_YN pixels
-LABEL_GEO_COUNT  = 5
+LABEL_GEO_COUNT  = 5            @ the records at +8; any more are at LABEL_GEO_EXTRA_OFF
+@ The command box's other word sets (labels.EXTRA_GEOS). They are drawn exactly
+@ like set 0, in the same box, and a ROM that cannot supply one leaves its
+@ record with no images - that menu then swaps, as every one of them used to.
+LABEL_GEO_CANCEL = 5            @ CANCEL in RUN's place: a double's second battler
+LABEL_GEO_SAFARI = 6            @ BALL / BAIT / MUD / RUN
+LABEL_GEO_BUG    = 7            @ BALL in BAG's place
+LABEL_GEO_PARK   = 8            @ Pal Park: BALL, and RUN below it
+LABEL_GEO_RIVAL  = 9            @ the first rival battle: FIGHT alone
+@ A record's image count with this bit set is BANDED: one plain image, then one
+@ (x, y, w, h) byte rectangle per choice. Image i is the plain image with the
+@ paper inside rectangle i turned to band - see OneScreen_BandRect.
+LABEL_GEO_BANDED = 0x8000
 @ Reserved space for the label images; the patcher refuses rather than overrun it.
-@ The five geometry records, start-menu record and four unique localized image
-@ sets fit here with headroom. The field geometry aliases the battle Yes/No set.
-LABEL_BLOB_SIZE = 19456         @ reserved; the patcher refuses rather than overrun it
+@ The ten geometry records, the start-menu and list records, the banded command
+@ sets and the yes/no sets fit here. The field geometry aliases the battle Yes/No.
+LABEL_BLOB_SIZE = 20864         @ reserved; the patcher refuses rather than overrun it
 
 @ The main-loop call we displace: `bl 0x0200110C` at 0x02000DB0.
 ORIG_LOOP_FN = 0x0200110C + 1   @ +1 = Thumb
+
+@ The one after it, at 0x02000DB4: `bl ReadKeypadAndTouchpad`, which turns the
+@ pad into gSystem's key words and then calls ApplyButtonModeToInput: under the
+@ L=A option it copies L to A and removes L and R from the cooked words, so in
+@ that mode the game never sees a shoulder at all. (Its START=X and X/Y-swap
+@ cases are left over from Diamond and Pearl; HGSS's options only ever pick
+@ NORMAL or L=A.) Both are ARM9 code, at the same address in
+@ every region; inject.patch_key_read checks both before hooking. The words,
+@ as offsets from gSystem.heldKeysRaw - which is what cfg_pad_held points at:
+READ_KEYS_ORIG    = 0x0201A4DC + 1
+APPLY_BUTTON_MODE = 0x0201A5E8 + 1
+PAD_XY_BUF  = 0x027FFFA8        @ bit 15 set: the lid is shut (PAD_DetectFold)
+GS_HELD_RAW = 0x00              @ the pad as it is, never touched: the next frame's
+                                @ edges and the soft reset (L+R+START+SELECT) read it
+GS_NEW_RAW  = 0x04              @ the raw edges, rewritten along with the cooked
+GS_REP_RAW  = 0x08              @ ones so no reader of either sees a hidden key
+GS_HELD     = 0x0C              @ these three are what the game acts on, after
+GS_NEW      = 0x10              @ ApplyButtonModeToInput
+GS_REP      = 0x14
+SHOULDER_WINDOW = 3             @ logic frames (~100 ms) a lone L or R waits for its pair
+LR_IDLE     = 0
+LR_PENDING  = 1                 @ one shoulder down and hidden, waiting
+LR_CHORD    = 2                 @ L+R: both hidden until both are up
 
 @ Pokedex area map. The species grid and the per-Pokemon detail level share one
 @ app callback and the same POWCNT1 value, so neither app_table nor a scan for a
@@ -359,9 +412,12 @@ MAP_LAPSE_FRAMES = 2
 MAP_PENDING_FRAMES = 180        @ ~3 s, far longer than the handover needs
 
 @ FieldSystem.taskman - the field's running task, see OneScreen_MenuGone.
-TASKMAN_OFF = 0x10
-TASK_FUNC_OFF = 0x04
-TASK_ENV_OFF = 0x0C
+FS_TASKMAN_OFF = 0x10           @ FieldSystem.taskman
+TASK_FUNC_OFF = 0x04            @ TaskManager.func
+TASK_ENV_OFF = 0x0C             @ TaskManager.env
+FIELD_SYSTEM_SIZE = 0x128       @ sizeof(FieldSystem)
+TASK_MANAGER_SIZE = 0x20        @ sizeof(TaskManager)
+START_MENU_DATA_SIZE = 0x38C    @ sizeof(StartMenuTaskData)
 
 @ StartMenuTaskData.state (include/start_menu.h), the menu's own state machine.
 @ Its exit path is what shows the menu for a moment after choosing Dig or an
@@ -393,9 +449,11 @@ STARTMENU_SAVE_HI = 7
 @ everything needed, and all three were read out of a live savestate with the
 @ menu open (out/beta-ui.ml1) rather than trusted from the decomp alone:
 @
-@   FieldSystem +0xD3   the cursor. NOT in StartMenuTaskData - the touch overlay
-@                       owns it (ov27_0225B404 writes it on every D-pad move) and
-@                       start_menu.c only reads it. Read 0 with POKEDEX lit. It
+@   FieldSystem +0xD3   the cursor, FieldSystem.startMenuCursorPos. NOT in
+@                       StartMenuTaskData - the touch overlay owns it
+@                       (TouchscreenMenu_HandleDpadInput, ov27_0225B404 in pret,
+@                       writes it on every D-pad move); start_menu.c reads it, and
+@                       writes it only for a touch. Read 0 with POKEDEX lit. It
 @                       counts only the entries you HAVE, so it is an index into
 @                       the compacted list, not a grid slot.
 @   StartMenuTaskData +0x34C  inhibitIconFlags, the game's own answer to which
@@ -404,9 +462,42 @@ STARTMENU_SAVE_HI = 7
 @                       from. selectionToAction[] at +0x3A looks like the obvious
 @                       source and is a trap: past the real entries it holds
 @                       zeros, which read as POKEDEX and drew that word twice.
-SM_CURSOR_OFF = 0xD3
+FS_START_MENU_CURSOR_OFF = 0xD3 @ FieldSystem.startMenuCursorPos
 SM_INHIBIT_OFF = 0x34C          @ StartMenuTaskData.inhibitIconFlags
-SM_NORMAL_BIT = 8               @ DISABLE_RETIRE; see OneScreen_StartMenu
+SM_NORMAL_MASK = 0x190          @ DISABLE_RETIRE | DISABLE_7 | DISABLE_SAVE
+SM_NORMAL_BITS = 0x180          @ what the normal layout sets of those three
+
+@ The touch menu app's own data, TouchscreenMenuData (src/touchscreen_menu.c,
+@ overlay 27, 0x540 bytes). It is the menu: the start menu task only handles A
+@ and B, and every D-pad move goes through TouchscreenMenu_HandleDpadInput,
+@ which writes `selection` and then FieldSystem.startMenuCursorPos together.
+@ All four offsets are confirmed in pret's retail assembly of overlay 27 as
+@ well as computed from the decompilation:
+@
+@     +0x10  FieldSystem *fieldSystem     ldr r1,[r4,#0x10] in TouchscreenMenu_Create
+@     +0x14  int selection, a slot 0..6   str r0,[r4,#0x14] after the slot lookup
+@     +0x470 TouchscreenMenuIcon icons[7] {u8 shown; String *label}, stride 8
+@     +0x51C u32 flags                    layout is bits 1-4: `lsl #27; lsr #28`
+@
+@ layout, from TouchscreenMenu_GetLayout: 0 normal, 1 Safari, 2 Bug Contest,
+@ 3 Pal Park, 4 Union Room, 5 Colosseum, 6 Battle Tower partner room.
+BSAPP_TOUCH_MENU   = 0          @ BOTTOM_SCREEN_APP_TOUCHSCREEN_MENU
+TOUCH_MENU_SIZE    = 0x540
+TSM_FS_OFF         = 0x10
+TSM_SELECTION_OFF  = 0x14
+TSM_ICONS_OFF      = 0x470
+TSM_N_ICONS        = 7
+TSM_LAYOUT_OFF     = 0x51C
+TSM_LAYOUT_SHIFT   = 1
+TSM_LAYOUT_MASK    = 0xF
+SM_N_LAYOUTS       = 7
+SM_PLANS_OFF       = 528        @ in the label blob: u8 strip[8] per layout
+SM_PLAN_UNDRAWABLE = 0xFE       @ cell 0 of a layout the patcher cannot label
+SM_CELLS           = 8
+LABEL_GEO_EXTRA_OFF = SM_PLANS_OFF + SM_CELLS * SM_N_LAYOUTS  @ labels.EXTRA_GEO_OFF
+SM_SP_CELLS        = 16         @ OneScreen_StartMenu's frame: the cell plan,
+SM_SP_HI           = 24         @ the highlighted cell,
+SM_FRAME_SP        = 28         @ and the frame's size
 
 @ The panel's record in the label blob, and the offsets inside it. Written by
 @ onescreen/labels.py::_startmenu; the layout is documented there.
@@ -440,27 +531,68 @@ SM_SCREEN_BASE = 0x06001000     @ MAIN_3's tilemap, from sBgTemplate_3
 @ controller renders it, and the controller points straight back at it. Every
 @ offset below was read out of evolution-oak-ipgf.ml1..ml5 rather than inferred.
 @
-@   controller +0x394  the cursor. Already known here as FIELD_CHILD_CHOICE_OFF,
+@   controller +0x394  the cursor. Already known here as CHOICE_SELECTION_OFF,
 @                      which was thought to be the binary-prompt choice only -
 @                      it is the list cursor too, proved by ml1 vs ml2 reading
 @                      0 then 1 as the shop cursor moved ACHETER -> VENDRE.
 @   controller +0x3A0  the menu itself. NOT +0x39C, which holds an ARM9 code
 @                      address - reading the count through that gave 255 and the
-@                      panel silently never matched.
+@                      panel silently never matched. The decompilation explains
+@                      both: +0x39C is selectionCallback, which ScrCmd_MenuExec
+@                      sets to MenuExec_PrintItemHelp, and +0x3A0 its argument,
+@                      the menu. The menu's own slot is +0x0C.
 @       +0x9B  u8   entry count. Read 3 / 4 / 4 / 5 for the shop, both PC lists
-@                   and the PC box menu.
-@       +0x1C  String* per entry, stride 4.
+@                   and the PC box menu. ScriptMenu.count.
+@       +0x1C  String* per entry, stride 4. ScriptMenu.strbufs[28].
 @
 @ A String is {u16 maxsize, u16 size, u32 magic, u16 codes[]}. The codes are the
 @ game's own character set, the same numbers labels.py rasterises from - ACHETER
 @ reads [299,301,306,303,318,303,316] in both places, which is what makes
 @ identifying a menu by its text sound.
-LIST_CURSOR_OFF = 0x394
-LIST_MENU_OFF = 0x3A0
-LIST_COUNT_OFF = 0x9B
-LIST_ENTRIES_OFF = 0x1C
+LIST_CURSOR_OFF = 0x394         @ TouchscreenChoiceMenuData.selection
+CHOICE_MENU_OFF = 0x0C          @ TouchscreenChoiceMenuData.menu, the menu's own slot
+CHOICE_CALLBACK_ARG_OFF = 0x3A0 @ TouchscreenChoiceMenuData.selectionCallbackArg
+SCRIPT_MENU_COUNT_OFF = 0x9B    @ ScriptMenu.count
+SCRIPT_MENU_FLAGS_OFF = 0x97    @ ScriptMenu: cancellable bit 0 .. anchorRight bit 6
+SCRIPT_MENU_X_OFF = 0x98        @ ScriptMenu.x
+SCRIPT_MENU_Y_OFF = 0x99        @ ScriptMenu.y
+SCRIPT_MENU_RET_OFF = 0xA0      @ ScriptMenu.ret_p, the script's result var
+SCRIPT_MENU_ITEMS_OFF = 0x1C4   @ ScriptMenu.items[28], ListMenuItem {text, value}
+SCRIPT_MENU_SIZE = 0x2E0        @ sizeof(ScriptMenu)
+SCRIPT_MENU_MAX = 28
+ANCHOR_RIGHT_BIT = 0x40
+ANCHOR_BOTTOM_BIT = 0x80
+LIST_WINDOW_TILE = 0x3D         @ ScriptMenu list windows' first character tile
+LIST_SCAN_CELLS = 32 * 24       @ the visible part of a 32x32 tilemap
+CHOICE_IDLE = 1                 @ TOUCHSCREEN_CHOICE_MENU_STATE_IDLE
+LIST_NONE = 0xEEEE              @ the script's "nothing chosen yet"
+LIST_CANCEL = 0xFFFE            @ ScriptMenu_ListTask's B
+LIST_RIGHT_EDGE = 31            @ last tile column a list window may reach
+SCRIPT_MENU_STRBUFS_OFF = 0x1C  @ ScriptMenu.strbufs
+CHOICE_RESULT_OFF = 0x04        @ TouchscreenChoiceMenuData.result
+STRING_MAXSIZE_OFF = 0
 STRING_SIZE_OFF = 2
+STRING_MAGIC_OFF = 4
 STRING_DATA_OFF = 8
+STRING_MAGIC = 0xB6F8D2EC       @ String_c_str asserts it, even in the retail build
+
+@ What a list entry may hold beyond plain characters (include/constants/charcode.h,
+@ src/string_control_code.c, src/render_text.c). A control is EXT_CTRL_CODE_BEGIN,
+@ its id, a count of arguments and the arguments; the text printer handles 0x0203,
+@ CURSOR_X, by setting the pen to its argument - an absolute x in the window. A
+@ CHAR_LF drops the pen a line, onto the row below in a ListMenu.
+CHAR_LF = 0xE000
+CHAR_SPACE = 0x01DE
+CHAR_NARROW_SPACE = 0x01E2
+CTRL_BEGIN = 0xFFFE
+STRING_EOS = 0xFFFF
+CTRL_CURSOR_X = 0x0203
+CTRL_CURSOR_X_LEN = 4           @ BEGIN, 0x0203, 1, x
+FMT_MAX = 80                    @ String_New(80): every ScriptMenu entry's buffer
+FMT_ITEM_X = 12                 @ listTemplate.item_X, where an entry's text starts
+FMT_GAP = 8                     @ between a folded entry's two halves, in pixels
+FMT_MARK = 0xFFFF               @ the column, before it is known
+FMT_MIN_INDENT = 3              @ spaces after a CHAR_LF that make it a column
 
 @ The panel's record, written by onescreen/labels.py::_listmenu.
 LIST_RECORD_OFF = 272
@@ -474,7 +606,7 @@ LIST_N_MENUS = 22               @ u8
 LIST_PAL_NORM = 23
 LIST_PAL_HI = 24
 LIST_MENUS_OFF = 0x1C           @ first per-menu record
-LIST_MENU_RECORD = 52
+LIST_MENU_RECORD = 56
 LIST_M_STRIP_OFF = 0            @ u16, byte offset of its strips in the pool
 LIST_M_STRIP_TILES = 2          @ u16
 LIST_M_ENTRIES = 4              @ u8
@@ -488,6 +620,9 @@ LIST_M_COLS = 8
 LIST_M_ROWS = 9
 LIST_M_KEY = 10                 @ u16 key[16]
 LIST_M_POS = 42                 @ u8 pos[8], (row << 4) | column per entry
+LIST_M_HASH = 50                @ u16 hash of every entry not in the skip mask
+LIST_M_SKIP = 52                @ u8, bit i = entry i is left out of the hash
+LIST_MAX_ENTRIES = 8
 LIST_KEY_MAX = 16
 LIST_FRAME_TILES = 9
 LIST_HOLD_FRAMES = 8            @ ~0.13s; long enough to bridge a reprint, short
@@ -569,7 +704,7 @@ OAK_CONFIRM_NAME   = 98         @ CONFIRM_NAME_YESNO_HANDLE_INPUT
 @ all-paper image through the lead-in covers it, without showing a prompt the
 @ player cannot answer yet.
 @
-@     62 WAIT_FADE_OUT_TO_ASK_GENDER .. 64 WAIT_FADE_IN_GENDER_SELECT_MENU
+@     61 ARE_YOU_A_GENDER            .. 64 WAIT_FADE_IN_GENDER_SELECT_MENU
 @     66 PREPARE_ASK_CONFIRM_GENDER  .. 68 CONFIRM_GENDER_YESNO_INIT_MENU
 @     96 PROMPT_NAME_RESTORE_GRAPHICS .. 97 CONFIRM_NAME_YESNO_INIT_MENU
 OAK_GENDER_PRE_LO  = 61
@@ -608,6 +743,31 @@ BAND_DEST_OAK    = 0x050000D8
 BAND_DEST_BATTLE = 0x05000178
 BAND_DEST_FIELD  = 0x05000198
 
+@ Palette RAM is not the last word in a battle or the evolution scene. Both keep
+@ a PaletteData with autoTransparent set (battle_main.c, evolution_scene.c), and
+@ their VBlank callback - which the main loop calls after its second VBlank
+@ wait - pushes the whole main-BG `transparent` buffer back to palette RAM every
+@ logic frame. A band written only to 0x05000178 lasted until that push: the
+@ next video frame showed the game's colour 12 until the following exec wrote
+@ ours again, which reaches the window's rows only when the exec runs early.
+@ So the band also goes into that buffer, and comes out of it again - from the
+@ `opaque` copy, the game's own unfaded colour - when the box is taken down.
+@
+@     struct PaletteData { PaletteBuffer buffers[14]; ... }
+@     struct PaletteBuffer { u16 *opaque; u16 *transparent; u32 size; ... }
+@
+@ buffers[PLTTBUF_MAIN_BG] is the first, so it starts the struct.
+PLTT_OPAQUE_OFF      = 0x00     @ PaletteData.buffers[MAIN_BG].opaque
+PLTT_FADED_OFF       = 0x04     @ .transparent, what the VBlank callback pushes
+PLTT_SIZE_OFF        = 0x08     @ .size, in bytes
+BAND_ENTRY_OFF       = BAND_DEST_BATTLE - 0x05000000   @ palette 11, colour 12
+BS_PALETTE_OFF       = 0x28     @ BattleSystem.palette
+BS_MSG_ICON_OFF      = 0x1B0    @ BattleSystem.msgIcon, a PaletteBlink on palette 11
+EVOLUTION_PLTT_OFF   = 0x14     @ EvolutionTaskData.paletteData
+EVOLUTION_BLINK_OFF  = 0x58     @ EvolutionTaskData.paletteBlink, also palette 11
+BAND_IN_BUFFER       = 1        @ bt_band / evo_band: the buffer holds our colour
+BAND_BLINK_HELD      = 2        @                     we paused the scene's blink
+
 OAK_STATE_OFF = 0x0C            @ OakSpeechData.state
 OAK_DATA_OFF = 0x08             @ manager->data, from &proc_state (+0x14)
 OAK_TUTORIAL_HI = 7             @ 0..7: the tutorial menu
@@ -623,17 +783,51 @@ OAK_CONTROL_MARK    = 0xFFFE
 OAK_FOCUS_CONTROL   = 0x0200
 OAK_IGNORE_CONTROL  = 0x0209
 
+@ Why the band behind Oak's selected choice used to flash, from the full
+@ decompilation. OakSpeech_InitMsgPrinter starts a PaletteBlink on top-screen
+@ BG palette 6 - the dialog window's own palette - to animate the "look at the
+@ bottom screen" icon, colours 11-14 (src/palette_blink.c). It runs on the main
+@ SysTask queue, after this exec trampoline, and on ticks 0 and 24 of its
+@ 32-tick cycle it writes ALL SIXTEEN colours of palette 6 back to palette RAM
+@ from its own copy. Our band is palette 6 colour 12, so once a cycle the
+@ game's 0x62FF salmon came back for a frame, and once it went white.
+@
+@ The icon is suppressed in exactly the states that draw a band, so the blink
+@ has nothing to show there: hold it still (PALETTE_BLINK_PAUSE) while 65, 69
+@ or 98 is up, and RESTART it afterwards - only if we were the ones who paused
+@ it, and never END it, which would destroy its task.
+@
+@     struct PaletteBlink { SysTask *task; ApplyFunc apply; PaletteData *pltt;
+@                           u16 source[16], current[16];
+@                           u8 screen, palette, state, timer; };   // 0x50
+@
+@ apply is checked against PaletteBlink_LoadMainBgPltt - ARM9 code, the same
+@ address in every region (pret's sub_020165A4) - so this only ever touches the
+@ hardware-palette blink of the top screen it expects.
+OAK_BLINK_OFF       = 0x114     @ OakSpeechData.paletteBlink
+BLINK_SIZE          = 0x50
+BLINK_APPLY_OFF     = 0x04
+BLINK_PLTT_OFF      = 0x08
+BLINK_BYTES_OFF     = 0x4C      @ screen, palette, state, timer
+BLINK_APPLY_MAIN_BG = 0x020165A5 @ PaletteBlink_LoadMainBgPltt, Thumb
+BLINK_RESTART       = 0
+BLINK_RUN           = 1
+BLINK_PAUSE         = 2
+BLINK_PALETTE_OAK   = 6
+BLINK_PALETTE_WINDOW = 11       @ the battle and evolution message window
+
 @ Field script menus - the PC option list, shop lists, NPC yes/no choices. All
 @ of these are drawn on the touch screen by the running script, inside the field
 @ app, so there is no app transition to detect and no POWCNT1 write of our own
-@ to catch. The signal is in pret's FieldSystem (include/field_system.h):
+@ to catch. The signal is in FieldSystem (include/field_system.h):
 @
 @     struct FieldSystem { FieldProcessManager *processManager;  // +0x00
 @                          ... ; int bottomScreenType;           // +0x18
-@                          int unk1C; ... };                     // +0x1C
+@                          int savedBottomScreenAppId; ... };    // +0x1C
 @
-@ ScrCmd_TouchscreenMenuHide sets unk1C = 3 when a script takes the bottom
-@ screen; ScrCmd_TouchscreenMenuShow sets it back to 0 for the normal icon bar.
+@ ScrCmd_TouchscreenMenuHide parks the bottom screen on app 3 (the choice menu)
+@ and leaves 3 here; ScrCmd_TouchscreenMenuShow puts 0 back for the icon bar.
+@ pret called this unk1C; the full decompilation names it - see docs/DECOMP.md.
 @ Read through sFieldSysPtr, the file-static in field_system.c.
 @
 @ Confirmed on both sides, which is the rule that caught every bad candidate
@@ -644,35 +838,46 @@ OAK_IGNORE_CONTROL  = 0x0209
 @
 @ Tested non-zero rather than == 3: any non-default mode means a script has put
 @ something on the bottom screen that the player needs to see.
-FIELD_MENU_OFF = 0x1C
+FS_SAVED_APP_ID_OFF = 0x1C      @ FieldSystem.savedBottomScreenAppId
 @ Mode 3 is refined at runtime: binary states stay on the world, list states swap.
-FIELD_TOUCH_TASK_OFF = 0xD8     @ FieldSystem -> outer bottom-screen SysTask
+FS_BOTTOM_TASK_OFF = 0xD8       @ FieldSystem.bottomScreenTask
+FS_BOTTOM_TYPE_OFF = 0x18       @ FieldSystem.bottomScreenType
+FS_BOTTOM_TYPE_FIELD = 1        @ the overworld, Safari and friends
+FS_BOTTOM_TYPE_UNION = 3        @ the Union Room
 SYS_TASK_DATA_OFF = 0x10        @ SysTask.data
 
-@ The outer task owns transitions between bottom-screen modes. Its 16-byte data
-@ block is known from ov01_021F68DC/ov01_021F69C0.
-FIELD_OUTER_MODE_OFF  = 0x00
-FIELD_OUTER_STATE_OFF = 0x01
-FIELD_OUTER_NEXT_OFF  = 0x02
-FIELD_OUTER_CHILD_OFF = 0x04
-FIELD_OUTER_FS_OFF    = 0x08
-FIELD_OUTER_LAST_OFF  = 0x0C
-FIELD_OUTER_IDLE      = 1
-FIELD_OUTER_TRANS_LO  = 2
-FIELD_OUTER_TRANS_HI  = 7
-FIELD_TOUCH_MODE      = 3
+@ The bottom-screen app manager (src/field/bottom_screen_app.c), the SysTask
+@ that owns which touch app is up and the fades between them:
+@
+@     struct BottomScreenAppManager { u8 appId; u8 state; u8 nextAppId;
+@                                     void *app; FieldSystem *fieldSystem;
+@                                     void *args; };
+@
+@ For the apps this hook reads, `app` is the app's own SysTask and its data is
+@ at SysTask.data. App 0 is the icon bar / X menu, app 3 the choice menu.
+BSAPP_ID_OFF  = 0x00            @ .appId
+BSAPP_STATE_OFF = 0x01          @ .state
+BSAPP_NEXT_ID_OFF  = 0x02       @ .nextAppId
+BSAPP_APP_OFF = 0x04            @ .app
+BSAPP_FS_OFF    = 0x08          @ .fieldSystem
+BSAPP_LAST_OFF  = 0x0C          @ .args, the last field in the block
+BSAPP_RUNNING      = 1
+BSAPP_SWITCH_REQUESTED  = 2     @ 2..7 are the switch and its fades
+BSAPP_FADE_IN  = 7
+BSAPP_CHOICE_MENU      = 3      @ BOTTOM_SCREEN_APP_CHOICE_MENU
 
-@ Mode 3 is overlay 27's green touch controller. GetMenuChoice selects state 3;
-@ MenuExec selects state 7. The live choice is a word, not the ListMenu2D field
-@ the abandoned experiment followed.
-FIELD_CHILD_STATE_OFF = 0x00
-FIELD_CHILD_FS_OFF    = 0x24
-FIELD_CHILD_CHOICE_OFF = 0x394
-FIELD_CHILD_BINARY_LO = 3
-FIELD_CHILD_BINARY_HI = 5
-FIELD_CHILD_BINARY_DONE = 6
-FIELD_CHILD_LIST_LO   = 7
-FIELD_CHILD_STATE_HI  = 11
+@ App 3's data is TouchscreenChoiceMenuData (src/touchscreen_choice_menu.c),
+@ the green Yes/No and list controller. GetMenuChoice selects state 3
+@ (SHOW_YES_NO); MenuExec selects state 7 (SHOW_LIST). The live choice is its
+@ `selection` word, not the ListMenu2D field the abandoned experiment followed.
+CHOICE_STATE_OFF = 0x00         @ .state
+CHOICE_FS_OFF    = 0x24         @ .fieldSystem
+CHOICE_SELECTION_OFF = 0x394    @ .selection
+CHOICE_SHOW_YES_NO = 3          @ 3..5 SHOW_YES_NO, YES_NO_INPUT, YES_NO_END
+CHOICE_YES_NO_END = 5
+CHOICE_DONE = 6                 @ DONE: hides the cursor, back to IDLE (1)
+CHOICE_SHOW_LIST   = 7          @ 7..10 SHOW_LIST .. LIST_WRITE_RESULT
+CHOICE_STATE_LAST  = 11         @ CANCEL_YES_NO, the last state
 
 @ Evolution's post-scene move-learning prompt. sub_02075A7C allocates a 0xBC-byte
 @ task data block and installs sub_02077270 as VBlank with that block as its
@@ -702,7 +907,7 @@ EVOLUTION_TASK_ORIG     = 0x02075D09 @ sub_02075D08, Thumb
     .global OneScreen_Signature
 OneScreen_Signature:
     .ascii  "1SGS"
-    .word   0x00000019          @ payload version
+    .word   0x00000024          @ payload version
 
 @ Filled in by the patcher from the ROM being patched. Defaults are French, so
 @ an unconfigured payload still works there. Keep the field order in step with
@@ -728,6 +933,11 @@ cfg_intro_b_exec:   .word DEF_INTRO_B_EXEC
 cfg_intro_c_exec:   .word DEF_INTRO_C_EXEC
 cfg_intro_clock:    .word DEF_INTRO_CLOCK
 cfg_theme_band:     .word DEF_THEME_BAND
+cfg_menu_exec_orig: .word DEF_MENU_EXEC_ORIG
+cfg_open_list:      .word DEF_OPEN_LIST
+cfg_string_width:   .word DEF_STRING_WIDTH
+cfg_setup_native:   .word DEF_SETUP_NATIVE
+cfg_tutor_exec_orig: .word DEF_TUTOR_EXEC_ORIG
 
 pad_held:       .word 0
 pad_new:        .word 0         @ newly pressed this frame
@@ -741,8 +951,6 @@ bt_menu_last:   .word NO_STATE  @ last menu id acted on, for edge detection
 bt_manual:      .word 0         @ 1 while an L+R override is holding, in battle
 bt_system:      .word 0         @ live BattleSystem*, or 0 outside a battle
 bt_drawn:       .word -1        @ label image currently blitted, -1 = nothing
-bt_cursor_off:  .word BI_CURSOR_OFF  @ learned; see OneScreen_BattleLearn
-bt_have_prev:   .word 0         @ 1 once bt_prev holds last frame's window
 bt_lock:        .word -1        @ image frozen at the moment A was pressed, -1 = free
 oak_drawn:      .word -1        @ prompt image in Oak's dialog box, -1 = none
 oak_data:       .word 0         @ diagnostics: OakSpeechData, its state,
@@ -769,6 +977,14 @@ list_drawn:     .word 0         @ 1 once a list menu's pool is in VRAM
 list_rect:      .word 0         @ x | cols<<8 | rows<<16 of the panel last drawn
 list_hold:      .word 0         @ frames left to keep a panel that stopped confirming
 intro_hold_until: .word 0       @ tick the last intro sequence stops, 0 = idle
+wl_ret:         .word 0         @ the result var of the list OneScreen_ListOpen opened
+wl_last:        .word 0         @ that list's last value, which B stands for
+oak_blink_held: .word 0         @ 1 while we hold Oak's palette blink paused
+bt_band:        .word 0         @ BAND_* bits for the battle's palette buffer and blink
+evo_band:       .word 0         @ the same for the evolution scene's
+lr_state:       .word 0         @ LR_*: the L+R chord, see OneScreen_ReadKeys
+lr_pending:     .word 0         @ the shoulder held back while LR_PENDING
+lr_timer:       .word 0         @ frames left before it is let through
 
 @ Kept below the word variables above, not among them: tools/savestate.py reads
 @ that run as a flat array of words and a six-byte table in the middle of it
@@ -784,8 +1000,21 @@ cursor_cmd:
     .byte   1, 3, 2
     .align  2
 
-@ Last frame's copy of the window OneScreen_BattleLearn watches.
-bt_prev:        .space BI_WIN_SIZE
+@ What each touch layout's start menu sets of SM_NORMAL_MASK (SAVE | 7 | RETIRE)
+@ in its inhibit flags - FieldSystem_GetStartMenuButtonInhibitFlags_* in
+@ src/start_menu.c: normal, Safari, Bug Contest, Pal Park, Union Room,
+@ Colosseum, Battle Tower partner room.
+sm_layout_class:
+    .hword  0x180, 0x090, 0x090, 0x090, 0x110, 0x190, 0x190
+    .align  2
+
+@ A list entry as OneScreen_ListFormat will leave it, built here first so it can
+@ be measured, and only copied over the real entry once the list is certain to
+@ open on top. A whole String - header and all - because the game measures it
+@ through FontID_String_GetWidth, whose String_c_str checks the magic.
+fmt_buf:
+    .space  STRING_DATA_OFF + 2 * (FMT_MAX + 1)
+    .align  2
 
 
 
@@ -796,9 +1025,10 @@ bt_prev:        .space BI_WIN_SIZE
 @
 @ The patcher fills the callback addresses in, after checking that the code at
 @ each one still matches the routine we expect - see regions.check_app_table. An
-@ entry it cannot vouch for is zeroed, which ends the table early and simply
-@ leaves that app alone rather than swapping on a wrong address. The values
-@ assembled here are the French ones, so an unconfigured payload still works.
+@ entry it cannot vouch for gets the callback 1, which no VBlank callback can
+@ be, so that app is left alone rather than swapped on a wrong address and the
+@ entries after it still work. The values assembled here are the French ones,
+@ so an unconfigured payload still works.
     .global OneScreen_AppTable
 OneScreen_AppTable:
 app_table:
@@ -823,6 +1053,18 @@ evolution_app:
     @ would only ever be right for one of them. Its move list is on engine B, so
     @ 1 rather than 0.
 relearner_app:
+    .word   0, 0
+
+    @ The Pal Pad (overlay 43) and the rankings viewer (overlay 121) draw every
+    @ window they have on engine A, then set gSystem.screensFlipped and call the
+    @ shared helper - the stock way of putting engine A on the BOTTOM, for touch.
+    @ The helper cannot be flipped, so without an entry their menus land on the
+    @ touch screen. Both set the flag before installing this callback, in the
+    @ same frame, so the one-shot swap on the callback edge comes after it.
+    @ Overlay code, found by masked search like the relearner's.
+palpad_app:
+    .word   0, 0
+rankings_app:
     .word   0, 0
 
     @ Terminator. Every slot above is rewritten at patch time, and
@@ -892,6 +1134,123 @@ OneScreen_Toggle:
     .pool
 
 @ ---------------------------------------------------------------------------
+@ void OneScreen_ReadKeys(void)
+@
+@ Installed in place of the main loop's `bl ReadKeypadAndTouchpad`. Runs it,
+@ then keeps L+R - the manual screen swap - to itself.
+@
+@ Two keys pressed "together" land in different frames, so the game used to see
+@ whichever shoulder came first on its own: a pocket change in the bag, a box
+@ change in the PC, a page in a summary, and A itself under the L=A button
+@ mode. Now a lone L or R is held back for SHOULDER_WINDOW frames. If the other
+@ one arrives in that time it is the swap, and the game sees neither key until
+@ both are released; if not, the game gets the press then, late by at most the
+@ window - or at once, if the key is let go first.
+@
+@ Only the words the game acts on change, and only on a frame when something
+@ is hidden or let through: they are rebuilt from the raw words without the
+@ hidden keys, then ApplyButtonModeToInput runs again on them. heldKeysRaw keeps
+@ the pad as it is, which the next frame's edges, the soft reset and
+@ OneScreen_UpdatePad all read.
+@ ---------------------------------------------------------------------------
+    .global OneScreen_ReadKeys
+    .thumb_func
+OneScreen_ReadKeys:
+    push    {r4, r5, r6, r7, lr}
+    ldr     r3, =READ_KEYS_ORIG
+    blx     r3
+    ldr     r0, =PAD_XY_BUF
+    ldrh    r0, [r0]
+    lsls    r0, r0, #16
+    bmi     99f                     @ lid shut: the game left the words stale
+    ldr     r4, =cfg_pad_held
+    ldr     r4, [r4]                @ &gSystem.heldKeysRaw
+    ldr     r5, [r4, #GS_HELD_RAW]
+    movs    r0, #(TOGGLE_MASK >> 8)
+    lsls    r0, r0, #8              @ L | R
+    ands    r5, r0                  @ the shoulders down this frame
+    movs    r6, #0                  @ keys to hide from the game
+    movs    r7, #0                  @ a held-back press to let through
+    ldr     r3, =lr_state
+    ldr     r2, [r3]
+    cmp     r2, #LR_CHORD
+    bne     91f
+    movs    r6, r0                  @ the swap: hide both until both are up
+    cmp     r5, #0
+    bne     98f
+    b       95f
+
+91: cmp     r2, #LR_PENDING
+    bne     93f
+    cmp     r5, r0
+    beq     96f                     @ the other one arrived: the swap
+    ldr     r1, =lr_pending
+    ldr     r1, [r1]
+    tst     r5, r1
+    bne     92f
+    movs    r7, r1                  @ let go inside the window: the press, now
+    b       95f
+92: ldr     r2, =lr_timer
+    ldr     r0, [r2]
+    subs    r0, #1
+    str     r0, [r2]
+    bgt     94f
+    movs    r7, r1                  @ the window ran out: the press, late
+    b       95f
+94: movs    r6, r1                  @ still waiting for its pair
+    b       98f
+
+93: ldr     r1, [r4, #GS_NEW_RAW]
+    ands    r1, r0                  @ shoulders newly down
+    beq     98f
+    cmp     r5, r0
+    beq     96f                     @ both down: the swap
+    ldr     r2, =lr_pending
+    str     r1, [r2]
+    ldr     r2, =lr_timer
+    movs    r0, #SHOULDER_WINDOW
+    str     r0, [r2]
+    movs    r2, #LR_PENDING
+    str     r2, [r3]
+    movs    r6, r1
+    b       98f
+
+95: movs    r2, #LR_IDLE
+    str     r2, [r3]
+    b       98f
+
+96: movs    r2, #LR_CHORD
+    str     r2, [r3]
+    movs    r6, #(TOGGLE_MASK >> 8)
+    lsls    r6, r6, #8
+    bl      OneScreen_Toggle
+    ldr     r0, =bt_manual          @ stop the battle logic re-asserting, so a
+    movs    r1, #1                  @ manual override sticks until the menu you
+    str     r1, [r0]                @ are on changes, or the phase does
+
+98: movs    r0, r6
+    orrs    r0, r7
+    beq     99f                     @ nothing hidden, nothing let through
+    ldr     r0, [r4, #GS_HELD_RAW]
+    bics    r0, r6
+    str     r0, [r4, #GS_HELD]
+    ldr     r0, [r4, #GS_NEW_RAW]
+    bics    r0, r6
+    orrs    r0, r7
+    str     r0, [r4, #GS_NEW_RAW]
+    str     r0, [r4, #GS_NEW]
+    ldr     r0, [r4, #GS_REP_RAW]
+    bics    r0, r6
+    orrs    r0, r7
+    str     r0, [r4, #GS_REP_RAW]
+    str     r0, [r4, #GS_REP]
+    ldr     r3, =APPLY_BUTTON_MODE
+    blx     r3                      @ the game's own L=A, if that option is on
+99: pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
 @ void OneScreen_UpdatePad(void)
 @ Sample the pad once per frame and derive the newly-pressed edges, so every
 @ other routine works from the same snapshot.
@@ -924,10 +1283,10 @@ OneScreen_UpdatePad:
 @ picked something and the game needs a screen we cannot draw on.
 @
 @   turn executing              -> battle scene on top
-@   root command menu (1..8)    -> battle scene on top, commands drawn over it
+@   root command menu (1..4)    -> battle scene on top, commands drawn over it
 @   a yes/no prompt (13..17)    -> battle scene on top, Oui/Non drawn over it
 @   bag or party (overlay 8)    -> hand the screen over, every frame
-@   any other menu (11, 12, ..) -> hand the screen over, every frame
+@   any other menu (5..12, 19..) -> hand the screen over, every frame
 @   no menu yet (-1 / 0)        -> leave the scene alone; the intro is playing
 @
 @ What this replaces: the menu used to come up on a D-pad or A press and step
@@ -1004,7 +1363,7 @@ OneScreen_AutoBattle:
     @ Reading the menu id also retires the battle-intro problem for free. The
     @ phase proxy reads "awaiting a command" from the moment overlay 10 loads,
     @ which is while the intro text is still playing - but curMenuId is
-    @ BATTLE_MENU_NONE until the menu actually opens, so mashing A through the
+    @ BATTLE_MENU_0 until the menu actually opens, so mashing A through the
     @ intro now does nothing instead of pinning the menu for the rest of the
     @ fight.
     bl      OneScreen_BattleMenuId
@@ -1027,22 +1386,19 @@ OneScreen_AutoBattle:
     cmp     r0, #0
     bne     28f                     @ the player has taken the screen; leave it
 
-    @ The bag and the party are their own overlay, and they do not move
-    @ curMenuId off the root menu while they are up - so going by the menu id
-    @ alone left them drawing on the bottom screen the first time they opened.
+    @ The bag and the party run as their own overlay and free the BattleInput
+    @ curMenuId lives in (graphicsMode 3). Its stale byte read as the root menu,
+    @ so going by the menu id alone left them drawing on the bottom screen.
     @ The overlay id says it outright, and it is the same signal the old timeout
     @ logic used for exactly this case.
     bl      OneScreen_BattleSubOpen
     cmp     r0, #0
     bne     25f
 
-    subs    r0, r5, #BATTLE_MENU_ROOT_LO
-    cmp     r0, #(BATTLE_MENU_ROOT_HI - BATTLE_MENU_ROOT_LO)
-    bls     26f                     @ 1..8: the root command menu
-    movs    r0, r5                  @ 3-bit immediate cannot reach 13
-    subs    r0, #BATTLE_MENU_TWO_LO
-    cmp     r0, #(BATTLE_MENU_TWO_HI - BATTLE_MENU_TWO_LO)
-    bls     26f                     @ 13..17: a yes/no prompt, drawn on the scene
+    movs    r0, r5
+    bl      OneScreen_BattleImage
+    adds    r0, #1
+    bne     26f                     @ a menu we draw on the scene: keep it
     cmp     r5, #0
     ble     28f                     @ -1 / 0: no menu is up, leave the scene alone
 
@@ -1065,8 +1421,49 @@ OneScreen_AutoBattle:
     movs    r0, #0                  @ drop the BattleSystem: the heap it lives
     ldr     r1, =bt_system          @ in is freed when the battle ends
     str     r0, [r1]
+    ldr     r1, =bt_band
+    str     r0, [r1]
     bl      OneScreen_ResetBattleUi
 28: pop     {r4, r5, pc}
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ BattleInput *OneScreen_BattleInput(void) -> the live BattleInput, or 0.
+@
+@ The one place the battle structs are dereferenced, so every reader gets the
+@ same checks. battleInput is only valid while BattleSystem.graphicsMode is 0:
+@ the bag and the party (3) and the catch naming screen (1/2) free it and leave
+@ the pointer behind, and the hook used to read curMenuId out of that freed
+@ block - which is why the bag appeared to "leave curMenuId on the root menu".
+@ bt_system itself is only published while Battle_Run is in BSTATE_BATTLE_MAIN;
+@ see OneScreen_BattleExec.
+@ ---------------------------------------------------------------------------
+    .thumb_func
+OneScreen_BattleInput:
+    push    {r4, lr}
+    ldr     r0, =bt_system
+    ldr     r4, [r0]
+    movs    r0, r4
+    ldr     r1, =(BS_GRAPHICS_MODE_OFF + 1)
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     31f
+    ldr     r0, =BS_GRAPHICS_MODE_OFF
+    ldrb    r0, [r4, r0]
+    cmp     r0, #0
+    bne     31f                     @ a sub-screen owns the input: freed
+    ldr     r1, =BATTLE_INPUT_OFF
+    ldr     r4, [r4, r1]
+    movs    r0, r4
+    ldr     r1, =BATTLE_INPUT_SIZE
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     31f
+    movs    r0, r4
+    pop     {r4, pc}
+31: movs    r0, #0
+    pop     {r4, pc}
     .align  2
     .pool
 
@@ -1075,33 +1472,28 @@ OneScreen_AutoBattle:
 @   -> r0 = battleInput->curMenuId, or BATTLE_MENU_NONE (-1) if there is no
 @      live battle to read it from.
 @
-@ Returning -1 for "cannot tell" is deliberate: -1 is already the game's own
-@ "no menu is up" value, and both cases want the same treatment - leave the
-@ battle scene alone and draw nothing.
+@ Returning -1 for "cannot tell" is deliberate: the caller treats every id <= 0
+@ as "no menu is up" - leave the battle scene alone and draw nothing.
 @ ---------------------------------------------------------------------------
     .thumb_func
 OneScreen_BattleMenuId:
-    ldr     r0, =bt_system
-    ldr     r0, [r0]
-    cmp     r0, #0
-    beq     31f
-    ldr     r1, =BATTLE_INPUT_OFF
-    ldr     r0, [r0, r1]
+    push    {r3, lr}
+    bl      OneScreen_BattleInput
     cmp     r0, #0
     beq     31f
     ldr     r1, =BI_CURMENU_OFF
     ldrsb   r0, [r0, r1]
-    bx      lr
+    pop     {r3, pc}
 31: movs    r0, #0
     mvns    r0, r0                  @ -1
-    bx      lr
+    pop     {r3, pc}
     .align  2
     .pool
 
 @ int OneScreen_BattleSubOpen(void) -> 1 while a battle sub-screen owns engine B
 @ (bag category, item list, party). This is the overlay id, not the menu id: the
-@ bag and party run as overlay 8 and leave curMenuId sitting on the root menu, so
-@ the menu id cannot see them.
+@ bag and party run as overlay 8, and the BattleInput the menu id lives in is
+@ freed while they are up.
     .thumb_func
 OneScreen_BattleSubOpen:
     ldr     r0, =cfg_battle_state
@@ -1120,110 +1512,18 @@ OneScreen_BattleSubOpen:
 @ One column, two rows, so menuY alone is the answer.
     .thumb_func
 OneScreen_BattleYesNo:
-    ldr     r0, =bt_system
-    ldr     r0, [r0]
+    push    {r3, lr}
+    bl      OneScreen_BattleInput
     cmp     r0, #0
     beq     64f
-    ldr     r1, =BATTLE_INPUT_OFF
-    ldr     r0, [r0, r1]
-    cmp     r0, #0
-    beq     64f
-    ldr     r1, =bt_cursor_off
-    ldr     r1, [r1]
+    ldr     r1, =BI_MENU_CURSOR_OFF
     adds    r0, r0, r1
     ldrb    r0, [r0, #1]            @ menuY
     cmp     r0, #1
     bls     65f
 64: movs    r0, #0
 65: adds    r0, #(LABEL_GEO_YN << 4)
-    bx      lr
-    .align  2
-    .pool
-
-@ ---------------------------------------------------------------------------
-@ void OneScreen_BattleLearn(BattleInput *bi)
-@
-@ Work out where BattleMenuCursor really is, by watching the game move it.
-@
-@ pret's offsets drift in this part of the struct (battle_input.h:168) and the
-@ literal census that pinned curMenuId cannot separate the cursor from its
-@ neighbours. Rather than ship a guess, watch what actually changes: on a frame
-@ where UP or DOWN was pressed on the root menu, the game has already run and
-@ menuY is the byte that moved. UP/DOWN only, never LEFT/RIGHT - the mover has a
-@ special case where LEFT or RIGHT off FIGHT writes menuX *and* menuY
-@ (battle_input.c:3778), so those frames cannot tell the two apart.
-@
-@ The candidate has to look like a BattleMenuCursor and not merely like a byte
-@ that changed: menuY only ever holds 0 or 1, the byte before it is `enabled`
-@ which is 1 while the cursor is live, and the byte after is menuX, at most 2.
-@ Requiring exactly one match in the window means an ambiguous frame is skipped
-@ rather than guessed at; the next press tries again.
-@
-@ Learned once and kept - it is a property of the ROM, not of the battle.
-@ ---------------------------------------------------------------------------
-    .thumb_func
-OneScreen_BattleLearn:
-    push    {r4, r5, r6, r7, lr}
-    movs    r6, r0                  @ battleInput
-    ldr     r7, =BI_WIN_BASE
-    adds    r6, r6, r7              @ &bi[BI_WIN_BASE]
-    ldr     r7, =bt_prev
-
-    ldr     r0, =bt_have_prev
-    ldr     r0, [r0]
-    cmp     r0, #0
-    beq     47f                     @ nothing to compare against yet
-
-    ldr     r0, =pad_new
-    ldr     r0, [r0]
-    movs    r1, #KEY_UPDOWN
-    ands    r0, r1
-    cmp     r0, #0
-    beq     47f
-
-    movs    r2, #1                  @ offset; 0 has no byte before it
-    movs    r4, #0                  @ candidate
-    movs    r5, #0                  @ count
-46: ldrb    r0, [r7, r2]            @ was
-    ldrb    r1, [r6, r2]            @ is
-    cmp     r0, r1
-    beq     48f
-    cmp     r0, #1
-    bhi     48f                     @ menuY is 0 or 1, before and after
-    cmp     r1, #1
-    bhi     48f
-    subs    r3, r2, #1
-    ldrb    r0, [r6, r3]
-    cmp     r0, #1
-    bne     48f                     @ preceded by enabled == 1
-    adds    r3, r2, #1
-    ldrb    r0, [r6, r3]
-    cmp     r0, #2
-    bhi     48f                     @ followed by menuX <= 2
-    movs    r4, r2
-    adds    r5, #1
-48: adds    r2, #1
-    cmp     r2, #(BI_WIN_SIZE - 1)
-    blo     46b
-
-    cmp     r5, #1                  @ exactly one match, or leave it alone
-    bne     47f
-    ldr     r0, =BI_WIN_BASE
-    adds    r0, r0, r4
-    subs    r0, #1                  @ menuY is at +1 from the struct base
-    ldr     r1, =bt_cursor_off
-    str     r0, [r1]
-
-47: movs    r2, #0                  @ remember this frame's window
-49: ldrb    r0, [r6, r2]
-    strb    r0, [r7, r2]
-    adds    r2, #1
-    cmp     r2, #BI_WIN_SIZE
-    blo     49b
-    ldr     r0, =bt_have_prev
-    movs    r1, #1
-    str     r1, [r0]
-    pop     {r4, r5, r6, r7, pc}
+    pop     {r3, pc}
     .align  2
     .pool
 
@@ -1236,22 +1536,16 @@ OneScreen_BattleLearn:
 @ per battler between turns, and applies its own wrap rules at the edges; keeping
 @ a second copy in the hook would only be a second thing to drift.
 @
-@ menuY/menuX are clamped rather than trusted. If BI_CURSOR_OFF turns out to be
-@ pointing at the wrong bytes, a clamp keeps this returning a valid image instead
-@ of indexing off the end of a six-byte table.
+@ menuY/menuX are clamped rather than trusted, so a surprise in the struct still
+@ returns a valid image instead of indexing off the end of a six-byte table.
 @ ---------------------------------------------------------------------------
     .thumb_func
 OneScreen_BattleCursor:
-    ldr     r0, =bt_system
-    ldr     r0, [r0]
+    push    {r3, lr}
+    bl      OneScreen_BattleInput
     cmp     r0, #0
     beq     34f
-    ldr     r1, =BATTLE_INPUT_OFF
-    ldr     r0, [r0, r1]
-    cmp     r0, #0
-    beq     34f
-    ldr     r1, =bt_cursor_off
-    ldr     r1, [r1]
+    ldr     r1, =BI_MENU_CURSOR_OFF
     adds    r0, r0, r1
     ldrb    r1, [r0, #1]            @ menuY
     ldrb    r2, [r0, #2]            @ menuX
@@ -1266,9 +1560,107 @@ OneScreen_BattleCursor:
     adds    r0, r0, r2
     ldr     r1, =cursor_cmd
     ldrb    r0, [r1, r0]
-    bx      lr
+    pop     {r3, pc}
 34: movs    r0, #0                  @ no cursor to read: show FIGHT selected
-    bx      lr
+    pop     {r3, pc}
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ int OneScreen_BattleImage(int menu_id)
+@   -> r0 = the label image to draw on the scene for this menu, or -1 when the
+@      patch has nothing for it and the touch screen should take it.
+@
+@ The one place that decides which menus are drawn, for OneScreen_AutoBattle
+@ (keep the scene or swap) and OneScreen_BattleDraw (what to blit) alike, so
+@ the two cannot disagree. A set the blob does not hold - an old blob, or a ROM
+@ whose words for it could not be read - answers -1, and that menu swaps.
+@ ---------------------------------------------------------------------------
+    .thumb_func
+OneScreen_BattleImage:
+    push    {r4, r5, r6, lr}
+    movs    r4, r0                  @ menu id
+    bl      OneScreen_BattleInput
+    movs    r6, r0                  @ BattleInput
+    beq     99f                     @ freed, or no battle: nothing to read
+    movs    r0, r4
+    subs    r0, #BATTLE_MENU_TWO_LO
+    cmp     r0, #(BATTLE_MENU_TWO_HI - BATTLE_MENU_TWO_LO)
+    bhi     91f
+    bl      OneScreen_BattleYesNo   @ 13..17: a code in LABEL_GEO_YN already
+    b       97f
+
+91: movs    r5, #LABEL_GEO_RIVAL
+    movs    r0, r4
+    subs    r0, #BATTLE_MENU_RIVAL_LO
+    cmp     r0, #(BATTLE_MENU_RIVAL_HI - BATTLE_MENU_RIVAL_LO)
+    bls     95f                     @ FIGHT alone: always image 0
+    movs    r0, r4
+    subs    r0, #BATTLE_MENU_PARK_LO
+    cmp     r0, #(BATTLE_MENU_PARK_HI - BATTLE_MENU_PARK_LO)
+    bhi     92f
+    movs    r5, #LABEL_GEO_PARK     @ Pal Park: BALL in FIGHT's slot, RUN in
+    ldr     r1, =(BI_MENU_CURSOR_OFF + 1)   @ RUN's - one column, so menuY says
+    ldrb    r0, [r6, r1]
+    cmp     r0, #0
+    beq     95f
+    movs    r0, #BATTLE_RUN_IMAGE
+    b       96f
+
+    @ The 3x2 menus: which words, by battle type and cancelShown.
+92: movs    r0, r4
+    subs    r0, #BATTLE_MENU_ROOT_LO
+    cmp     r0, #(BATTLE_MENU_SAFARI_HI - BATTLE_MENU_ROOT_LO)
+    bls     93f                     @ 1..8, less 5/6 and the park handled above
+    movs    r0, r4
+    subs    r0, #BATTLE_MENU_BUG_LO
+    cmp     r0, #(BATTLE_MENU_BUG_HI - BATTLE_MENU_BUG_LO)
+    bhi     99f                     @ the move list, target select, ...
+93: ldr     r0, =bt_system
+    ldr     r0, [r0]                @ checked by OneScreen_BattleInput above
+    ldr     r0, [r0, #BS_BATTLE_TYPE_OFF]
+    movs    r5, #LABEL_GEO_SAFARI
+    movs    r1, #BATTLE_TYPE_SAFARI
+    tst     r0, r1
+    bne     94f
+    ldr     r1, =BATTLE_TYPE_PAL_PARK
+    tst     r0, r1
+    bne     99f                     @ the park's words on a 3x2 menu: not ours
+    movs    r5, #LABEL_GEO_BUG
+    ldr     r1, =BATTLE_TYPE_BUG_CONTEST
+    tst     r0, r1
+    bne     94f
+    movs    r5, #LABEL_GEO_CANCEL
+    ldr     r1, =BI_CANCEL_SHOWN_OFF
+    ldrb    r0, [r6, r1]
+    cmp     r0, #0
+    bne     94f
+    movs    r5, #0                  @ FIGHT / BAG / POKEMON / RUN
+94: bl      OneScreen_BattleCursor
+    b       96f
+95: movs    r0, #0
+96: lsls    r5, r5, #4
+    orrs    r0, r5                  @ (set << 4) | index
+
+    @ Only an image the blob actually holds.
+97: movs    r4, r0
+    lsrs    r0, r0, #4
+    bl      OneScreen_GeoRecord
+    cmp     r0, #0
+    beq     99f
+    ldrh    r0, [r0, #10]
+    lsls    r0, r0, #17             @ less LABEL_GEO_BANDED
+    lsrs    r0, r0, #17
+    subs    r0, #1                  @ less the wipe: -1 for a set left out
+    movs    r1, #15
+    ands    r1, r4
+    cmp     r1, r0
+    bge     99f                     @ signed, so -1 refuses every index
+    movs    r0, r4
+    pop     {r4, r5, r6, pc}
+99: movs    r0, #0
+    mvns    r0, r0
+    pop     {r4, r5, r6, pc}
     .align  2
     .pool
 
@@ -1293,6 +1685,10 @@ OneScreen_BattleCursor:
     .thumb_func
 OneScreen_BattleMenu:
     push    {r4, r5, r6, r7, lr}
+    sub     sp, #8                  @ [sp] the record, [sp, #4] choice to band
+    movs    r4, #0
+    mvns    r4, r4
+    str     r4, [sp, #4]            @ -1: no band unless a banded set says so
     ldr     r7, =OneScreen_Labels
     ldr     r1, [r7]
     ldr     r2, =LABEL_MAGIC
@@ -1300,36 +1696,38 @@ OneScreen_BattleMenu:
     bne     39f                     @ blob never filled in: draw nothing at all
     ldrb    r6, [r7, #4]            @ rows
 
-    lsrs    r1, r0, #4              @ which set
-    ldrb    r2, [r7, #5]            @ number of geometry records
-    cmp     r1, r2
-    bhs     39f                     @ bad image code: stay inside the header
-    movs    r2, #LABEL_GEO_SIZE
-    muls    r1, r2
-    adds    r1, #8
-    adds    r1, r7, r1              @ -> its geometry record
-    movs    r2, #15
-    ands    r0, r2                  @ index within the set
+    movs    r5, r0                  @ the image code
+    lsrs    r0, r0, #4              @ which set
+    bl      OneScreen_GeoRecord
+    movs    r1, r0                  @ -> its geometry record
+    beq     39f                     @ bad image code: stay inside the header
+    str     r1, [sp]
+    movs    r0, #15
+    ands    r0, r5                  @ index within the set
     ldrh    r2, [r1, #10]           @ images in this set, including its wipe
-    cmp     r0, r2
+    lsls    r3, r2, #17
+    lsrs    r3, r3, #17             @ less LABEL_GEO_BANDED
+    cmp     r0, r3
     bhs     39f                     @ bad index: stay inside its image data
-
-    ldr     r3, [r1, #4]            @ bytes per image
-    muls    r3, r0
-    ldr     r2, [r1]                @ where this set's images start
-    adds    r3, r3, r2
-    adds    r4, r7, r3              @ src
-    ldrh    r5, [r1, #8]            @ bytes per tile row
 
     @ The last image of every set is the wipe: solid paper, and not stored. Four
     @ of them was 3840 bytes of 0xFF in a blob that had none to spare, so it is
     @ filled here instead. Asking for it is unchanged - the records still count it.
-    ldrh    r2, [r1, #10]           @ images, wipe included
-    subs    r2, #1
-    cmp     r0, r2
-    bne     34f
     movs    r4, #0                  @ 0 = fill, and r4 is the source otherwise
-34: movs    r7, r1                  @ 3-bit immediate cannot reach 12
+    subs    r3, #1
+    cmp     r0, r3
+    beq     34f
+    ldr     r4, [r1]                @ where this set's images start
+    lsls    r2, r2, #16             @ LABEL_GEO_BANDED -> N
+    bmi     32f
+    ldr     r3, [r1, #4]            @ bytes per image
+    muls    r3, r0
+    adds    r4, r4, r3              @ that image
+    b       31f
+32: str     r0, [sp, #4]            @ banded: the plain image, then this band
+31: adds    r4, r7, r4              @ src
+34: ldrh    r5, [r1, #8]            @ bytes per tile row
+    movs    r7, r1                  @ 3-bit immediate cannot reach 12
     adds    r7, #12                 @ -> the row address table
 
     movs    r3, #0
@@ -1352,7 +1750,41 @@ OneScreen_BattleMenu:
     bne     33b
 38: adds    r3, #1
     b       35b
-39: pop     {r4, r5, r6, r7, pc}
+39: ldr     r1, [sp, #4]
+    adds    r0, r1, #1
+    beq     30f                     @ nothing to band
+    ldr     r0, [sp]
+    bl      OneScreen_BandRect
+30: add     sp, #8
+    pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ void *OneScreen_GeoRecord(int set) -> that set's geometry record in the label
+@ blob, or 0 past the blob's own count. The first LABEL_GEO_COUNT sit at +8, any
+@ more at LABEL_GEO_EXTRA_OFF. Uses r0-r2 only.
+    .thumb_func
+OneScreen_GeoRecord:
+    ldr     r1, =OneScreen_Labels
+    ldrb    r2, [r1, #5]            @ records in this blob
+    cmp     r0, r2
+    bhs     29f
+    cmp     r0, #LABEL_GEO_COUNT
+    bhs     28f
+    movs    r2, #LABEL_GEO_SIZE
+    muls    r0, r2
+    adds    r0, #8
+    adds    r0, r1, r0
+    bx      lr
+28: subs    r0, #LABEL_GEO_COUNT
+    movs    r2, #LABEL_GEO_SIZE
+    muls    r0, r2
+    ldr     r2, =LABEL_GEO_EXTRA_OFF
+    adds    r0, r0, r2
+    adds    r0, r1, r0
+    bx      lr
+29: movs    r0, #0
+    bx      lr
     .align  2
     .pool
 
@@ -1361,22 +1793,123 @@ OneScreen_BattleMenu:
 @ rather than known here.
     .thumb_func
 OneScreen_BattleWipe:
-    lsls    r3, r0, #4
-    ldr     r1, =OneScreen_Labels
-    ldrb    r2, [r1, #5]
-    cmp     r0, r2
-    bhs     38f                     @ missing geometry: return an invalid code
-    movs    r2, #LABEL_GEO_SIZE
-    muls    r0, r2
-    adds    r0, #8
-    adds    r0, r1, r0
+    push    {r4, lr}
+    lsls    r4, r0, #4
+    bl      OneScreen_GeoRecord
+    cmp     r0, #0
+    beq     38f                     @ missing geometry: return an invalid code
     ldrh    r0, [r0, #10]           @ images in the set
+    lsls    r0, r0, #17             @ less LABEL_GEO_BANDED
+    lsrs    r0, r0, #17
     subs    r0, #1
-    orrs    r0, r3
-    bx      lr
+    orrs    r0, r4
+    pop     {r4, pc}
 38: movs    r0, #0
     mvns    r0, r0                  @ blitter's set-count check rejects -1
-    bx      lr
+    pop     {r4, pc}
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ void OneScreen_BandRect(r0 = geometry record, r1 = choice)
+@
+@ Turn the paper (colour 15) inside one choice's rectangle into band (colour
+@ 12), in VRAM, over the plain image OneScreen_BattleMenu has just copied - the
+@ whole difference between a banded set's plain image and its image of that
+@ choice selected (labels.BANDED). The rectangle is the record's: data offset
+@ plus one image is where the (x, y, w, h) bytes start.
+@
+@ A word at a time - one 8-pixel row of one tile - because VRAM takes no byte
+@ writes. 0xF -> 0xC clears a nibble's two low bits, and a word's 0xF nibbles
+@ are the bits 4i that survive w & w>>1 & w>>2 & w>>3, so a tile row is one
+@ read, a handful of ALU operations and one write.
+@ ---------------------------------------------------------------------------
+    .thumb_func
+OneScreen_BandRect:
+    push    {r4, r5, r6, r7, lr}
+    sub     sp, #16                 @ [sp] x0, [sp, #4] x1, [sp, #8] rows, [sp, #12] y1
+    ldr     r2, [r0]                @ data offset
+    ldr     r3, [r0, #4]            @ the plain image's size: the rects follow it
+    adds    r2, r2, r3
+    lsls    r1, r1, #2
+    adds    r2, r2, r1
+    ldr     r3, =OneScreen_Labels
+    adds    r2, r3, r2              @ -> x, y, w, h
+    ldrh    r4, [r0, #8]            @ bytes per tile row
+    lsrs    r4, r4, #2              @ = pixels across
+    adds    r0, #12
+    str     r0, [sp, #8]            @ -> the row address table
+    ldrb    r5, [r2]                @ x0
+    ldrb    r6, [r2, #2]            @ w
+    adds    r6, r5, r6              @ x1
+    cmp     r6, r4
+    bls     20f
+    movs    r6, r4                  @ never past the box
+20: str     r5, [sp]
+    str     r6, [sp, #4]
+    ldrb    r6, [r2, #1]            @ y
+    ldrb    r7, [r2, #3]            @ h
+    adds    r7, r6, r7              @ y1
+    ldrb    r4, [r3, #4]            @ tile rows in a box
+    lsls    r4, r4, #3
+    cmp     r7, r4
+    bls     21f
+    movs    r7, r4
+21: str     r7, [sp, #12]
+
+22: ldr     r0, [sp, #12]
+    cmp     r6, r0
+    bhs     29f                     @ every row done
+    ldr     r0, [sp, #8]
+    lsrs    r1, r6, #3
+    lsls    r1, r1, #2
+    ldr     r0, [r0, r1]            @ this tile row's first tile
+    movs    r1, #7
+    ands    r1, r6
+    lsls    r1, r1, #2
+    adds    r5, r0, r1              @ -> this pixel row, in the first tile
+    ldr     r4, [sp]                @ x
+23: ldr     r0, [sp, #4]
+    cmp     r4, r0
+    bhs     28f                     @ the row is done
+    lsrs    r1, r4, #3
+    lsls    r1, r1, #5
+    adds    r3, r5, r1              @ -> the word holding x
+    movs    r1, #7
+    ands    r1, r4                  @ lo: first pixel inside, within the tile
+    movs    r2, #7
+    orrs    r2, r4
+    adds    r2, #1                  @ the tile's end...
+    cmp     r2, r0
+    bls     24f
+    movs    r2, r0                  @ ...or the rectangle's
+24: subs    r0, r2, r4
+    adds    r0, r0, r1              @ hi: one past the last pixel inside
+    movs    r4, r2                  @ the next x
+    lsls    r0, r0, #2
+    lsls    r1, r1, #2
+    movs    r2, #1
+    lsls    r2, r0                  @ 1 << 4hi, which is 0 for a whole tile
+    movs    r0, #1
+    lsls    r0, r1                  @ 1 << 4lo
+    subs    r2, r2, r0              @ every nibble from lo to hi
+    ldr     r0, [r3]                @ the eight pixels
+    lsrs    r1, r0, #1
+    ands    r1, r0
+    lsrs    r7, r1, #2
+    ands    r1, r7                  @ bit 4i: nibble i is 0xF, paper
+    ldr     r7, =0x11111111
+    ands    r1, r7
+    ands    r1, r2                  @ ...and inside the rectangle
+    lsls    r7, r1, #1
+    orrs    r1, r7                  @ its two low bits
+    bics    r0, r1                  @ 0xF -> 0xC, the band
+    str     r0, [r3]
+    b       23b
+28: adds    r6, #1
+    b       22b
+29: add     sp, #16
+    pop     {r4, r5, r6, r7, pc}
     .align  2
     .pool
 
@@ -1400,13 +1933,10 @@ OneScreen_BattleDraw:
     bl      OneScreen_BattleSubOpen
     cmp     r0, #0
     bne     41f                     @ the bag or party owns the screen
-    subs    r1, r5, #BATTLE_MENU_ROOT_LO
-    cmp     r1, #(BATTLE_MENU_ROOT_HI - BATTLE_MENU_ROOT_LO)
-    bls     40f
-    movs    r1, r5                  @ 3-bit immediate cannot reach 13
-    subs    r1, #BATTLE_MENU_TWO_LO
-    cmp     r1, #(BATTLE_MENU_TWO_HI - BATTLE_MENU_TWO_LO)
-    bls     44f
+    movs    r0, r5
+    bl      OneScreen_BattleImage
+    adds    r1, r0, #1
+    bne     45f                     @ ours to draw: r0 is the image
 
     @ Nothing of ours belongs on screen: take down whichever box is up. The lock
     @ deliberately SURVIVES this. Going into the bag and back out is not a phase
@@ -1414,7 +1944,11 @@ OneScreen_BattleDraw:
     @ game has not restored yet and ATTAQUE would flash. Holding the image the
     @ player last confirmed is also simply correct - the game restores the cursor
     @ to that same choice. ResetBattleUi drops it when the turn actually runs.
-41: ldr     r0, =bt_drawn
+    @ The band comes out of the palette buffer whether or not the labels are
+    @ still counted as up: ResetBattleUi forgets them without a VRAM write.
+41: movs    r0, #0
+    bl      OneScreen_BattleBand
+    ldr     r0, =bt_drawn
     ldr     r1, [r0]
     adds    r2, r1, #1
     beq     42f                     @ was -1: nothing of ours on screen
@@ -1426,9 +1960,6 @@ OneScreen_BattleDraw:
     bl      OneScreen_BattleMenu
     b       42f
 
-40: bl      OneScreen_BattleCursor
-    b       45f
-44: bl      OneScreen_BattleYesNo
 45: movs    r4, r0
 
     @ Confirming a choice resets the game's cursor before the menu id changes, so
@@ -1467,8 +1998,8 @@ OneScreen_BattleDraw:
     movs    r4, r0
 48: ldr     r0, =bt_drawn
     str     r4, [r0]
-    ldr     r0, =BAND_DEST_BATTLE   @ colour the selected band before drawing on it
-    bl      OneScreen_BandTheme
+    movs    r0, #1                  @ colour the selected band before drawing on it
+    bl      OneScreen_BattleBand
     movs    r0, r4
     bl      OneScreen_BattleMenu
 42: pop     {r4, r5, pc}
@@ -1489,9 +2020,7 @@ OneScreen_ResetBattleUi:
     movs    r1, #0
     ldr     r0, =bt_manual
     str     r1, [r0]
-    ldr     r0, =bt_have_prev       @ the window belongs to a battle that is over
-    str     r1, [r0]
-    movs    r1, #0                  @ and the frozen highlight to the last turn
+    movs    r1, #0                  @ the frozen highlight belongs to the last turn
     mvns    r1, r1
     ldr     r0, =bt_lock
     str     r1, [r0]
@@ -1523,8 +2052,11 @@ OneScreen_ResetBattleUi:
 @ the frame, or it gets painted over. `docs/AUDIT.md:133` calls that failure
 @ class 4, and it is the reason the PC box needed a hold.
 @
-@ Nothing is drawn yet; this only captures the pointer, so the build is
-@ behaviourally identical until the renderer lands.
+@ manager->data is only a BattleSystem while Battle_Run is in
+@ BSTATE_BATTLE_MAIN (src/battle/battle_022378C0.c): during the link stages it
+@ is the link work area, and once the battle ends it is freed while the same
+@ application runs the evolution and the move it teaches. So the pointer is
+@ published only in that state, read after the real exec has had its say.
 @ ---------------------------------------------------------------------------
 BATTLE_DATA_OFF = 0x08          @ manager->data, from &proc_state (+0x14)
 
@@ -1537,8 +2069,15 @@ OneScreen_BattleExec:
     ldr     r3, [r3]
     blx     r3
     movs    r5, r0                  @ keep its return value
+    ldr     r0, [r4]                @ proc_state, after this frame's transition
+    cmp     r0, #BSTATE_BATTLE_MAIN
+    bne     44f
     ldr     r4, [r4, #BATTLE_DATA_OFF]
-    ldr     r0, =bt_system
+    b       46f
+44: movs    r4, #0                  @ no BattleSystem to speak of
+    ldr     r0, =bt_band            @ nor its palette: forget any band in it
+    str     r4, [r0]
+46: ldr     r0, =bt_system
     str     r4, [r0]
 
     @ Draw here rather than from the main-loop hook, because here we are AFTER
@@ -1548,18 +2087,7 @@ OneScreen_BattleExec:
     @ PC box a hold.
     cmp     r4, #0
     beq     45f
-
     bl      OneScreen_BattleMenuId
-    push    {r0}
-    subs    r1, r0, #BATTLE_MENU_ROOT_LO
-    cmp     r1, #(BATTLE_MENU_ROOT_HI - BATTLE_MENU_ROOT_LO)
-    bhi     43f                     @ only learn while the root menu is up
-    ldr     r1, =BATTLE_INPUT_OFF
-    ldr     r0, [r4, r1]
-    cmp     r0, #0
-    beq     43f
-    bl      OneScreen_BattleLearn
-43: pop     {r0}
     bl      OneScreen_BattleDraw
 45: movs    r0, r5
     pop     {r4, r5, pc}
@@ -1972,8 +2500,8 @@ OneScreen_EvolutionPrompt:
     ldr     r1, =evolution_drawn
     str     r0, [r1]
     push    {r0}
-    ldr     r0, =BAND_DEST_BATTLE   @ the evolution prompt borrows that window
-    bl      OneScreen_BandTheme
+    movs    r0, #1
+    bl      OneScreen_EvolutionBand
     pop     {r0}
     bl      OneScreen_BattleMenu    @ redraw after the evolution frame work
     movs    r0, #0
@@ -1981,6 +2509,8 @@ OneScreen_EvolutionPrompt:
     b       .Levolution_done
 
 .Levolution_wipe:
+    movs    r0, #0                  @ nothing if the band never went in
+    bl      OneScreen_EvolutionBand
     ldr     r4, =evolution_drawn
     ldr     r0, [r4]
     adds    r0, #1
@@ -1998,6 +2528,9 @@ OneScreen_EvolutionPrompt:
     movs    r0, #0
     mvns    r0, r0
     str     r0, [r1]                @ app left: no write into its successor's VRAM
+    ldr     r1, =evo_band           @ ...nor into its freed palette buffer
+    movs    r0, #0
+    str     r0, [r1]
 .Levolution_done:
     pop     {r4, pc}
     .align  2
@@ -2100,8 +2633,65 @@ OneScreen_OakSuppressFocus:
     .align  2
     .pool
 
-@ Put Oak's live edition backdrop colour into the otherwise-unused selected-band
-@ entry of the dialog palette. The source is gold in HG and blue/silver in SS.
+@ void OneScreen_OakBlink(r0 = OakSpeechData *, r1 = 1 to hold it, 0 to let go)
+@ See the note at OAK_BLINK_OFF. Every field is checked before one byte is
+@ written; anything unexpected and the blink is left exactly as the game has it.
+    .thumb_func
+OneScreen_OakBlink:
+    push    {r4, r5, r6, lr}
+    movs    r6, r1
+    ldr     r1, =OAK_BLINK_OFF
+    ldr     r4, [r0, r1]
+    movs    r0, r4
+    movs    r1, #BLINK_SIZE
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     89f
+    ldr     r0, [r4, #BLINK_APPLY_OFF]
+    ldr     r1, =BLINK_APPLY_MAIN_BG
+    cmp     r0, r1
+    bne     89f                     @ not the top screen's hardware blink
+    ldr     r0, [r4, #BLINK_PLTT_OFF]
+    cmp     r0, #0
+    bne     89f
+    movs    r5, #BLINK_BYTES_OFF
+    adds    r5, r4, r5              @ -> screen, palette, state, timer
+    ldrb    r0, [r5]
+    cmp     r0, #0
+    bne     89f                     @ PM_LCD_TOP
+    ldrb    r0, [r5, #1]
+    cmp     r0, #BLINK_PALETTE_OAK
+    bne     89f
+    ldrb    r0, [r5, #3]
+    cmp     r0, #32
+    bhs     89f
+    ldrb    r0, [r5, #2]            @ the state
+    ldr     r1, =oak_blink_held
+    cmp     r6, #0
+    beq     88f
+    cmp     r0, #BLINK_RUN          @ hold: only a running blink, so a RESTART
+    bne     89f                     @ in progress is caught next frame instead
+    movs    r0, #BLINK_PAUSE
+    strb    r0, [r5, #2]
+    movs    r0, #1
+    str     r0, [r1]
+    b       89f
+88: ldr     r2, [r1]                @ let go: only one we are holding
+    cmp     r2, #0
+    beq     89f
+    movs    r2, #0
+    str     r2, [r1]
+    cmp     r0, #BLINK_PAUSE
+    bne     89f
+    movs    r0, #BLINK_RESTART
+    strb    r0, [r5, #2]
+89: pop     {r4, r5, r6, pc}
+    .align  2
+    .pool
+
+@ Put the theme's band colour into the otherwise-unused selected-band entry of
+@ Oak's dialog palette. Only an unconfigured payload (theme_band 0) borrows his
+@ live edition backdrop colour instead, gold in HG and blue/silver in SS.
     .thumb_func
 OneScreen_OakTheme:
     ldr     r0, =cfg_theme_band
@@ -2130,6 +2720,201 @@ OneScreen_BandTheme:
     beq     83f
     strh    r1, [r0]
 83: bx      lr
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ void OneScreen_BandBuffer(r0 = PaletteData *, r1 = PaletteBlink *,
+@                           r2 = &bt_band or &evo_band, r3 = 1 put / 0 take down)
+@
+@ Keep the theme's band in palette 11 colour 12 of a scene that pushes its
+@ palette buffer every frame - see the note at PLTT_OPAQUE_OFF.
+@
+@ The scene's PaletteBlink on the same palette (battle_main.c's msgIcon, the
+@ evolution scene's paletteBlink) is the other writer: on ticks 0 and 24 of
+@ its cycle it loads colours 11-14 into both buffers, colour 12 included, and
+@ it runs on the main SysTask queue after the battle's exec. So putting the
+@ band also holds a RUNNING blink paused, as OneScreen_OakBlink does for Oak,
+@ and taking it down restarts it - only a pause this made. A blink the game has
+@ paused itself is left alone: the evolution scene pauses its own for good
+@ once the evolution starts, wherever its cycle is, so colour 12 can be stuck
+@ on white there; the buffer write is what keeps the band visible.
+@
+@ Every pointer is checked first, and the blink must belong to this
+@ PaletteData, be on the top screen and be on palette 11. Without a theme it
+@ does nothing at all, as OneScreen_BandTheme does.
+@ ---------------------------------------------------------------------------
+    .thumb_func
+OneScreen_BandBuffer:
+    push    {r4, r5, r6, r7, lr}
+    movs    r4, r0                  @ PaletteData
+    movs    r5, r1                  @ PaletteBlink
+    movs    r6, r2                  @ &state
+    movs    r7, r3                  @ 1 put, 0 take down
+    cmp     r7, #0
+    bne     70f
+    ldr     r0, [r6]
+    cmp     r0, #0
+    beq     79f                     @ taking down what was never put
+    b       71f
+70: ldr     r0, =cfg_theme_band
+    ldr     r0, [r0]
+    cmp     r0, #0
+    beq     79f                     @ no theme: the game's own colour, as before
+
+    @ --- the buffer the VBlank callback pushes ---
+71: movs    r0, r4
+    movs    r1, #PLTT_SIZE_OFF
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     74f
+    ldr     r0, [r4, #PLTT_SIZE_OFF]
+    ldr     r1, =(BAND_ENTRY_OFF + 2)
+    cmp     r0, r1
+    blo     74f                     @ too small to hold palette 11
+    ldr     r0, [r4, #PLTT_OPAQUE_OFF]
+    ldr     r1, =BAND_ENTRY_OFF
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     74f
+    ldr     r0, [r4, #PLTT_FADED_OFF]
+    ldr     r1, =BAND_ENTRY_OFF
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     74f
+    ldr     r2, =BAND_ENTRY_OFF
+    ldr     r3, [r4, #PLTT_FADED_OFF]
+    adds    r3, r3, r2              @ -> the entry that reaches the screen
+    ldr     r1, [r6]
+    cmp     r7, #0
+    beq     72f
+    ldr     r0, =cfg_theme_band
+    ldr     r0, [r0]
+    strh    r0, [r3]
+    movs    r0, #BAND_IN_BUFFER
+    orrs    r1, r0
+    str     r1, [r6]
+    b       74f
+72: movs    r0, #BAND_IN_BUFFER
+    tst     r1, r0
+    beq     74f
+    ldr     r0, [r4, #PLTT_OPAQUE_OFF]
+    ldrh    r0, [r0, r2]            @ the game's own colour, unfaded
+    strh    r0, [r3]
+
+    @ --- the blink on the same palette ---
+74: movs    r0, r5
+    movs    r1, #BLINK_SIZE
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     78f
+    ldr     r0, [r5, #BLINK_PLTT_OFF]
+    cmp     r0, r4
+    bne     78f                     @ not this scene's blink
+    movs    r2, #BLINK_BYTES_OFF
+    adds    r2, r5, r2              @ -> screen, palette, state, timer
+    ldrb    r0, [r2]
+    cmp     r0, #0
+    bne     78f                     @ PM_LCD_TOP
+    ldrb    r0, [r2, #1]
+    cmp     r0, #BLINK_PALETTE_WINDOW
+    bne     78f
+    ldrb    r0, [r2, #3]
+    cmp     r0, #32
+    bhs     78f
+    ldrb    r0, [r2, #2]            @ its state
+    ldr     r1, [r6]
+    cmp     r7, #0
+    beq     76f
+    cmp     r0, #BLINK_RUN          @ hold: only a running blink, so one the game
+    bne     79f                     @ paused or is restarting is not ours
+    movs    r0, #BLINK_PAUSE
+    strb    r0, [r2, #2]
+    movs    r0, #BAND_BLINK_HELD
+    orrs    r1, r0
+    str     r1, [r6]
+    b       79f
+76: movs    r3, #BAND_BLINK_HELD
+    tst     r1, r3
+    beq     78f
+    cmp     r0, #BLINK_PAUSE
+    bne     78f
+    movs    r0, #BLINK_RESTART
+    strb    r0, [r2, #2]
+78: cmp     r7, #0
+    bne     79f
+    movs    r0, #0                  @ taken down: nothing of ours is left in it
+    str     r0, [r6]
+79: pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ void OneScreen_BattleBand(r0 = 1 put / 0 take down) - OneScreen_BandBuffer
+@ for the live BattleSystem, plus this frame's write to palette RAM.
+    .thumb_func
+OneScreen_BattleBand:
+    push    {r4, r5, r6, lr}
+    movs    r6, r0
+    cmp     r6, #0
+    beq     80f
+    ldr     r0, =BAND_DEST_BATTLE   @ what this frame shows, before the next push
+    bl      OneScreen_BandTheme
+80: ldr     r4, =bt_system
+    ldr     r4, [r4]
+    movs    r0, r4
+    ldr     r1, =(BS_GRAPHICS_MODE_OFF + 1)
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     82f
+    cmp     r6, #0
+    bne     81f
+    @ The bag and the party pause the blink themselves before their fade, and
+    @ restart it when they close (Task_PlayerSelectItem, Task_PlayerShowMonList).
+    @ Once one owns the screen, a pause we see may be theirs: let go of ours
+    @ without restarting it.
+    ldr     r0, =BS_GRAPHICS_MODE_OFF
+    ldrb    r0, [r4, r0]
+    cmp     r0, #0
+    beq     81f
+    ldr     r2, =bt_band
+    ldr     r0, [r2]
+    movs    r1, #BAND_BLINK_HELD
+    bics    r0, r1
+    str     r0, [r2]
+81: ldr     r0, [r4, #BS_PALETTE_OFF]
+    ldr     r1, =BS_MSG_ICON_OFF
+    ldr     r1, [r4, r1]
+    ldr     r2, =bt_band
+    movs    r3, r6
+    bl      OneScreen_BandBuffer
+    pop     {r4, r5, r6, pc}
+82: ldr     r0, =bt_band            @ no battle to write to: forget it
+    movs    r1, #0
+    str     r1, [r0]
+    pop     {r4, r5, r6, pc}
+    .align  2
+    .pool
+
+@ void OneScreen_EvolutionBand(r0 = 1 put / 0 take down) - the same for the
+@ evolution scene. Only called once OneScreen_EvolutionChoice has vouched for
+@ the task data this frame, so gSystem.vBlankIntrArg is the checked block.
+    .thumb_func
+OneScreen_EvolutionBand:
+    push    {r4, lr}
+    movs    r4, r0
+    cmp     r4, #0
+    beq     84f
+    ldr     r0, =BAND_DEST_BATTLE   @ the evolution prompt borrows that window
+    bl      OneScreen_BandTheme
+84: ldr     r0, =cfg_app_callback
+    ldr     r0, [r0]
+    ldr     r2, [r0, #4]            @ EvolutionTaskData
+    ldr     r0, [r2, #EVOLUTION_PLTT_OFF]
+    ldr     r1, [r2, #EVOLUTION_BLINK_OFF]
+    ldr     r2, =evo_band
+    movs    r3, r4
+    bl      OneScreen_BandBuffer
+    pop     {r4, pc}
     .align  2
     .pool
 
@@ -2200,6 +2985,17 @@ OneScreen_OakExec:
     bl      OneScreen_OakSuppressFocus
 .Loak_focus_checked:
     ldr     r0, [r4, #OAK_STATE_OFF]
+    movs    r1, #1                  @ hold the blink still in the three
+    cmp     r0, #OAK_GENDER_PICK    @ states that draw a band
+    beq     78f
+    cmp     r0, #OAK_CONFIRM_GENDER
+    beq     78f
+    cmp     r0, #OAK_CONFIRM_NAME
+    beq     78f
+    movs    r1, #0
+78: movs    r0, r4
+    bl      OneScreen_OakBlink
+    ldr     r0, [r4, #OAK_STATE_OFF]
 
     @ The three prompts that take input get drawn on Oak's own screen instead of
     @ handing the screen over. Gender picks between two symbols, the two
@@ -2226,13 +3022,16 @@ OneScreen_OakExec:
     cmp     r1, #(OAK_NAME_PRE_HI - OAK_NAME_PRE_LO)
     bls     74f
 
-    @ Not a prompt: hold the narrow box's own all-paper image over the corner the
-    @ icon occupies. Text never reaches those three tiles - it would collide with
-    @ the icon if it did - so this is safe even under Oak's longest lines, and it
-    @ covers the case where the icon turns out to be tiles rather than an object.
+    @ Not a prompt: take down whatever of ours is still up, once. This used to
+    @ hold an all-paper image over the corner the icon occupies on EVERY frame,
+    @ on the belief that text never reaches those three tiles. Only messages
+    @ with the {YESNO} icon keep clear of them; with the US text, five of Oak's
+    @ lines run past x = 192 and lost their last letters once printing paused,
+    @ and the tutorial's own icon was painted out too. The icon is handled by
+    @ OneScreen_OakSuppressFocus in the states that would show it.
     push    {r0, r2}
-    movs    r0, #LABEL_GEO_OAK
-    bl      OneScreen_BattleWipe
+    movs    r0, #0
+    mvns    r0, r0                  @ -1: take our box down, if one is up
     bl      OneScreen_OakDraw
     pop     {r0, r2}
 
@@ -2320,17 +3119,144 @@ OneScreen_OakExec:
 @ ---------------------------------------------------------------------------
     .thumb_func
 OneScreen_TaskMan:                  @ -> r0 = fieldSystem->taskman, or 0
+    push    {r4, lr}
+    bl      OneScreen_FieldSys
+    cmp     r0, #0
+    beq     55f
+    ldr     r4, [r0, #FS_TASKMAN_OFF]
+    movs    r0, r4
+    movs    r1, #TASK_MANAGER_SIZE
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     55f
+    movs    r0, r4
+    pop     {r4, pc}
+55: movs    r0, #0
+    pop     {r4, pc}
+    .align  2
+    .pool
+
+@ FieldSystem *OneScreen_FieldSys(void) -> *sFieldSysPtr if it points at a whole
+@ FieldSystem in main RAM, else 0. Every walk that starts at the field starts
+@ here, so a stale or half-built pointer fails closed in one place.
+    .thumb_func
+OneScreen_FieldSys:
+    push    {r4, lr}
     ldr     r0, =cfg_field_sys
     ldr     r0, [r0]
     cmp     r0, #0
-    beq     55f
-    ldr     r0, [r0]                @ sFieldSysPtr
+    beq     54f
+    ldr     r4, [r0]                @ sFieldSysPtr
+    movs    r0, r4
+    ldr     r1, =FIELD_SYSTEM_SIZE
+    bl      OneScreen_MainRamRange
     cmp     r0, #0
-    beq     55f
-    ldr     r0, [r0, #TASKMAN_OFF]
-    bx      lr
-55: movs    r0, #0
-    bx      lr
+    beq     54f
+    movs    r0, r4
+    pop     {r4, pc}
+54: movs    r0, #0
+    pop     {r4, pc}
+    .align  2
+    .pool
+
+@ void *OneScreen_BottomApp(r0 = FieldSystem *, r1 = app id)
+@   -> that bottom-screen app's own data, if it is the one up and RUNNING, or 0.
+@
+@ FieldSystem.bottomScreenTask -> SysTask.data is the BottomScreenAppManager,
+@ whose `app` is the app's own SysTask. bottomScreenTask only holds a manager
+@ while bottomScreenType is 1 (the overworld and its special zones) or 3 (the
+@ Union Room) - type 6 parks a photo viewer there - and the manager must point
+@ back at this FieldSystem. Every link is range-checked. A switching manager
+@ returns 0: its `app` may be the outgoing one.
+    .thumb_func
+OneScreen_BottomApp:
+    push    {r4, r5, r6, lr}
+    movs    r4, r0                  @ FieldSystem
+    movs    r6, r1                  @ wanted app id
+    ldr     r0, [r4, #FS_BOTTOM_TYPE_OFF]
+    cmp     r0, #FS_BOTTOM_TYPE_FIELD
+    beq     91f
+    cmp     r0, #FS_BOTTOM_TYPE_UNION
+    bne     99f
+91: movs    r0, #FS_BOTTOM_TASK_OFF
+    ldr     r5, [r4, r0]
+    movs    r0, r5
+    movs    r1, #(SYS_TASK_DATA_OFF + 4)
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     99f
+    ldr     r5, [r5, #SYS_TASK_DATA_OFF]    @ -> BottomScreenAppManager
+    movs    r0, r5
+    movs    r1, #(BSAPP_LAST_OFF + 4)
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     99f
+    ldr     r0, [r5, #BSAPP_FS_OFF]
+    cmp     r0, r4
+    bne     99f                     @ not this FieldSystem's manager
+    ldrb    r0, [r5, #BSAPP_STATE_OFF]
+    cmp     r0, #BSAPP_RUNNING
+    bne     99f
+    ldrb    r0, [r5, #BSAPP_ID_OFF]
+    cmp     r0, r6
+    bne     99f
+    ldr     r5, [r5, #BSAPP_APP_OFF]        @ -> the app's SysTask
+    movs    r0, r5
+    movs    r1, #(SYS_TASK_DATA_OFF + 4)
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     99f
+    ldr     r0, [r5, #SYS_TASK_DATA_OFF]
+    pop     {r4, r5, r6, pc}
+99: movs    r0, #0
+    pop     {r4, r5, r6, pc}
+
+@ TouchscreenMenuData *OneScreen_TouchMenu(r0 = FieldSystem *) -> it, or 0.
+    .thumb_func
+OneScreen_TouchMenu:
+    push    {r4, r5, r6, lr}
+    movs    r4, r0
+    movs    r1, #BSAPP_TOUCH_MENU
+    bl      OneScreen_BottomApp
+    movs    r5, r0
+    ldr     r1, =TOUCH_MENU_SIZE
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     98f
+    ldr     r0, [r5, #TSM_FS_OFF]
+    cmp     r0, r4
+    bne     98f                     @ a stale menu from another field
+    movs    r0, r5
+    pop     {r4, r5, r6, pc}
+98: movs    r0, #0
+    pop     {r4, r5, r6, pc}
+    .align  2
+    .pool
+
+@ StartMenuTaskData *OneScreen_StartMenuEnv(r0 = TaskManager *, or 0)
+@   -> the start menu's own data if that task is Task_StartMenu, else 0.
+    .thumb_func
+OneScreen_StartMenuEnv:
+    push    {r4, lr}
+    cmp     r0, #0
+    beq     53f
+    ldr     r1, [r0, #TASK_FUNC_OFF]
+    ldr     r2, =cfg_start_menu_task
+    ldr     r2, [r2]
+    cmp     r2, #0
+    beq     53f                     @ the patcher could not vouch for the task
+    cmp     r1, r2
+    bne     53f                     @ something else owns the field right now
+    ldr     r4, [r0, #TASK_ENV_OFF]
+    movs    r0, r4
+    ldr     r1, =START_MENU_DATA_SIZE
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     53f
+    movs    r0, r4
+    pop     {r4, pc}
+53: movs    r0, #0
+    pop     {r4, pc}
     .align  2
     .pool
 
@@ -2359,13 +3285,8 @@ OneScreen_MenuGone:
     @ It is an ARM9 task, so we cannot tell from the address alone. But if it is
     @ Task_StartMenu we can ask the menu itself, and its exit states say it is
     @ leaving even though it is still on screen - the Dig / Escape Rope flash.
-    ldr     r1, =cfg_start_menu_task
-    ldr     r1, [r1]
-    cmp     r1, #0
-    beq     57f                     @ the patcher could not vouch for it
-    cmp     r0, r1
-    bne     57f
-    ldr     r0, [r4, #TASK_ENV_OFF] @ the StartMenuTaskData
+    movs    r0, r4
+    bl      OneScreen_StartMenuEnv  @ the StartMenuTaskData, if it is the menu
     cmp     r0, #0
     beq     57f
     ldrh    r0, [r0, #STARTMENU_STATE_OFF]
@@ -2390,7 +3311,7 @@ OneScreen_MenuGone:
 @
 @ It needs no display registers touched at all: MAIN_3 is priority 0 and the 3D
 @ world is BG0 at priority 1 (initializeSimple3DVramManager, gf_3d_render.c:46),
-@ so the panel is already in front. The strips sit at tile 0x90 - clear of the
+@ so the panel is already in front. The strips sit at tile 0x84 - clear of the
 @ 130 tiles the menu loads for itself at tile 0, and far below the map-name
 @ window at 0x197, the only permanently allocated window on this layer.
 @
@@ -2408,35 +3329,22 @@ OneScreen_MenuGone:
     .thumb_func
 OneScreen_StartMenu:
     push    {r4, r5, r6, r7, lr}
-    sub     sp, #16
+    sub     sp, #SM_FRAME_SP
     ldr     r7, =OneScreen_Labels
     ldr     r0, [r7]
     ldr     r1, =LABEL_MAGIC
     cmp     r0, r1
     bne     57f                     @ blob never filled in: draw nothing at all
 
-    @ Every pointer checked. A stale one reaching the IPC FIFO at 0x04100000 is
-    @ what hung the ARM9 during the field-prompt attempt, and this walks the same
-    @ kind of chain.
-    ldr     r0, =cfg_field_sys
-    ldr     r0, [r0]
-    cmp     r0, #0
+    @ Every pointer checked, against the size of what it points at. A stale one
+    @ reaching the IPC FIFO at 0x04100000 is what hung the ARM9 during the
+    @ field-prompt attempt, and this walks the same kind of chain.
+    bl      OneScreen_FieldSys
+    movs    r6, r0                  @ -> FieldSystem
     beq     57f
-    ldr     r6, [r0]                @ sFieldSysPtr -> FieldSystem
-    cmp     r6, #0
-    beq     57f
-    ldr     r4, [r6, #TASKMAN_OFF]
-    cmp     r4, #0
-    beq     57f
-    ldr     r0, [r4, #TASK_FUNC_OFF]
-    ldr     r1, =cfg_start_menu_task
-    ldr     r1, [r1]
-    cmp     r1, #0
-    beq     57f                     @ the patcher could not vouch for the task
-    cmp     r0, r1
-    bne     57f                     @ something else owns the field right now
-    ldr     r4, [r4, #TASK_ENV_OFF] @ -> StartMenuTaskData
-    cmp     r4, #0
+    bl      OneScreen_TaskMan
+    bl      OneScreen_StartMenuEnv
+    movs    r4, r0                  @ -> StartMenuTaskData
     beq     57f
     ldrh    r0, [r4, #STARTMENU_STATE_OFF]
     subs    r0, #STARTMENU_SAVE_LO
@@ -2456,23 +3364,131 @@ OneScreen_StartMenu:
 
     movs    r0, #SM_RECORD_OFF
     adds    r7, r7, r0              @ -> the panel's record
-    movs    r0, #SM_CURSOR_OFF      @ 0xD3 is out of reach of ldrb's immediate
-    ldrb    r5, [r6, r0]            @ the live cursor
 
-    @ Only the ordinary overworld grid is reproduced. Safari, the Bug Contest and
-    @ Pal Park use different ones (ov27_0225CFC8 rows 1-3) that put RETIRE first
-    @ and shift everything after it, and the variant lives in the touch overlay's
-    @ own struct where this cannot reach. All of them leave RETIRE ENABLED, while
-    @ the normal layout always inhibits it (src/start_menu.c:307) - so that bit
-    @ separates them. Anywhere else this returns 0 and the caller swaps instead,
-    @ which is what the patch always did.
+    @ Decide what every cell holds BEFORE drawing anything: a strip index per
+    @ cell in sp[SM_SP_CELLS..+8] (0xFF = leave it empty) and the highlighted
+    @ cell in sp[SM_SP_HI]. Two ways to get there.
+    @
+    @ The live one. The touch app on the bottom screen IS the menu - the start
+    @ menu task only takes A and B - and its data says everything directly:
+    @ which of the game's layouts it is (normal, Safari, Bug Contest, Pal Park,
+    @ Union Room, Colosseum, Battle Tower), which icons it shows, and which slot
+    @ is selected. Cells are its slots, so the panel matches the touch screen
+    @ in every context, including the ones that used to swap.
+    movs    r0, r6
+    bl      OneScreen_TouchMenu
+    cmp     r0, #0
+    beq     50f                     @ not reachable this frame: fall back
+    movs    r5, r0                  @ -> TouchscreenMenuData
+    ldr     r1, =TSM_LAYOUT_OFF
+    ldrb    r1, [r5, r1]
+    lsrs    r1, r1, #TSM_LAYOUT_SHIFT
+    movs    r2, #TSM_LAYOUT_MASK
+    ands    r1, r2                  @ layout:4 (bits 1-4 of the word at +0x51C)
+    cmp     r1, #SM_N_LAYOUTS
+    bhs     57f
+    @ The touch app computed its layout when it was created; the start menu
+    @ computed its inhibit flags when X was pressed. They come from the same save
+    @ flags, so they agree - check it anyway, and trust neither if they do not.
+    lsls    r0, r1, #1
+    ldr     r2, =sm_layout_class
+    ldrh    r2, [r2, r0]
     ldr     r0, =SM_INHIBIT_OFF
     ldr     r0, [r4, r0]
+    ldr     r3, =SM_NORMAL_MASK
+    ands    r0, r3
+    cmp     r0, r2
+    bne     50f
+    lsls    r1, r1, #3
+    ldr     r0, =(OneScreen_Labels + SM_PLANS_OFF)
+    adds    r0, r0, r1              @ -> this layout's eight cells
+    ldrb    r1, [r0]
+    cmp     r1, #SM_PLAN_UNDRAWABLE
+    beq     57f                     @ a layout the patcher could not label
+    ldr     r4, =TSM_ICONS_OFF
+    adds    r4, r5, r4              @ -> icons[0].shown, stride 8
+    movs    r2, #0
+51: ldrb    r1, [r0, r2]
+    cmp     r2, #TSM_N_ICONS
+    bhs     52f                     @ past the last icon: nothing lives here
+    lsls    r3, r2, #3
+    ldrb    r3, [r4, r3]
+    cmp     r3, #0
+    bne     53f                     @ shown: keep its label
+52: movs    r1, #0xFF
+53: add     r3, sp, #SM_SP_CELLS
+    strb    r1, [r3, r2]
+    adds    r2, #1
+    cmp     r2, #SM_CELLS
+    blo     51b
+    ldr     r0, [r5, #TSM_SELECTION_OFF]
+    str     r0, [sp, #SM_SP_HI]     @ the selected slot is the selected cell
+    b       56f
+
+    @ The fallback, for the frames when the touch app is switching and its data
+    @ cannot be vouched for: the normal layout from the start menu's own
+    @ inhibit flags, as every build before v0.3 did. The game picks those flags
+    @ with one function per variant (src/start_menu.c), and they separate
+    @ cleanly:
+    @
+    @     Normal      always DISABLE_7 | DISABLE_RETIRE, never DISABLE_SAVE
+    @     Safari      SAVE | 7                        0x090
+    @     Bug Contest, Pal Park   BAG | SAVE | 7      0x094
+    @     Union Room  RETIRE | 4 (SAVE)               0x110
+    @     Colosseum, Battle Tower partner room        0x391 / 0x395
+    @
+    @ so normal is exactly (flags & (SAVE | 7 | RETIRE)) == (7 | RETIRE); anything
+    @ else returns 0 here and the caller swaps for that frame.
+50: ldr     r0, =SM_INHIBIT_OFF
+    ldr     r0, [r4, r0]
     str     r0, [sp, #8]
+    ldr     r1, =SM_NORMAL_MASK
+    ands    r1, r0
+    ldr     r2, =SM_NORMAL_BITS
+    cmp     r1, r2
+    bne     57f
+    movs    r0, #FS_START_MENU_CURSOR_OFF      @ 0xD3 is out of reach of ldrb's immediate
+    ldrb    r5, [r6, r0]            @ the live cursor
+    movs    r0, #0xFF
+    str     r0, [sp, #SM_SP_HI]
+    movs    r0, #0
+    str     r0, [sp, #12]           @ enabled cells seen so far
+    movs    r6, #0                  @ cell index
+    @ What belongs in this cell, and have you earned it? A cell you have not is
+    @ left EMPTY rather than closing the list up, because that is what the touch
+    @ menu does - the slots are fixed and missing entries leave gaps.
+65: movs    r0, #SM_CELL_LABEL
+    adds    r0, r7, r0
+    ldrb    r0, [r0, r6]
+    cmp     r0, #0xFF
+    beq     67f                     @ nothing ever lives here
+    movs    r1, #SM_CELL_BIT
+    adds    r1, r7, r1
+    ldrb    r1, [r1, r6]
+    cmp     r1, #0xFF
+    beq     66f                     @ never inhibited
+    ldr     r2, [sp, #8]
+    lsrs    r2, r2, r1
     movs    r1, #1
-    lsls    r1, r1, #SM_NORMAL_BIT
-    tst     r0, r1
-    bne     56f
+    ands    r2, r1
+    cmp     r2, #0
+    beq     66f
+    movs    r0, #0xFF               @ not earned yet: leave the gap
+    b       67f
+    @ The cursor counts only the entries you have, so its index is this cell's
+    @ position among the enabled ones - not the cell number.
+66: ldr     r1, [sp, #12]
+    adds    r2, r1, #1
+    str     r2, [sp, #12]
+    cmp     r1, r5
+    bne     67f
+    str     r6, [sp, #SM_SP_HI]
+67: add     r1, sp, #SM_SP_CELLS
+    strb    r0, [r1, r6]
+    adds    r6, #1
+    cmp     r6, #SM_CELLS
+    blo     65b
+    b       56f
 57: b       79f                     @ trampoline: the exit is past a conditional
 56:                                 @ branch's 256-byte reach from the checks
     ldr     r0, =sm_drawn
@@ -2529,43 +3545,20 @@ OneScreen_StartMenu:
     b       64b
 
 63: movs    r6, #0                  @ cell index
-    movs    r0, #0
-    str     r0, [sp, #12]           @ enabled cells seen so far
 75: ldrb    r0, [r7, #SM_N_CELLS]
     cmp     r6, r0
     bhs     59f
-
-    @ What belongs in this cell, and have you earned it? A cell you have not is
-    @ left EMPTY rather than closing the list up, because that is what the touch
-    @ menu does - the slots are fixed and missing entries leave gaps.
     ldrb    r3, [r7, #SM_BLANK]     @ assume empty
-    movs    r4, #0                  @ and not highlighted
-    movs    r0, #SM_CELL_LABEL
-    adds    r0, r7, r0
+    add     r0, sp, #SM_SP_CELLS
     ldrb    r0, [r0, r6]
     cmp     r0, #0xFF
-    beq     77f                     @ nothing ever lives here
-    movs    r1, #SM_CELL_BIT
-    adds    r1, r7, r1
-    ldrb    r1, [r1, r6]
-    cmp     r1, #0xFF
-    beq     76f                     @ never inhibited
-    ldr     r2, [sp, #8]
-    lsrs    r2, r2, r1
-    movs    r1, #1
-    ands    r2, r1
-    cmp     r2, #0
-    bne     77f                     @ not earned yet: leave the gap
-76: movs    r3, r0                  @ draw this label
-
-    @ The cursor counts only the entries you have, so its index is this cell's
-    @ position among the enabled ones - not the cell number.
-    ldr     r0, [sp, #12]
-    adds    r1, r0, #1
-    str     r1, [sp, #12]
-    cmp     r0, r5
+    beq     76f
+    movs    r3, r0                  @ draw this label
+76: movs    r4, #0
+    ldr     r0, [sp, #SM_SP_HI]
+    cmp     r0, r6
     bne     77f
-    movs    r4, #1
+    movs    r4, #1                  @ the highlighted cell
 
 77: ldrb    r0, [r7, #SM_STRIP_TILES]
     muls    r3, r0
@@ -2613,7 +3606,7 @@ OneScreen_StartMenu:
     movs    r0, #1                  @ drawn: the caller leaves the screen alone
     b       58f
 79: movs    r0, #0                  @ not a layout we can reproduce
-58: add     sp, #16
+58: add     sp, #SM_FRAME_SP
     pop     {r4, r5, r6, r7, pc}
     .align  2
     .pool
@@ -2790,12 +3783,9 @@ OneScreen_Unpack:
 @ is sized here rather than by the patcher: the entry count is not known until a
 @ menu opens, so the frame is built a tile at a time from the nine border tiles.
 @
-@ Which menu is this? The message ids are gone by now - ov01_021EDD68 reads each
-@ into a string and discards it - so a menu is recognised by its entry COUNT and
-@ the CHARACTERS of its first entry, both read live and compared against text
-@ rasterised at patch time. Anything unrecognised returns 0 and the caller swaps
-@ the screen, exactly as before, so an NPC choice this knows nothing about is
-@ never drawn with the wrong words.
+@ Which menu this is is OneScreen_ListMatch's question. Anything unrecognised
+@ returns 0 and the caller swaps the screen, exactly as before, so an NPC choice
+@ this knows nothing about is never drawn with the wrong words.
 @ ---------------------------------------------------------------------------
     .global OneScreen_ListMenu
     .thumb_func
@@ -2827,79 +3817,19 @@ OneScreen_ListMenu:
     cmp     r4, #0
     beq     29f                     @ no validated controller this frame
     movs    r0, r4                  @ FieldMode3 only vouched for it as far as
-    ldr     r1, =LIST_MENU_OFF      @ +0x394; the menu pointer sits past that
+    ldr     r1, =(LIST_CURSOR_OFF + 4)  @ its back-pointer; the cursor sits past that
     bl      OneScreen_MainRamRange
     cmp     r0, #0
     beq     29f
     ldr     r0, =LIST_CURSOR_OFF
     ldr     r0, [r4, r0]
     str     r0, [sp, #8]            @ the live cursor
-    ldr     r0, =LIST_MENU_OFF
-    ldr     r5, [r4, r0]
-    movs    r0, r5
-    movs    r1, #LIST_COUNT_OFF
-    bl      OneScreen_MainRamRange
+    ldr     r0, [r4, #CHOICE_MENU_OFF]
+    bl      OneScreen_ListMatch
     cmp     r0, #0
-    beq     29f                     @ never dereference a stale menu pointer
-    str     r5, [sp]
-    movs    r0, #LIST_COUNT_OFF
-    ldrb    r0, [r5, r0]
-    str     r0, [sp, #4]            @ entry count
-
-    ldr     r0, [r5, #LIST_ENTRIES_OFF]     @ the first entry's String
-    movs    r1, #STRING_DATA_OFF
-    bl      OneScreen_MainRamRange
-    cmp     r0, #0
-    beq     29f
-    ldr     r0, [r5, #LIST_ENTRIES_OFF]
-    str     r0, [sp, #20]
-
-    @ Find the menu whose count and first entry both match.
-    movs    r0, #0
-    str     r0, [sp, #12]
-20: ldr     r0, [sp, #12]
-    ldrb    r1, [r7, #LIST_N_MENUS]
-    cmp     r0, r1
-    bhs     29f                     @ nothing we know: let the caller swap
-    movs    r1, #LIST_MENU_RECORD
-    muls    r1, r0
-    movs    r2, #LIST_MENUS_OFF
-    adds    r1, r1, r2
-    adds    r1, r7, r1              @ -> this menu's record
-    ldrb    r2, [r1, #LIST_M_ENTRIES]
-    ldr     r3, [sp, #4]
-    cmp     r2, r3
-    bne     23f
-    ldr     r2, [sp, #20]
-    ldrh    r3, [r2, #STRING_SIZE_OFF]
-    ldrb    r4, [r1, #LIST_M_KEY_FULL]
-    cmp     r3, r4
-    bne     23f
-    cmp     r4, #LIST_KEY_MAX       @ only the first 16 are stored; the full
-    bls     24f                     @ length above has already been checked
-    movs    r4, #LIST_KEY_MAX
-24: movs    r3, #0
-21: cmp     r3, r4
-    bhs     22f
-    lsls    r5, r3, #1
-    movs    r6, #STRING_DATA_OFF
-    adds    r6, r2, r6
-    ldrh    r6, [r6, r5]
-    movs    r0, #LIST_M_KEY
-    adds    r0, r1, r0
-    ldrh    r0, [r0, r5]
-    cmp     r6, r0
-    bne     23f
-    adds    r3, #1
-    b       21b
-22: movs    r0, r1                  @ matched
-    ldr     r1, [sp, #8]
+    beq     29f                     @ nothing we know: let the caller swap
     str     r0, [sp, #16]
     b       26f
-23: ldr     r0, [sp, #12]
-    adds    r0, #1
-    str     r0, [sp, #12]
-    b       20b
 
 29: movs    r0, #0
     b       28f
@@ -2961,6 +3891,1005 @@ OneScreen_ListMenu:
 36: movs    r0, #1
 28: add     sp, #24
     pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ void *OneScreen_ListMatch(r0 = ScriptMenu *) -> r0 = its panel record, or 0
+@
+@ The message ids are gone by the time a menu is up - ScriptMenu_AppendListItem
+@ reads each into a string and keeps only the text - so a menu is recognised by
+@ what survives, read live and compared against text rasterised at patch time:
+@
+@   * its entry COUNT (ScriptMenu.count)
+@   * the CHARACTERS of its first entry, up to 16, and that entry's full length
+@   * a 16-bit hash over every other entry the patcher could know in advance
+@
+@ The hash is what the first entry alone was missing. A Pokeathlon mart menu
+@ reads ACHETER / INFOS / QUITTER - three entries, the same first entry as the
+@ shop - and would be drawn as the shop. Entries the patcher cannot
+@ predict (your own PC's row, which holds your name) are left out of the hash
+@ by the record's skip mask rather than written out.
+@
+@ Also called from OneScreen_MenuExec, so the menus drawn here and the menus left
+@ to the game's own top-screen list are decided by one test.
+@ ---------------------------------------------------------------------------
+    .thumb_func
+OneScreen_ListMatch:
+    push    {r4, r5, r6, r7, lr}
+    sub     sp, #16
+    movs    r5, r0                  @ menu
+    ldr     r7, =OneScreen_Labels
+    ldr     r0, [r7]
+    ldr     r1, =LABEL_MAGIC
+    cmp     r0, r1
+    bne     39f
+    ldr     r0, =LIST_RECORD_OFF
+    adds    r7, r7, r0              @ -> the list header
+    movs    r0, r5
+    movs    r1, #(SCRIPT_MENU_COUNT_OFF + 1)
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     39f                     @ never dereference a stale menu pointer
+    movs    r0, #SCRIPT_MENU_COUNT_OFF
+    ldrb    r0, [r5, r0]
+    cmp     r0, #0
+    beq     39f
+    cmp     r0, #LIST_MAX_ENTRIES
+    bhi     39f                     @ longer than any menu we draw
+    str     r0, [sp]                @ entry count
+    ldr     r0, [r5, #SCRIPT_MENU_STRBUFS_OFF]  @ the first entry's String
+    str     r0, [sp, #4]
+    movs    r1, #STRING_DATA_OFF
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     39f
+    ldr     r0, [sp, #4]
+    ldrh    r1, [r0, #STRING_SIZE_OFF]
+    lsls    r1, r1, #1
+    adds    r1, #STRING_DATA_OFF
+    bl      OneScreen_MainRamRange  @ and all of its characters
+    cmp     r0, #0
+    beq     39f
+
+    movs    r6, #0                  @ record index
+30: ldrb    r1, [r7, #LIST_N_MENUS]
+    cmp     r6, r1
+    bhs     39f
+    movs    r4, #LIST_MENU_RECORD
+    muls    r4, r6
+    adds    r4, #LIST_MENUS_OFF
+    adds    r4, r7, r4              @ -> this menu's record
+    ldrb    r0, [r4, #LIST_M_ENTRIES]
+    ldr     r1, [sp]
+    cmp     r0, r1
+    bne     38f
+    ldr     r2, [sp, #4]
+    ldrh    r3, [r2, #STRING_SIZE_OFF]
+    ldrb    r0, [r4, #LIST_M_KEY_FULL]
+    cmp     r3, r0
+    bne     38f
+    cmp     r0, #LIST_KEY_MAX       @ only the first 16 are stored; the full
+    bls     31f                     @ length above has already been checked
+    movs    r0, #LIST_KEY_MAX
+31: str     r0, [sp, #8]
+    movs    r3, #0
+32: ldr     r0, [sp, #8]
+    cmp     r3, r0
+    bhs     33f
+    lsls    r1, r3, #1
+    adds    r0, r2, r1
+    ldrh    r0, [r0, #STRING_DATA_OFF]
+    adds    r1, #LIST_M_KEY
+    ldrh    r1, [r4, r1]
+    cmp     r0, r1
+    bne     38f
+    adds    r3, #1
+    b       32b
+33: movs    r0, r5                  @ the first entry matches; now the rest
+    ldr     r1, [sp]
+    movs    r2, #LIST_M_SKIP        @ past ldrb's immediate reach
+    ldrb    r2, [r4, r2]
+    bl      OneScreen_ListHash
+    adds    r1, r0, #1
+    beq     39f                     @ an entry pointer was bad: no match at all
+    ldrh    r1, [r4, #LIST_M_HASH]
+    cmp     r0, r1
+    bne     38f
+    movs    r0, r4                  @ matched
+    b       37f
+38: adds    r6, #1
+    b       30b
+39: movs    r0, #0
+37: add     sp, #16
+    pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ int OneScreen_ListHash(r0 = ScriptMenu *, r1 = count, r2 = skip mask)
+@   -> r0 = the menu's hash, or -1 if any entry's String is not in main RAM.
+@
+@ h = h * 31 + code over each entry's characters, then once more with 0xFFFF
+@ between entries, all kept to 16 bits. onescreen/labels.py::_menu_hash is the
+@ same function, applied to the ROM's own messages.
+    .thumb_func
+OneScreen_ListHash:
+    push    {r4, r5, r6, r7, lr}
+    sub     sp, #8
+    movs    r4, r0                  @ menu
+    movs    r5, r1                  @ count
+    movs    r6, r2                  @ skip mask
+    movs    r7, #0                  @ h
+    movs    r0, #0
+    str     r0, [sp]                @ entry index
+40: ldr     r0, [sp]
+    cmp     r0, r5
+    bhs     48f
+    movs    r1, r6
+    lsrs    r1, r0
+    movs    r2, #1
+    tst     r1, r2
+    bne     46f                     @ left out on purpose
+    lsls    r1, r0, #2
+    adds    r1, r4, r1
+    ldr     r0, [r1, #SCRIPT_MENU_STRBUFS_OFF]
+    str     r0, [sp, #4]
+    movs    r1, #STRING_DATA_OFF
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     49f
+    ldr     r0, [sp, #4]
+    ldrh    r1, [r0, #STRING_SIZE_OFF]
+    lsls    r1, r1, #1
+    adds    r1, #STRING_DATA_OFF
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     49f
+    ldr     r2, [sp, #4]
+    ldrh    r3, [r2, #STRING_SIZE_OFF]
+    adds    r2, #STRING_DATA_OFF
+42: cmp     r3, #0
+    beq     45f
+    ldrh    r0, [r2]
+    adds    r2, #2
+    lsls    r1, r7, #5
+    subs    r1, r1, r7              @ h * 31
+    adds    r7, r1, r0
+    lsls    r7, r7, #16
+    lsrs    r7, r7, #16
+    subs    r3, #1
+    b       42b
+45: lsls    r1, r7, #5              @ the separator
+    subs    r1, r1, r7
+    ldr     r0, =0xFFFF
+    adds    r7, r1, r0
+    lsls    r7, r7, #16
+    lsrs    r7, r7, #16
+46: ldr     r0, [sp]
+    adds    r0, #1
+    str     r0, [sp]
+    b       40b
+48: movs    r0, r7
+    b       47f
+49: movs    r0, #0
+    mvns    r0, r0
+47: add     sp, #8
+    pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ BOOL OneScreen_MenuExec(ScriptContext *ctx)
+@
+@ Installed in the script command table in place of ScrCmd_MenuExec (command
+@ 752), the command that shows a script-built list on the TOUCH screen. HGSS
+@ also has the top-screen list it inherited from Diamond and Pearl -
+@ ScriptMenu_ShowList, what ScrCmd_ScriptListMenuExec (command 71) uses on a
+@ menu the ScriptListMenu commands (68-70) build. It takes the same struct
+@ ScriptMenu that MenuInit / MenuItemAdd (749-751) build for this command, so a
+@ list this patch cannot draw itself is handed to the game's own
+@ top-screen renderer instead of taking the screen: the window, the cursor,
+@ scrolling past eight entries and the help text are all the game's.
+@
+@ Recognised menus (the shop, the PC) go to the original command, so they keep
+@ the themed panel OneScreen_ListMenu draws. So does anything this cannot vouch
+@ for: the choice app not up and idle, a menu pointer it cannot follow, and
+@ whatever OneScreen_ListOpen turns down.
+@
+@ The two paths differ in exactly one result: the touch list's B picks the last
+@ entry, ScriptMenu_ListTask's B writes 0xFFFE. Scripts are written for the
+@ touch list - the apricorn juice and the fossil menus test for the last value
+@ and take anything else as a real choice - so OneScreen_WaitList maps 0xFFFE
+@ to the last entry's value before the script sees it.
+@ ---------------------------------------------------------------------------
+    .global OneScreen_MenuExec
+    .thumb_func
+OneScreen_MenuExec:
+    push    {r4, r5, r6, r7, lr}
+    movs    r7, r0                  @ ScriptContext
+    bl      OneScreen_FieldSys
+    movs    r6, r0                  @ FieldSystem
+    beq     70f
+    movs    r1, #BSAPP_CHOICE_MENU
+    bl      OneScreen_BottomApp
+    movs    r5, r0                  @ TouchscreenChoiceMenuData
+    ldr     r1, =(CHOICE_SELECTION_OFF + 4)
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     70f
+    ldr     r0, [r5, #CHOICE_FS_OFF]
+    cmp     r0, r6
+    bne     70f
+    ldr     r0, [r5, #CHOICE_STATE_OFF]
+    cmp     r0, #CHOICE_IDLE
+    bne     70f
+    ldr     r4, [r5, #CHOICE_MENU_OFF]  @ the ScriptMenu MenuInit built
+    movs    r0, r4
+    ldr     r1, =SCRIPT_MENU_SIZE
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     70f
+    movs    r0, #SCRIPT_MENU_COUNT_OFF
+    ldrb    r5, [r4, r0]            @ count: 1..28, the strbufs[] there are. (An
+    cmp     r5, #0                  @ empty list would also measure 0 pixels and be
+    beq     70f                     @ turned down by ListOpen.)
+    cmp     r5, #SCRIPT_MENU_MAX
+    bhi     70f
+    movs    r0, r4
+    bl      OneScreen_ListMatch
+    cmp     r0, #0
+    bne     70f                     @ ours: the themed panel draws it
+    movs    r0, r7
+    movs    r1, r4
+    movs    r2, r5
+    bl      OneScreen_ListOpen
+    cmp     r0, #0
+    bne     72f
+
+70: movs    r0, r7                  @ anything else: exactly as before
+    ldr     r3, =cfg_menu_exec_orig
+    ldr     r3, [r3]
+    blx     r3
+72: pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ BOOL OneScreen_TutorExec(ScriptContext *ctx)
+@
+@ Installed in place of ScrCmd_MoveTutorChooseMove (command 653), the Battle
+@ Frontier tutors' move list. The command builds its own ScriptMenu - every move
+@ the Pokemon can learn there with its price, then NEXT (0xFFFD) when there is
+@ another page, then QUIT (0xFFFE) - and opens the touch list on it directly:
+@
+@     FieldSystem_SetTouchscreenChoiceMenuState(fieldSystem, 3, 7, result);
+@     SetupNativeScript(ctx, NativeScript_WaitMoveTutorMenu);
+@
+@ That setter does nothing but write the choice controller's state and result
+@ pointer (src/field/bottom_screen_app.c); the list appears only when the
+@ controller's own task next runs and finds state 7. So the real command runs
+@ first, untouched, and the list is taken back afterwards if the game's
+@ top-screen list can have it: state and result put back as they were, and the
+@ native wait replaced by OneScreen_WaitList. Its NativeScript_WaitMoveTutorMenu
+@ would free the menu that ScriptMenu_CloseList has already freed.
+@
+@ B needs nothing extra here. ScriptMenu_Create made the menu cancellable, the
+@ touch list's B picks the last row, QUIT, and QUIT's value is the 0xFFFE that
+@ ScriptMenu_ListTask writes for B.
+@
+@ Anything this cannot vouch for, before or after, leaves the command's own
+@ result alone and the touch list goes up as it always did.
+@ ---------------------------------------------------------------------------
+    .global OneScreen_TutorExec
+    .thumb_func
+OneScreen_TutorExec:
+    push    {r4, r5, r6, r7, lr}
+    sub     sp, #8                  @ [sp] the controller's result pointer before,
+    movs    r7, r0                  @ [sp, #4] what the command returned
+    movs    r5, #0                  @ the controller, once vouched for
+    bl      OneScreen_FieldSys
+    movs    r6, r0
+    beq     80f
+    movs    r1, #BSAPP_CHOICE_MENU
+    bl      OneScreen_BottomApp
+    movs    r4, r0
+    ldr     r1, =(CHOICE_SELECTION_OFF + 4)
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     80f
+    ldr     r0, [r4, #CHOICE_FS_OFF]
+    cmp     r0, r6
+    bne     80f
+    ldr     r0, [r4, #CHOICE_STATE_OFF]
+    cmp     r0, #CHOICE_IDLE
+    bne     80f
+    ldr     r0, [r4, #CHOICE_RESULT_OFF]
+    str     r0, [sp]
+    movs    r5, r4
+
+80: movs    r0, r7                  @ the real command, whatever happens next
+    ldr     r3, =cfg_tutor_exec_orig
+    ldr     r3, [r3]
+    blx     r3
+    str     r0, [sp, #4]
+    cmp     r5, #0
+    beq     89f                     @ no idle controller beforehand: hands off
+
+    @ It must have asked for exactly the list it built: state 7, its own result
+    @ var, and the menu in the controller's slot.
+    ldr     r0, [r5, #CHOICE_STATE_OFF]
+    cmp     r0, #CHOICE_SHOW_LIST
+    bne     89f
+    ldr     r4, [r5, #CHOICE_MENU_OFF]
+    movs    r0, r4
+    ldr     r1, =SCRIPT_MENU_SIZE
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     89f
+    ldr     r0, =SCRIPT_MENU_RET_OFF
+    ldr     r0, [r4, r0]
+    ldr     r1, [r5, #CHOICE_RESULT_OFF]
+    cmp     r0, r1
+    bne     89f
+    movs    r0, #SCRIPT_MENU_COUNT_OFF
+    ldrb    r2, [r4, r0]
+    cmp     r2, #0
+    beq     89f
+    cmp     r2, #SCRIPT_MENU_MAX
+    bhi     89f
+    movs    r0, r7
+    movs    r1, r4
+    bl      OneScreen_ListOpen
+    cmp     r0, #0
+    beq     89f
+
+    @ The game's list has it. Take the touch list back before the controller's
+    @ task can see state 7.
+    movs    r0, #CHOICE_IDLE
+    str     r0, [r5, #CHOICE_STATE_OFF]
+    ldr     r0, [sp]
+    str     r0, [r5, #CHOICE_RESULT_OFF]
+89: ldr     r0, [sp, #4]
+    add     sp, #8
+    pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ int OneScreen_ListOpen(r0 = ScriptContext *, r1 = ScriptMenu *, r2 = count)
+@   -> 1 if the menu is now the game's top-screen list, 0 to keep the touch list.
+@
+@ What ScriptMenu_ShowList does - size the window from the widest entry, move an
+@ anchored list left or up by its own size, ScriptMenu_OpenListWindow - with the
+@ width measured by OneScreen_ListFormat instead of ScriptMenu_GetListItemsWidth.
+@ That one adds up glyph widths and skips control codes, so it sizes a window
+@ for "FRESH WATER{CURSOR_X 80}$200" as if the price came straight after the
+@ name; ListFormat follows the pen. It also folds two-line entries onto one line,
+@ which a ListMenu's 16-pixel rows need.
+@
+@ Turned down: no width function or window function, a result var it cannot
+@ follow, an entry ListFormat will not take, or a list that would land on a
+@ window the script already has on the top screen (OneScreen_ListRoom). Nothing
+@ an entry holds is changed before all of those have passed.
+@ ---------------------------------------------------------------------------
+    .thumb_func
+OneScreen_ListOpen:
+    push    {r4, r5, r6, r7, lr}
+    sub     sp, #12                 @ [sp] tiles across, [sp, #4] tile rows,
+    str     r0, [sp, #8]            @ [sp, #8] the ScriptContext
+    movs    r4, r1                  @ menu
+    movs    r5, r2                  @ count
+    ldr     r0, =cfg_open_list
+    ldr     r0, [r0]
+    cmp     r0, #0
+    beq     70f
+    ldr     r0, =cfg_string_width
+    ldr     r0, [r0]
+    cmp     r0, #0
+    beq     70f
+    ldr     r0, =cfg_setup_native
+    ldr     r0, [r0]
+    cmp     r0, #0
+    beq     70f
+    ldr     r0, =SCRIPT_MENU_RET_OFF
+    ldr     r6, [r4, r0]            @ ret_p, a u16 in the script's vars
+    ldr     r0, =0x02000000
+    cmp     r6, r0
+    blo     70f
+    ldr     r0, =0x023FFFFE
+    cmp     r6, r0
+    bhs     70f
+    lsls    r0, r6, #31
+    bne     70f                     @ not halfword-aligned
+
+    @ Size the window the way ScriptMenu_ShowList does: the widest entry in tiles
+    @ across, and two tile rows per entry up to a page of eight.
+    movs    r0, r4
+    movs    r1, r5
+    movs    r2, #0
+    bl      OneScreen_ListFormat    @ widest entry, from the window's left edge
+    cmp     r0, #0
+    beq     70f                     @ an entry it will not take
+    adds    r0, #7
+    lsrs    r0, r0, #3
+    str     r0, [sp]                @ tiles across
+    movs    r1, r5
+    cmp     r1, #8
+    bls     68f
+    movs    r1, #8
+68: lsls    r1, r1, #1
+    str     r1, [sp, #4]            @ tile rows
+
+    @ Keep the window on the screen. The touch list ignores the script's x and
+    @ y; they were written for this window and are always clear of the dialogue
+    @ box, but a long translation in a right-hand menu could run past column 31.
+    movs    r1, #SCRIPT_MENU_FLAGS_OFF
+    ldrb    r1, [r4, r1]
+    movs    r2, #ANCHOR_RIGHT_BIT
+    tst     r1, r2
+    bne     69f                     @ anchored: placed from its own size below
+    movs    r1, #SCRIPT_MENU_X_OFF
+    ldrb    r2, [r4, r1]
+    adds    r3, r2, r0
+    cmp     r3, #LIST_RIGHT_EDGE
+    bls     69f
+    movs    r2, #LIST_RIGHT_EDGE
+    subs    r2, r2, r0
+    cmp     r2, #1
+    bge     71f
+    movs    r2, #1
+71: strb    r2, [r4, r1]
+
+    @ A recognised panel may still be up from the menu before this one. It is
+    @ over - the script has moved on to this one - and it sits in the game's copy
+    @ of the layer, so it goes before the room check below would trip on it.
+69: bl      OneScreen_ListMenuWipe
+    ldr     r0, =list_hold
+    movs    r1, #0
+    str     r1, [r0]
+    ldr     r0, =list_drawn
+    str     r1, [r0]
+
+    @ Is there room? A script may have its own window up on this layer - Mom's
+    @ savings box is 16x8 tiles at (1, 1), drawn from tile 1, and her menu then
+    @ asks for a list at (1, 1) too, whose window takes tiles from 0x3D. On the
+    @ touch screen that never mattered. If anything already on MAIN_3 sits where
+    @ the list would, or uses the tiles it would take, keep the touch list.
+    movs    r1, #SCRIPT_MENU_X_OFF
+    ldrb    r0, [r4, r1]            @ x
+    movs    r1, #SCRIPT_MENU_Y_OFF
+    ldrb    r1, [r4, r1]            @ y
+    movs    r2, #SCRIPT_MENU_FLAGS_OFF
+    ldrb    r2, [r4, r2]
+    movs    r3, #ANCHOR_RIGHT_BIT
+    tst     r2, r3
+    beq     67f
+    ldr     r3, [sp]
+    subs    r0, r0, r3              @ an anchored list moves left...
+67: movs    r3, #ANCHOR_BOTTOM_BIT
+    tst     r2, r3
+    beq     66f
+    ldr     r3, [sp, #4]
+    subs    r1, r1, r3              @ ...or up, by its own size
+66: ldr     r2, [sp]
+    ldr     r3, [sp, #4]
+    bl      OneScreen_ListRoom
+    cmp     r0, #0
+    beq     70f                     @ something is in the way: the touch list
+
+    @ From here on the list is the game's. Fold the entries for real: the same
+    @ strings, measured by the same game function a moment ago, with nothing in
+    @ between that writes to them - so the same answer.
+    movs    r0, r4
+    movs    r1, r5
+    movs    r2, #1
+    bl      OneScreen_ListFormat
+
+    @ ScriptMenu_ShowList's own placement of an anchored list.
+    movs    r2, #SCRIPT_MENU_FLAGS_OFF
+    ldrb    r2, [r4, r2]
+    movs    r3, #ANCHOR_RIGHT_BIT
+    tst     r2, r3
+    beq     65f
+    movs    r1, #SCRIPT_MENU_X_OFF
+    ldrb    r0, [r4, r1]
+    ldr     r3, [sp]
+    subs    r0, r0, r3
+    strb    r0, [r4, r1]
+65: movs    r3, #ANCHOR_BOTTOM_BIT
+    tst     r2, r3
+    beq     64f
+    movs    r1, #SCRIPT_MENU_Y_OFF
+    ldrb    r0, [r4, r1]
+    ldr     r3, [sp, #4]
+    subs    r0, r0, r3
+    strb    r0, [r4, r1]
+
+64: ldr     r0, =wl_ret
+    str     r6, [r0]
+    ldr     r0, =LIST_NONE
+    strh    r0, [r6]
+    subs    r0, r5, #1
+    lsls    r0, r0, #3
+    ldr     r1, =(SCRIPT_MENU_ITEMS_OFF + 4)
+    adds    r0, r0, r1
+    ldr     r0, [r4, r0]            @ items[count - 1].value
+    ldr     r1, =wl_last
+    str     r0, [r1]
+
+    movs    r0, r4
+    ldr     r1, [sp]
+    ldr     r3, =cfg_open_list
+    ldr     r3, [r3]
+    blx     r3                      @ ScriptMenu_OpenListWindow(menu, tiles)
+    ldr     r0, [sp, #8]
+    ldr     r1, =OneScreen_WaitList
+    ldr     r3, =cfg_setup_native
+    ldr     r3, [r3]
+    blx     r3                      @ SetupNativeScript(ctx, OneScreen_WaitList)
+    movs    r0, #1
+    b       63f
+70: movs    r0, #0
+63: add     sp, #12
+    pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ int OneScreen_ListRoom(r0 = x, r1 = y, r2 = tiles across, r3 = tile rows)
+@   -> 1 if a ScriptMenu list window would land on an empty part of MAIN_3.
+@
+@ Reads the layer's own tilemap buffer, which is what the game commits to the
+@ screen, so it sees every window drawn there: any entry inside the list's
+@ rectangle (plus the one-tile frame around it), or any entry anywhere using a
+@ character tile the list's window would be given (0x3D onwards), means no.
+@ x and y are signed: an anchored list can be moved off the left or top edge.
+    .thumb_func
+OneScreen_ListRoom:
+    push    {r4, r5, r6, r7, lr}
+    sub     sp, #16
+    subs    r0, #1
+    str     r0, [sp]                @ left edge of the frame
+    adds    r0, r0, r2
+    adds    r0, #1
+    str     r0, [sp, #4]            @ right edge of the frame, inclusive
+    subs    r1, #1
+    str     r1, [sp, #8]            @ top edge
+    adds    r1, r1, r3
+    adds    r1, #1
+    str     r1, [sp, #12]           @ bottom edge, inclusive
+    muls    r2, r3                  @ the window's character tiles
+    movs    r6, #LIST_WINDOW_TILE
+    adds    r7, r6, r2              @ [r6, r7) is what it will take
+    bl      OneScreen_MapBuffer
+    cmp     r0, #0
+    beq     65f                     @ cannot see the layer: assume no room
+    movs    r4, r0
+    movs    r5, #0                  @ entry index, row-major, 32 a row
+60: ldrh    r0, [r4]
+    adds    r4, #2
+    cmp     r0, #0
+    beq     63f                     @ an empty cell
+    lsls    r1, r0, #22
+    lsrs    r1, r1, #22             @ its character tile
+    cmp     r1, r6
+    blo     61f
+    cmp     r1, r7
+    blo     65f                     @ one of the tiles the list would take
+61: movs    r1, #31
+    ands    r1, r5                  @ column
+    ldr     r2, [sp]
+    cmp     r1, r2
+    blt     63f
+    ldr     r2, [sp, #4]
+    cmp     r1, r2
+    bgt     63f
+    lsrs    r1, r5, #5              @ row
+    ldr     r2, [sp, #8]
+    cmp     r1, r2
+    blt     63f
+    ldr     r2, [sp, #12]
+    cmp     r1, r2
+    ble     65f                     @ inside where the list would sit
+63: adds    r5, #1
+    ldr     r0, =LIST_SCAN_CELLS
+    cmp     r5, r0
+    blo     60b
+    movs    r0, #1
+    b       64f
+65: movs    r0, #0
+64: add     sp, #16
+    pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ BOOL OneScreen_WaitList(ScriptContext *) - the native-script wait for a list
+@ OneScreen_ListOpen opened: FALSE until ScriptMenu_ListTask writes a result,
+@ with B turned into the last entry's value, which is what the touch list gives.
+    .global OneScreen_WaitList
+    .thumb_func
+OneScreen_WaitList:
+    ldr     r1, =wl_ret
+    ldr     r1, [r1]
+    ldrh    r0, [r1]
+    ldr     r2, =LIST_NONE
+    cmp     r0, r2
+    beq     73f
+    ldr     r2, =LIST_CANCEL
+    cmp     r0, r2
+    bne     74f
+    ldr     r0, =wl_last
+    ldr     r0, [r0]
+    strh    r0, [r1]
+74: movs    r0, #1
+    bx      lr
+73: movs    r0, #0
+    bx      lr
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ int OneScreen_ListFormat(r0 = ScriptMenu *, r1 = count, r2 = commit)
+@   -> how far right any entry draws, in pixels from the window's left edge, or
+@      0 if an entry holds something the top-screen list cannot show.
+@
+@ The script lists that still swapped in v0.3 were the formatted ones, about 30
+@ of the 146 MenuExec sites, and they hold exactly two things the touch list
+@ copes with and a ListMenu does not on its own:
+@
+@   CURSOR_X     "FRESH WATER{CURSOR_X 80}$200". The printer honours it - the pen
+@                jumps to x 80 of the window - but GetListItemsWidth skips control
+@                codes, so ShowList's window came out short of the price column.
+@                Measured here the way the printer moves: from item_X (12), each
+@                run of characters adds its width, each CURSOR_X sets the pen.
+@   CHAR_LF      "PROTEIN\n1 BP", "DEPOSIT\nPOKeMON". A ListMenu row is 16 pixels,
+@                the height of one line, so the second line lands on the next
+@                entry. Folded onto one line: a line break becomes a space - or,
+@                when the line after it is indented by FMT_MIN_INDENT spaces or
+@                more, as the move tutors' "{move}\n           {cost} BP" is, a
+@                CURSOR_X to one column shared by the whole list, FMT_GAP past
+@                the widest first half, so the prices line up.
+@
+@ Anything else - another control, a second line break, a code from 0xE000 up
+@ that is neither, a column that would move the pen back over text already
+@ drawn (a long translation before a CURSOR_X), a String longer than the 80
+@ codes ScriptMenu_Init gives every entry - and the whole list keeps the touch
+@ screen.
+@
+@ Each entry is rebuilt in fmt_buf and measured there with the game's own
+@ FontID_String_GetWidth, cutting the copy at each CURSOR_X to read where the
+@ pen has got to. A fold never lengthens an entry: four codes for a line break
+@ and at least three spaces, one for a break and fewer. With commit set, and
+@ only once every entry has passed, each copy is written back over its entry.
+@ ---------------------------------------------------------------------------
+    .thumb_func
+OneScreen_ListFormat:
+    push    {r4, r5, r6, r7, lr}
+    sub     sp, #8                  @ [sp] commit, [sp, #4] the shared column
+    movs    r4, r0                  @ menu
+    movs    r5, r1                  @ count
+    str     r2, [sp]
+
+    @ Every entry must be one this can read, and the String the list will print.
+    movs    r6, #0
+90: cmp     r6, r5
+    bhs     91f
+    lsls    r0, r6, #2
+    adds    r0, r4, r0
+    ldr     r7, [r0, #SCRIPT_MENU_STRBUFS_OFF]
+    lsls    r0, r6, #3
+    ldr     r1, =SCRIPT_MENU_ITEMS_OFF
+    adds    r0, r0, r1
+    ldr     r0, [r4, r0]            @ items[i].text, what ListMenu prints
+    cmp     r0, r7
+    bne     99f
+    movs    r0, r7
+    bl      OneScreen_FmtCheck
+    cmp     r0, #0
+    beq     99f
+    adds    r6, #1
+    b       90b
+
+    @ The column: build every entry with a placeholder where it folds, and keep
+    @ the furthest the pen gets before one.
+91: movs    r6, #0
+    movs    r7, #0
+92: cmp     r6, r5
+    bhs     93f
+    lsls    r0, r6, #2
+    adds    r0, r4, r0
+    ldr     r0, [r0, #SCRIPT_MENU_STRBUFS_OFF]
+    ldr     r1, =FMT_MARK
+    bl      OneScreen_FmtBuild
+    bl      OneScreen_FmtWidth
+    cmp     r7, r1
+    bhs     94f
+    movs    r7, r1
+94: adds    r6, #1
+    b       92b
+93: adds    r7, #FMT_GAP
+    str     r7, [sp, #4]
+
+    @ The width, with the column in place.
+    movs    r6, #0
+    movs    r7, #0
+95: cmp     r6, r5
+    bhs     96f
+    lsls    r0, r6, #2
+    adds    r0, r4, r0
+    ldr     r0, [r0, #SCRIPT_MENU_STRBUFS_OFF]
+    ldr     r1, [sp, #4]
+    bl      OneScreen_FmtBuild
+    bl      OneScreen_FmtWidth
+    cmp     r0, #0
+    beq     99f                     @ a column over text already drawn
+    cmp     r7, r0
+    bhs     97f
+    movs    r7, r0
+97: adds    r6, #1
+    b       95b
+
+96: ldr     r0, [sp]
+    cmp     r0, #0
+    beq     98f
+    movs    r6, #0                  @ every entry passed: now write them back
+88: cmp     r6, r5
+    bhs     98f
+    lsls    r0, r6, #2
+    adds    r0, r4, r0
+    ldr     r0, [r0, #SCRIPT_MENU_STRBUFS_OFF]
+    ldr     r1, [sp, #4]
+    bl      OneScreen_FmtBuild
+    lsls    r0, r6, #2
+    adds    r0, r4, r0
+    ldr     r0, [r0, #SCRIPT_MENU_STRBUFS_OFF]
+    bl      OneScreen_FmtStore
+    adds    r6, #1
+    b       88b
+98: movs    r0, r7
+    b       87f
+99: movs    r0, #0
+87: add     sp, #8
+    pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ int OneScreen_FmtCheck(r0 = String *) -> 1 if OneScreen_FmtBuild can take it:
+@ readable, no longer than FMT_MAX, and holding nothing from 0xE000 up but one
+@ CHAR_LF and whole CURSOR_X controls.
+    .thumb_func
+OneScreen_FmtCheck:
+    push    {r4, r5, r6, lr}
+    movs    r4, r0
+    movs    r1, #STRING_DATA_OFF
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     85f
+    ldrh    r5, [r4, #STRING_SIZE_OFF]
+    ldrh    r0, [r4, #STRING_MAXSIZE_OFF]
+    cmp     r5, r0
+    bhi     85f
+    cmp     r0, #FMT_MAX
+    bhi     85f
+    movs    r0, r4
+    lsls    r1, r5, #1
+    adds    r1, #STRING_DATA_OFF
+    bl      OneScreen_MainRamRange  @ and all of its characters
+    cmp     r0, #0
+    beq     85f
+    adds    r4, #STRING_DATA_OFF
+    lsls    r5, r5, #1
+    adds    r5, r4, r5              @ the end
+    movs    r6, #0                  @ line breaks seen
+80: cmp     r4, r5
+    bhs     84f
+    ldrh    r0, [r4]
+    ldr     r1, =CHAR_LF
+    cmp     r0, r1
+    blo     82f
+    beq     81f
+    ldr     r1, =CTRL_BEGIN
+    cmp     r0, r1
+    bne     85f
+    ldrh    r0, [r4, #2]            @ a control cut off by the end reads the EOS
+    ldr     r2, =CTRL_CURSOR_X      @ here, or as its count below - inside the
+    cmp     r0, r2                  @ range already checked either way
+    bne     85f
+    ldrh    r0, [r4, #4]
+    cmp     r0, #0
+    beq     85f                     @ CURSOR_X without its x
+    lsls    r0, r0, #1
+    adds    r4, #6
+    adds    r4, r4, r0              @ BEGIN, id, count and arguments, all inside
+    cmp     r4, r5
+    bhi     85f
+    b       80b
+81: adds    r6, #1
+    cmp     r6, #1
+    bhi     85f
+82: adds    r4, #2
+    b       80b
+84: movs    r0, #1
+    pop     {r4, r5, r6, pc}
+85: movs    r0, #0
+    pop     {r4, r5, r6, pc}
+    .align  2
+    .pool
+
+@ void OneScreen_FmtBuild(r0 = String *, r1 = column) - the entry, folded onto
+@ one line, into fmt_buf. Only ever after OneScreen_FmtCheck has passed it.
+    .thumb_func
+OneScreen_FmtBuild:
+    push    {r4, r5, r6, r7, lr}
+    movs    r7, r1                  @ column
+    ldrh    r5, [r0, #STRING_SIZE_OFF]
+    movs    r4, r0
+    adds    r4, #STRING_DATA_OFF
+    lsls    r5, r5, #1
+    adds    r5, r4, r5              @ end of the source
+    ldr     r6, =fmt_buf
+    movs    r0, #FMT_MAX
+    strh    r0, [r6, #STRING_MAXSIZE_OFF]
+    ldr     r0, =STRING_MAGIC
+    str     r0, [r6, #STRING_MAGIC_OFF]
+    adds    r6, #STRING_DATA_OFF
+80: cmp     r4, r5
+    bhs     89f
+    ldrh    r0, [r4]
+    ldr     r1, =CTRL_BEGIN
+    cmp     r0, r1
+    bne     82f
+    ldrh    r2, [r4, #4]            @ a control: copied whole, arguments and all
+    adds    r2, #3
+81: ldrh    r0, [r4]
+    strh    r0, [r6]
+    adds    r4, #2
+    adds    r6, #2
+    subs    r2, #1
+    bne     81b
+    b       80b
+82: ldr     r1, =CHAR_LF
+    cmp     r0, r1
+    beq     83f
+    strh    r0, [r6]                @ an ordinary character
+    adds    r4, #2
+    adds    r6, #2
+    b       80b
+83: adds    r4, #2                  @ a line break, and the spaces after it
+    movs    r2, #0
+84: cmp     r4, r5
+    bhs     86f
+    ldrh    r0, [r4]
+    ldr     r1, =CHAR_SPACE
+    cmp     r0, r1
+    beq     85f
+    ldr     r1, =CHAR_NARROW_SPACE
+    cmp     r0, r1
+    bne     86f
+85: adds    r4, #2
+    adds    r2, #1
+    b       84b
+86: cmp     r2, #FMT_MIN_INDENT
+    blo     87f
+    ldr     r0, =CTRL_BEGIN         @ an indented second line: the column
+    strh    r0, [r6]
+    ldr     r0, =CTRL_CURSOR_X
+    strh    r0, [r6, #2]
+    movs    r0, #1
+    strh    r0, [r6, #4]
+    strh    r7, [r6, #6]
+    adds    r6, #(2 * CTRL_CURSOR_X_LEN)
+    b       80b
+87: ldr     r0, =CHAR_SPACE         @ a wrapped line: one space
+    strh    r0, [r6]
+    adds    r6, #2
+    b       80b
+89: ldr     r0, =STRING_EOS
+    strh    r0, [r6]
+    ldr     r0, =(fmt_buf + STRING_DATA_OFF)
+    subs    r6, r6, r0
+    lsrs    r6, r6, #1
+    ldr     r0, =fmt_buf
+    strh    r6, [r0, #STRING_SIZE_OFF]
+    pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ OneScreen_FmtWidth(void) -> r0 = how far right fmt_buf draws, or 0 if one of its
+@ CURSOR_X moves the pen back over text already drawn; r1 = where the pen was at
+@ the FMT_MARK placeholder, 0 if there is none. Since a column may only
+@ move the pen right, where it ends is as far right as it went.
+    .thumb_func
+OneScreen_FmtWidth:
+    push    {r4, r5, r6, r7, lr}
+    sub     sp, #8                  @ [sp] width before the last column,
+    movs    r0, #0                  @ [sp, #4] furthest placeholder
+    str     r0, [sp]
+    str     r0, [sp, #4]
+    movs    r7, #0                  @ 1 once a column went backwards
+    ldr     r4, =fmt_buf
+    movs    r5, #0                  @ index
+    movs    r6, #FMT_ITEM_X         @ the pen
+80: ldrh    r0, [r4, #STRING_SIZE_OFF]
+    cmp     r5, r0
+    bhs     84f
+    lsls    r1, r5, #1
+    adds    r1, r4, r1
+    ldrh    r0, [r1, #STRING_DATA_OFF]
+    ldr     r2, =CTRL_BEGIN
+    cmp     r0, r2
+    beq     81f
+    adds    r5, #1
+    b       80b
+81: ldr     r0, =STRING_EOS         @ a CURSOR_X: cut the copy here to see how
+    strh    r0, [r1, #STRING_DATA_OFF]  @ much text comes before it
+    bl      OneScreen_FmtMeasure
+    lsls    r1, r5, #1
+    adds    r1, r4, r1
+    ldr     r2, =CTRL_BEGIN
+    strh    r2, [r1, #STRING_DATA_OFF]
+    ldr     r2, [sp]
+    str     r0, [sp]
+    subs    r0, r0, r2
+    adds    r6, r6, r0              @ the pen after the run before this column
+    ldrh    r0, [r1, #(STRING_DATA_OFF + 6)]   @ the column
+    ldr     r2, =FMT_MARK
+    cmp     r0, r2
+    bne     83f
+    str     r6, [sp, #4]            @ the placeholder: FmtCheck allows one per entry
+    b       85f
+83: cmp     r6, r0
+    bls     85f
+    movs    r7, #1
+85: movs    r6, r0                  @ the pen jumps to the column
+    ldrh    r0, [r1, #(STRING_DATA_OFF + 4)]   @ past BEGIN, id, count, x
+    adds    r5, r5, r0
+    adds    r5, #3
+    b       80b
+84: bl      OneScreen_FmtMeasure    @ and the run after the last column
+    ldr     r2, [sp]
+    subs    r0, r0, r2
+    adds    r0, r6, r0
+    cmp     r7, #0
+    beq     86f
+    movs    r0, #0
+86: ldr     r1, [sp, #4]
+    add     sp, #8
+    pop     {r4, r5, r6, r7, pc}
+    .align  2
+    .pool
+
+@ int OneScreen_FmtMeasure(void) - FontID_String_GetWidth(0, fmt_buf, 0), the call
+@ ScriptMenu_GetListItemsWidth makes for each entry: font 0, no letter spacing.
+    .thumb_func
+OneScreen_FmtMeasure:
+    push    {r3, lr}
+    movs    r0, #0
+    ldr     r1, =fmt_buf
+    movs    r2, #0
+    ldr     r3, =cfg_string_width
+    ldr     r3, [r3]
+    blx     r3
+    pop     {r3, pc}
+    .align  2
+    .pool
+
+@ void OneScreen_FmtStore(r0 = String *) - fmt_buf's text over the entry's own.
+@ Never longer than the entry was, so always inside its buffer.
+    .thumb_func
+OneScreen_FmtStore:
+    ldr     r1, =fmt_buf
+    ldrh    r2, [r1, #STRING_SIZE_OFF]
+    strh    r2, [r0, #STRING_SIZE_OFF]
+    adds    r2, #1                  @ and the EOS
+    adds    r0, #STRING_DATA_OFF
+    adds    r1, #STRING_DATA_OFF
+80: ldrh    r3, [r1]
+    strh    r3, [r0]
+    adds    r0, #2
+    adds    r1, #2
+    subs    r2, #1
+    bne     80b
+    bx      lr
     .align  2
     .pool
 
@@ -3280,11 +5209,11 @@ OneScreen_FieldMode3:
     str     r0, [r1]
     movs    r0, r4
 
-    movs    r1, #FIELD_TOUCH_TASK_OFF
+    movs    r1, #FS_BOTTOM_TASK_OFF
     bl      OneScreen_MainRamRange
     cmp     r0, #0
     beq     49f
-    movs    r0, #FIELD_TOUCH_TASK_OFF
+    movs    r0, #FS_BOTTOM_TASK_OFF
     ldr     r5, [r4, r0]
     movs    r0, r5
     movs    r1, #SYS_TASK_DATA_OFF
@@ -3293,34 +5222,34 @@ OneScreen_FieldMode3:
     beq     49f
     ldr     r6, [r5, #SYS_TASK_DATA_OFF]
     movs    r0, r6
-    movs    r1, #FIELD_OUTER_LAST_OFF
+    movs    r1, #BSAPP_LAST_OFF
     bl      OneScreen_MainRamRange
     cmp     r0, #0
     beq     49f
-    ldr     r0, [r6, #FIELD_OUTER_FS_OFF]
+    ldr     r0, [r6, #BSAPP_FS_OFF]
     cmp     r0, r4
     bne     49f                     @ not this FieldSystem's manager
 
-    ldrb    r0, [r6, #FIELD_OUTER_STATE_OFF]
-    cmp     r0, #FIELD_OUTER_IDLE
+    ldrb    r0, [r6, #BSAPP_STATE_OFF]
+    cmp     r0, #BSAPP_RUNNING
     beq     43f
 
     @ While the outer manager changes modes, its child can still be the outgoing
     @ task. Validate the transition but deliberately do not follow that pointer.
-    cmp     r0, #FIELD_OUTER_TRANS_LO
+    cmp     r0, #BSAPP_SWITCH_REQUESTED
     blo     49f
-    cmp     r0, #FIELD_OUTER_TRANS_HI
+    cmp     r0, #BSAPP_FADE_IN
     bhi     49f
-    ldrb    r0, [r6, #FIELD_OUTER_NEXT_OFF]
-    cmp     r0, #FIELD_TOUCH_MODE
+    ldrb    r0, [r6, #BSAPP_NEXT_ID_OFF]
+    cmp     r0, #BSAPP_CHOICE_MENU
     bne     49f
     movs    r0, #1
     b       48f
 
-43: ldrb    r0, [r6, #FIELD_OUTER_MODE_OFF]
-    cmp     r0, #FIELD_TOUCH_MODE
+43: ldrb    r0, [r6, #BSAPP_ID_OFF]
+    cmp     r0, #BSAPP_CHOICE_MENU
     bne     49f
-    ldr     r5, [r6, #FIELD_OUTER_CHILD_OFF]
+    ldr     r5, [r6, #BSAPP_APP_OFF]
     movs    r0, r5
     movs    r1, #SYS_TASK_DATA_OFF
     bl      OneScreen_MainRamRange
@@ -3328,32 +5257,32 @@ OneScreen_FieldMode3:
     beq     49f
     ldr     r7, [r5, #SYS_TASK_DATA_OFF]
     movs    r0, r7
-    ldr     r1, =FIELD_CHILD_CHOICE_OFF
+    ldr     r1, =CHOICE_SELECTION_OFF
     bl      OneScreen_MainRamRange
     cmp     r0, #0
     beq     49f
-    ldr     r0, [r7, #FIELD_CHILD_FS_OFF]
+    ldr     r0, [r7, #CHOICE_FS_OFF]
     cmp     r0, r4
     bne     49f                     @ stale controller from another field
     ldr     r0, =list_ctrl          @ fully validated: OneScreen_ListMenu can use it
     str     r7, [r0]
 
-    ldr     r5, [r7, #FIELD_CHILD_STATE_OFF]
-    cmp     r5, #FIELD_CHILD_STATE_HI
+    ldr     r5, [r7, #CHOICE_STATE_OFF]
+    cmp     r5, #CHOICE_STATE_LAST
     bhi     49f
-    cmp     r5, #FIELD_CHILD_LIST_LO
+    cmp     r5, #CHOICE_SHOW_LIST
     blo     44f
     movs    r0, #4                  @ native list/cleanup state
     b       48f
-44: cmp     r5, #FIELD_CHILD_BINARY_LO
+44: cmp     r5, #CHOICE_SHOW_YES_NO
     blo     47f                     @ setup/idle
-    cmp     r5, #FIELD_CHILD_BINARY_DONE
+    cmp     r5, #CHOICE_DONE
     beq     47f                     @ result delivered
-    cmp     r5, #FIELD_CHILD_BINARY_LO
+    cmp     r5, #CHOICE_SHOW_YES_NO
     bne     45f
     movs    r0, #2                  @ state 3 initializes Yes
     b       48f
-45: ldr     r1, =FIELD_CHILD_CHOICE_OFF
+45: ldr     r1, =CHOICE_SELECTION_OFF
     ldr     r0, [r7, r1]
     cmp     r0, #1
     bhi     49f
@@ -3398,17 +5327,7 @@ OneScreen_FieldYesNoWipe:
 OneScreen_MenuTaking:
     push    {r4, lr}
     bl      OneScreen_TaskMan
-    cmp     r0, #0
-    beq     86f
-    movs    r4, r0
-    ldr     r0, [r4, #TASK_FUNC_OFF]
-    ldr     r1, =cfg_start_menu_task
-    ldr     r1, [r1]
-    cmp     r1, #0
-    beq     86f
-    cmp     r0, r1
-    bne     86f
-    ldr     r0, [r4, #TASK_ENV_OFF]
+    bl      OneScreen_StartMenuEnv
     cmp     r0, #0
     beq     86f
     ldrh    r0, [r0, #STARTMENU_STATE_OFF]
@@ -3438,14 +5357,14 @@ OneScreen_ScriptMenu:
     cmp     r4, #0
     beq     59f                     @ no field system yet (boot, menus)
     movs    r0, r4
-    movs    r1, #FIELD_TOUCH_TASK_OFF
+    movs    r1, #FS_BOTTOM_TASK_OFF
     bl      OneScreen_MainRamRange
     cmp     r0, #0
     beq     59f                     @ do not dereference a stale FieldSystem
-    ldr     r5, [r4, #FIELD_MENU_OFF]
+    ldr     r5, [r4, #FS_SAVED_APP_ID_OFF]
     cmp     r5, #0
     beq     57f
-    cmp     r5, #FIELD_TOUCH_MODE
+    cmp     r5, #BSAPP_CHOICE_MENU
     bne     56f                     @ other field modes show their native UI
 
     movs    r0, r4
@@ -3543,7 +5462,7 @@ OneScreen_ScriptMenu:
 
 @ ---------------------------------------------------------------------------
 @ void OneScreen_Poll(void)
-@ L+R swaps the screens anywhere. In the overworld, X brings the menu up with it
+@ In the overworld, X brings the menu up with it
 @ and B puts the world back - the field app draws that menu itself without
 @ touching POWCNT1, so there is no transition to detect and it is driven from
 @ the buttons the player already presses.
@@ -3557,20 +5476,9 @@ OneScreen_Poll:
     ldr     r4, =pad_new
     ldr     r4, [r4]
 
-    @ --- L+R: manual swap, available everywhere ---
-    ldr     r1, =TOGGLE_MASK
-    movs    r0, r6
-    ands    r0, r1
-    cmp     r0, r1
-    bne     10f                     @ not both held
-    movs    r0, r4
-    ands    r0, r1
-    cmp     r0, #0
-    beq     10f                     @ neither is new: still held from before
-    bl      OneScreen_Toggle
-    ldr     r0, =bt_manual          @ stop the battle logic re-asserting, so a
-    movs    r1, #1                  @ manual override sticks until the menu you
-    str     r1, [r0]                @ are on changes, or the phase does
+    @ L+R, the manual swap, is no longer read here but straight after the game
+    @ reads the pad - OneScreen_ReadKeys - so the game never sees the L or R
+    @ that starts it.
 
 10: ldr     r5, =menu_swapped
     ldr     r0, =cfg_app_callback
@@ -3714,8 +5622,23 @@ OneScreen_Poll:
     movs    r0, #0                  @ the panel is on engine A - hold it there,
     bl      OneScreen_SetSwap       @ so coming back from SAUVER returns here
     b       19f
-17: movs    r0, #1                  @ a grid we cannot reproduce (Safari, the Bug
-    bl      OneScreen_SetSwap       @ Contest), or the save box: show it
+    @ Not drawn. If the start menu itself is still the field's task, it is up
+    @ but showing something we do not draw - the save box, or a layout the
+    @ patcher could not label - so show the touch screen. If it is not, the menu
+    @ has handed the field to something else: RETIRE in the Safari Zone jumps
+    @ straight to the script runner, which prints its question on the world
+    @ before it takes the bottom screen. Keep the world for that, and take the
+    @ panel down.
+17: bl      OneScreen_TaskMan
+    bl      OneScreen_StartMenuEnv
+    cmp     r0, #0
+    beq     20f
+    movs    r0, #1
+    bl      OneScreen_SetSwap
+    b       19f
+20: bl      OneScreen_StartMenuWipe
+    movs    r0, #0
+    bl      OneScreen_SetSwap
     b       19f
 
     @ No menu of ours is up. If an app just handed the field back, the layout it
@@ -3905,8 +5828,9 @@ OneScreen_Frame:
 @ time by onescreen/labels.py and written in here by inject.fill_labels. Kept
 @ last in the payload so adding to it never moves any code.
 @
-@ A 272-byte header holds five geometry records plus the start-menu record. Four
-@ unique localized 4bpp image sets follow it; the field-dialog geometry aliases
+@ The header (BLOB_HEADER in labels.py) holds five geometry records, the
+@ start-menu record and the list-menu records. Four unique localized 4bpp image
+@ sets follow it; the field-dialog geometry aliases
 @ the battle Yes/No pixels. The hook reads the recorded geometry rather than
 @ repeating it, so the layout cannot drift away from the rasteriser's.
 @

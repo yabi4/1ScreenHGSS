@@ -209,12 +209,47 @@ SM_CELL_PLAN = (
     (None, None),               # cell 7  empty in this layout
 )
 
-# DISABLE_RETIRE. The normal layout always sets it (src/start_menu.c:307) while
-# Safari, the Bug Contest and Pal Park all leave RETIRE enabled - and those use
-# different grids that this cannot reproduce, since the variant lives in the
-# touch overlay's own struct. So the bit doubles as "is this the normal menu?",
-# and the hook hands the screen back to the old swap behaviour when it is clear.
-SM_NORMAL_BIT = 8
+# This plan is the NORMAL layout's, and it is now only the fallback: the hook
+# uses it for the few frames the touch app cannot be read, telling the normal
+# menu apart by its inhibit flags (SM_NORMAL_MASK in src/hook.s).
+#
+# Normally the hook reads the touch menu app itself (TouchscreenMenuData,
+# src/touchscreen_menu.c), which knows which of the game's seven layouts is up,
+# which icons it shows and which slot is selected. The layouts are the game's
+# own table, sTouchscreenMenuLayouts - overlay 27 at 0x0225CFC8 in the US ROM -
+# one icon per slot, slots 0-3 down the left column and 4-6 down the right:
+#
+#     0 normal        POKEDEX POKEMON BAG POKEGEAR | TRAINER SAVE OPTIONS
+#     1 Safari        RETIRE POKEDEX POKEMON BAG | POKEGEAR TRAINER OPTIONS
+#     2 Bug Contest   RETIRE POKEDEX POKEMON POKEGEAR | TRAINER OPTIONS (mon)
+#     3 Pal Park      RETIRE POKEDEX POKEMON POKEGEAR | TRAINER OPTIONS (ball)
+#     4 Union Room    CHAT POKEDEX POKEMON BAG | LOG TRAINER OPTIONS
+#     5 Colosseum     POKEMON BAG TRAINER OPTIONS
+#     6 Tower room    POKEMON TRAINER OPTIONS
+#
+# The patcher checks the table against the ROM's own overlay 27 before using
+# it; if it is not there, only the normal layout is drawn.
+TOUCH_LAYOUTS = (
+    (0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x0D),
+    (0x07, 0x00, 0x01, 0x02, 0x03, 0x04, 0x06, 0x08),
+    (0x07, 0x00, 0x01, 0x03, 0x04, 0x06, 0x0A, 0x0D),
+    (0x07, 0x00, 0x01, 0x03, 0x04, 0x06, 0x09, 0x0D),
+    (0x0B, 0x00, 0x01, 0x02, 0x0C, 0x04, 0x06, 0x0D),
+    (0x01, 0x02, 0x04, 0x06, 0x0D, 0x0D, 0x0D, 0x0D),
+    (0x01, 0x04, 0x06, 0x0D, 0x0D, 0x0D, 0x0D, 0x0D),
+)
+TOUCH_N_ICONS = 7               # slots that hold a selectable icon
+# Touch icon (sTouchscreenMenuIcons) -> the strip that labels it. The icons the
+# table marks disabled - the two ball counters and the contest Pokemon - are
+# not selectable and get no cell. 11 and 12 are the Union Room's CHAT and LOG.
+TOUCH_ICON_LABEL = {0: 0, 1: 1, 2: 2, 3: 11, 4: 3, 5: 4, 6: 5, 7: 8,
+                    11: "chat", 12: "log"}
+# Labels only the Union Room needs: drawn if they fit the cells the other
+# labels already sized, otherwise that one layout swaps instead.
+OPTIONAL_LABELS = (("chat", STARTMENU_MSGDATA_FILE, 34),
+                   ("log", STARTMENU_MSGDATA_FILE, 35))
+SM_N_LAYOUTS = len(TOUCH_LAYOUTS)
+SM_PLAN_UNDRAWABLE = 0xFE
 
 # Two columns of four, because that is the grid the D-pad walks: ov27_0225D0B4
 # navigates slots 0-3 as the left column and 4-6 as the right, with up/down
@@ -275,16 +310,19 @@ def _use_theme(name):
 # the controller keeps a pointer straight back to it. Verified across five
 # savestates - the shop, both PC lists and the PC box menu all arrive here.
 #
-# The menu cannot be recognised by message id: ov01_021EDD68 reads each id into a
-# string and throws the id away. What survives is the expanded text, so a menu is
-# identified by its entry COUNT plus the characters of its FIRST entry, both read
-# live. Every menu here has a first entry free of placeholders, which matters -
-# the player's own PC row expands to their name and could never be matched.
+# The menu cannot be recognised by message id: ScriptMenu_AppendListItem reads
+# each id into a string and throws the id away. What survives is the expanded
+# text, so a menu is identified by its entry COUNT, the characters of its FIRST
+# entry, and a hash of the rest (see OneScreen_ListMatch). Every menu here has a
+# first entry free of placeholders, which matters - the player's own PC row
+# expands to their name and could never be matched, so it is left out of the
+# hash. The first entry alone was not enough: a Pokeathlon mart menu reads
+# BUY / INFO / SEE YA (scr_seq_0003_056) and would be drawn as the shop.
 LIST_MSGDATA_FILE = 191
 LIST_KEY_MAX = 16               # codes COMPARED; the full length is checked too,
                                 # so a longer first entry still identifies exactly
 LIST_MAX_ENTRIES = 8
-LIST_MENU_RECORD = 52
+LIST_MENU_RECORD = 56
 LIST_CELL_H = 2                 # tiles per entry - one glyph row
 LIST_FRAME_TILES = 9            # the border, shared with the X menu's frame
 
@@ -311,6 +349,22 @@ def _ascii_codes(text: str):
         else:
             raise LabelError(f"{ch!r} has no code in this charmap")
     return out
+
+
+def _menu_hash(entries, skip: int) -> int:
+    """The hash OneScreen_ListHash computes over a live menu's Strings.
+
+    h = h * 31 + code per character, then once more with 0xFFFF between entries,
+    kept to 16 bits, over every entry whose bit in `skip` is clear.
+    """
+    h = 0
+    for i, codes in enumerate(entries):
+        if skip >> i & 1:
+            continue
+        for code in codes:
+            h = (h * 31 + code) & 0xFFFF
+        h = (h * 31 + 0xFFFF) & 0xFFFF
+    return h
 
 
 # Each menu: a name, its entries as (msgdata file, index) in screen order, and
@@ -351,13 +405,16 @@ YN_CELL_W = YN_COLS * 8         # 24 px
 
 BLOB_MAGIC = b"1SLB"
 
-# Four unique sets of images, referenced by five geometry records in the blob
-# header so the hook carries no dimensions of its own:
+# Image sets, referenced by the geometry records in the blob header so the hook
+# carries no dimensions of its own:
 #
-#   set 0, 14 tiles wide   0..3 the root command menu, one per command
+#   set 0, 14 tiles wide   0..3 the root command menu, one per command - banded,
+#                               so one plain image and four rectangles
 #                          4    all paper, to take the menu down
 #   set 1, 3 tiles wide    0,1  the two-option prompt, top and bottom
 #                          2    all paper
+#
+# Sets 5-9 (EXTRA_GEOS) are banded like set 0 and drawn in the same box.
 #
 # The battle and field yes/no geometries both reference set 1. Their tile data
 # is identical, but their rows live in different MAIN BG character bases.
@@ -386,8 +443,39 @@ def _row_addrs(char_base, base_tile, base_col):
 OAK_IMAGES = 3                  # yes/no pair, wipe
 GENDER_IMAGES = 3               # the two options, wipe
 GEO_RECORD = 28                 # data_off, image_bytes, row_bytes, images, 4 row addrs
-GEO_COUNT = 5                   # command, battle yes/no, Oak, gender, field yes/no
-BLOB_HEADER = 512               # magic, five geometry records, start menu, lists
+GEO_HEAD_COUNT = 5              # command, battle yes/no, Oak, gender, field yes/no
+SM_PLANS_OFF = 528              # u8 strip[8] per touch layout; see _startmenu
+
+# The command box's other sets, whose records cannot sit with the first five -
+# the start menu's record follows those directly - so they get a table of their
+# own after the layout plans. The hook's OneScreen_GeoRecord finds either.
+#
+#   5  FIGHT / BAG / POKeMON / CANCEL   a double's second battler (cancelShown)
+#   6  BALL / BAIT / MUD / RUN          the Safari Zone
+#   7  FIGHT / BALL / POKeMON / RUN     the Bug Contest
+#   8  BALL over RUN                    Pal Park
+#   9  FIGHT alone                      the first rival battle
+#
+# Where those words come from: BattleInput_CreateMainMenuObjects
+# (src/battle/battle_input.c) picks them by battle type, and the Pal Park and
+# FIGHT-only menus are the same objects with the other words hidden.
+EXTRA_GEO_OFF = SM_PLANS_OFF + 8 * len(TOUCH_LAYOUTS)
+EXTRA_GEOS = ("cancel", "safari", "bug", "park", "rival")
+GEO_COUNT = GEO_HEAD_COUNT + len(EXTRA_GEOS)
+BLOB_HEADER = EXTRA_GEO_OFF + GEO_RECORD * len(EXTRA_GEOS)
+
+# A record whose image count has this bit is BANDED: it stores one plain image
+# and, after it, a 4-byte (x, y, w, h) rectangle per choice. A selected image
+# differs from the plain one only in that rectangle, where every paper pixel is
+# band instead - glyph pixels are never paper - so the hook rebuilds it exactly
+# (OneScreen_BandRect). Four 1792-byte images become one, which is what makes
+# room for the sets above. build() checks the identity for every choice.
+BANDED = 0x8000
+CANCEL_MSGS = (924, 925, 926, 928)
+SAFARI_MSGS = (931, 932, 933, 927)
+BUG_MSGS = (924, 1270, 926, 927)
+PARK_MSGS = (1223, 927)
+RIVAL_MSGS = (924,)
 
 # The start menu's record does not fit the shape above - it describes a pool of
 # tiles and a tilemap rather than finished images - so it gets its own block at a
@@ -438,7 +526,11 @@ SM_RECORD_SIZE = 0x7C
 #                +0x05 u8  cell_w
 #                +0x06 u8  cell_h
 #                +0x07 u8  key_len      codes in the identifying first entry
-#                +0x08 u16 key[LIST_KEY_MAX]
+#                +0x08 u8  n_cols, +0x09 u8 n_rows
+#                +0x0A u16 key[LIST_KEY_MAX]
+#                +0x2A u8  pos[LIST_MAX_ENTRIES]
+#                +0x32 u16 hash         _menu_hash over the entries not skipped
+#                +0x34 u8  skip         bit i = entry i is not in the hash
 LIST_RECORD_OFF = 272
 LIST_RECORD_HEAD = 0x1C
 CMD_ROW_BYTES = GRID_COLS * 32
@@ -447,10 +539,6 @@ YN_ROW_BYTES = YN_COLS * 32
 YN_IMAGE_BYTES = YN_ROW_BYTES * GRID_ROWS
 GENDER_ROW_BYTES = GENDER_COLS * 32
 GENDER_IMAGE_BYTES = GENDER_ROW_BYTES * GRID_ROWS
-BLOB_SIZE = (BLOB_HEADER + CMD_IMAGES * CMD_IMAGE_BYTES
-             + (YN_IMAGES + OAK_IMAGES) * YN_IMAGE_BYTES
-             + GENDER_IMAGES * GENDER_IMAGE_BYTES)
-
 
 class LabelError(Exception):
     """The labels could not be built from this ROM."""
@@ -486,8 +574,9 @@ def _narc_files(data: bytes):
 NEWLINE = 0xE000                # the line break inside a two-line menu entry
 
 
-def _decode_message(archive: bytes, index: int, keep_break: bool = False):
-    """Return one message from a Gen-IV .gmm as raw character codes."""
+def _decode_raw(archive: bytes, index: int):
+    """Return one message from a Gen-IV .gmm exactly as stored, control codes
+    and terminator included."""
     count, key = struct.unpack_from("<HH", archive, 0)
     if not 0 <= index < count:
         raise LabelError(f"message {index} out of range (archive holds {count})")
@@ -503,6 +592,12 @@ def _decode_message(archive: bytes, index: int, keep_break: bool = False):
     for j in range(length):
         out.append(struct.unpack_from("<H", archive, off + j * 2)[0] ^ k2)
         k2 = (k2 + 0x493D) & 0xFFFF
+    return out
+
+
+def _decode_message(archive: bytes, index: int, keep_break: bool = False):
+    """Return one message from a Gen-IV .gmm as raw character codes."""
+    out = _decode_raw(archive, index)
     # Messages are terminated by 0xFFFF; control codes start at 0xE000. Most
     # labels contain none, but the PC box menu's entries are two lines and the
     # break between them is 0xE000 itself, so that one asks to keep it.
@@ -605,6 +700,34 @@ def _layout(font: Font, labels):
     return [top, b_bag, b_pokemon, b_run]
 
 
+SPARSE_PAD = 6                  # px of band either side of a lone bottom word
+
+
+def _layout_sparse(font: Font, top, run=None):
+    """Place a command menu with the BAG and POKEMON slots hidden.
+
+    Pal Park's menu and the first rival battle's are the ordinary command menu
+    with words switched off (BattleInput_CreatePalParkMenuObjects and
+    ..._CreateMainMenuFightObject hide their text objects), so the top word keeps
+    the FIGHT slot and RUN, where there is one, its place in the middle of the
+    bottom row. Returned in command order like _layout, with empty entries for
+    the hidden slots so image indices still mean the same thing.
+    """
+    w = _text_width(font, top)
+    out = [((CELL_W - w) // 2, 0, top, (0, 0, CELL_W, ROW_H))]
+    empty = (0, ROW_H, [], (0, ROW_H, 0, 0))
+    out += [empty, empty]
+    if run is None:
+        out.append(empty)
+    else:
+        w = _text_width(font, run)
+        if w + 2 * SPARSE_PAD > CELL_W:
+            raise LabelError(f"{w}px of RUN does not fit in {CELL_W}px")
+        x = (CELL_W - w) // 2
+        out.append((x, ROW_H, run, (x - SPARSE_PAD, ROW_H, w + 2 * SPARSE_PAD, ROW_H)))
+    return out
+
+
 def _layout_yesno(font: Font, choices):
     """Place the two-option prompt: one choice above the other, both centred.
 
@@ -678,6 +801,43 @@ def _render(font: Font, placed, selected, width=CELL_W, invert=False):
                     canvas[ty][tx] = v
             x += w
     return canvas
+
+
+def _clip_rect(rect, width, height=CELL_H):
+    """A choice's band rectangle, clipped to its box, as (x, y, w, h)."""
+    x0, y0, w, h = rect
+    x1, y1 = min(x0 + w, width), min(y0 + h, height)
+    x0, y0 = max(x0, 0), max(y0, 0)
+    return x0, y0, max(x1 - x0, 0), max(y1 - y0, 0)
+
+
+def _band(canvas, rect):
+    """What OneScreen_BandRect does to the plain image in VRAM: paper inside the
+    rectangle becomes band. The reference the hook is tested against."""
+    x0, y0, w, h = rect
+    out = [row[:] for row in canvas]
+    for y in range(y0, y0 + h):
+        for x in range(x0, x0 + w):
+            if out[y][x] == PAPER:
+                out[y][x] = HILITE
+    return out
+
+
+def _banded_set(font: Font, placed, width, cols):
+    """One plain image and a rectangle per choice - see BANDED.
+
+    Raises LabelError unless banding the plain image reproduces _render's image
+    of every choice exactly, so a set that does not have that shape (an inverted
+    one, say) can never be stored this way.
+    """
+    plain = _render(font, placed, None, width)
+    rects = []
+    for sel, item in enumerate(placed):
+        rect = _clip_rect(item[3], width)
+        if _band(plain, rect) != _render(font, placed, sel, width):
+            raise LabelError(f"choice {sel} is not its plain image banded")
+        rects.append(rect)
+    return _to_tiles(plain, cols), b"".join(struct.pack("<4B", *r) for r in rects)
 
 
 def _render_strip(font: Font, codes, width, height):
@@ -849,19 +1009,80 @@ def _startmenu_cell_w(font: Font, labels) -> int:
     return cell_w
 
 
-def _startmenu(font: Font, archive, off: int):
-    """Return (record, payload) for the overworld menu panel.
+def _optional_labels(font: Font, archive, cell_w: int):
+    """The Union Room's CHAT / LOG, each only if it fits a cell as already sized.
+
+    They are never allowed to widen the panel - the cells are sized by the
+    labels every menu shows - and a missing one simply leaves the Union Room to
+    swap, which is what it did before.
+    """
+    out = []
+    for key, file_id, msg in OPTIONAL_LABELS:
+        if file_id >= len(archive):
+            continue
+        try:
+            codes = _decode_message(archive[file_id], msg)
+        except LabelError:
+            continue
+        if codes and (_text_width(font, codes) + 8 + 7) // 8 <= cell_w:
+            out.append((key, codes))
+    return out
+
+
+def _touch_plans(labels, layouts_ok: bool) -> bytes:
+    """One row of eight strip indices per touch layout, for OneScreen_StartMenu.
+
+    0xFF leaves a cell empty. A layout whose labels are not all available - or
+    every special layout, when the ROM's own table could not be confirmed - is
+    marked SM_PLAN_UNDRAWABLE in its first cell, and the hook swaps for it.
+    """
+    strip_of = {key: i for i, (key, _codes) in enumerate(labels)}
+    out = bytearray()
+    for layout, icons in enumerate(TOUCH_LAYOUTS):
+        row = bytearray([0xFF]) * SM_CELLS
+        ok = layouts_ok or layout == 0
+        for slot, icon in enumerate(icons[:TOUCH_N_ICONS]):
+            key = TOUCH_ICON_LABEL.get(icon)
+            if key is None:
+                continue
+            if key not in strip_of:
+                ok = False
+                break
+            row[slot] = strip_of[key]
+        if not ok:
+            row = bytearray([SM_PLAN_UNDRAWABLE]) + bytearray([0xFF]) * (SM_CELLS - 1)
+        out += row
+    return bytes(out)
+
+
+def touch_layouts_in(overlays) -> bool:
+    """Is the game's own layout table in this ROM's overlay 27, as expected?"""
+    try:
+        data = bytes(overlays[27].data)
+    except Exception:                                   # noqa: BLE001
+        return False
+    return bytes(b for row in TOUCH_LAYOUTS for b in row) in data
+
+
+def _startmenu(font: Font, archive, off: int, layouts_ok: bool = True):
+    """Return (record, payload, plans) for the overworld menu panel.
 
     One tile strip per label rather than one finished panel image, because the
-    entry list is dynamic - POKEDEX and POKEGEAR only appear once you own them,
-    and Safari, the Bug Contest and Pal Park each substitute their own. The hook
-    reads the game's own selectionToAction[] and points each cell's tilemap
-    entries at the matching strip, so every context comes out right without the
-    patcher knowing which one it is.
+    entry list is dynamic - POKEDEX and POKEGEAR only appear once you own them.
+    The hook reads the game's own inhibitIconFlags and points each cell's
+    tilemap entries at the matching strip, leaving a gap where the touch menu
+    leaves one.
     """
     labels = _startmenu_labels(archive)
     cell_w = _startmenu_cell_w(font, labels)
     strip_tiles = cell_w * SM_CELL_H
+    # The Union Room's two only if the tile budget below 0x197 still holds with
+    # them: the base strips, the blank one, the frame, and these.
+    optional = _optional_labels(font, archive, cell_w)
+    budget = (0x197 - SM_BASE_TILE - len(FRAME_SHAPES)) // strip_tiles
+    if len(labels) + len(optional) + 1 > budget:
+        optional = []
+    labels = labels + optional
     strip_bytes = strip_tiles * 32
 
     frame_cols = SM_COLS * cell_w + 2 * SM_FRAME
@@ -939,7 +1160,8 @@ def _startmenu(font: Font, archive, off: int):
     if last > 0x197:
         raise LabelError(
             f"the panel would end at tile {last:#x}, past the map-name window at 0x197")
-    return bytes(record), packed + pals + bytes(frame_map)
+    return (bytes(record), packed + pals + bytes(frame_map),
+            _touch_plans(labels, layouts_ok))
 
 
 def _self_pc_codes(archive, region: str):
@@ -948,6 +1170,27 @@ def _self_pc_codes(archive, region: str):
     if text is not None:
         return _ascii_codes(text)
     return _decode_message(archive[TRAINER_MSGDATA_FILE], TRAINER_MSG)
+
+
+def _list_menu_record(strip_off, strip_tiles, n, cell_w, cell_h, n_cols, n_rows,
+                      layout, key, key_full, menu_hash, skip) -> bytes:
+    """One LIST_MENU_RECORD, in the layout OneScreen_ListMatch reads."""
+    if key_full > 0xFF:
+        raise LabelError("a first entry longer than 255 characters cannot be keyed")
+    key = list(key)[:LIST_KEY_MAX]
+    # key_full is the WHOLE length; the hook compares only the first
+    # LIST_KEY_MAX codes but checks this too, so a 17-character entry is
+    # still identified exactly rather than failing to match at all.
+    rec = struct.pack("<HHBBBBBB", strip_off, strip_tiles, n, cell_w,
+                      cell_h, key_full, n_cols, n_rows)
+    rec += struct.pack(f"<{LIST_KEY_MAX}H", *(key + [0] * (LIST_KEY_MAX - len(key))))
+    pos = [(r << 4) | c for r, c in layout]
+    rec += bytes(pos + [0] * (LIST_MAX_ENTRIES - len(pos)))
+    rec += struct.pack("<HB", menu_hash, skip)
+    rec += b"\0" * (LIST_MENU_RECORD - len(rec))
+    if len(rec) != LIST_MENU_RECORD:
+        raise LabelError(f"list menu record is {len(rec)}, expected {LIST_MENU_RECORD}")
+    return rec
 
 
 def _listmenu(font: Font, archive, off: int, region: str = ""):
@@ -984,15 +1227,27 @@ def _listmenu(font: Font, archive, off: int, region: str = ""):
         n_rows = max(r for r, _c in layout) + 1
         n_cols = max(c for _r, c in layout) + 1
         entries = []
-        for file_id, msg in msgs:
+        # Entries whose live text the patcher cannot know are left out of the
+        # identifying hash: your own PC's row (your name), and any message with
+        # a control code the game expands at runtime. The line break of a
+        # two-line entry is kept in the String as-is, so it is not one of them.
+        skip = 0
+        for i, (file_id, msg) in enumerate(msgs):
             if file_id is SELF_PC:
                 entries.append(_self_pc_codes(archive, region))
+                skip |= 1 << i
                 continue
             if file_id >= len(archive):
                 raise LabelError(f"{MSGDATA_NARC} has no file {file_id}")
             codes = _decode_message(archive[file_id], msg, keep_break=lines > 1)
             if not codes:
                 raise LabelError(f"list menu {name}: message {msg} decoded to nothing")
+            raw = [c for c in _decode_raw(archive[file_id], msg) if c != 0xFFFF]
+            if any(c >= 0xE000 and not (lines > 1 and c == NEWLINE) for c in raw):
+                if i == 0:
+                    raise LabelError(f"list menu {name}: its first entry holds a "
+                                     "control code and cannot identify it")
+                skip |= 1 << i
             entries.append(codes)
         # A two-line entry is only as wide as its widest line, not the whole run.
         widest = 0
@@ -1019,7 +1274,7 @@ def _listmenu(font: Font, archive, off: int, region: str = ""):
         pool += b"\0" * (-len(pool) % 4)
         menus.append((name, strip_off, cell_w * cell_h, len(entries), cell_w, cell_h,
                       n_cols, n_rows, layout,
-                      key, len(entries[0])))
+                      key, len(entries[0]), _menu_hash(entries, skip), skip))
 
     pals = _palette(SM_PAL_NORM_RGB) + _palette(SM_PAL_HI_RGB)
     record = struct.pack(
@@ -1029,22 +1284,10 @@ def _listmenu(font: Font, archive, off: int, region: str = ""):
     if len(record) != LIST_RECORD_HEAD:
         raise LabelError(f"list header is {len(record)} bytes, expected {LIST_RECORD_HEAD}")
     for (_name, strip_off, strip_tiles, n, cell_w, cell_h, n_cols, n_rows,
-         layout, key, key_full) in menus:
-        if key_full > 0xFF:
-            raise LabelError("a first entry longer than 255 characters cannot be keyed")
-        # key_full is the WHOLE length; the hook compares only the first
-        # LIST_KEY_MAX codes but checks this too, so a 17-character entry is
-        # still identified exactly rather than failing to match at all.
-        rec = struct.pack("<HHBBBBBB", strip_off, strip_tiles, n, cell_w,
-                          cell_h, key_full, n_cols, n_rows)
-        rec += struct.pack(f"<{LIST_KEY_MAX}H",
-                           *(list(key) + [0] * (LIST_KEY_MAX - len(key))))
-        pos = [(r << 4) | c for r, c in layout]
-        rec += bytes(pos + [0] * (LIST_MAX_ENTRIES - len(pos)))
-        rec += b"\0" * (LIST_MENU_RECORD - len(rec))
-        if len(rec) != LIST_MENU_RECORD:
-            raise LabelError(f"list menu record is {len(rec)}, expected {LIST_MENU_RECORD}")
-        record += rec
+         layout, key, key_full, menu_hash, skip) in menus:
+        record += _list_menu_record(strip_off, strip_tiles, n, cell_w, cell_h,
+                                    n_cols, n_rows, layout, key, key_full,
+                                    menu_hash, skip)
 
     # Every menu loads at the same base, so only the largest has to fit.
     worst = LIST_FRAME_TILES + max(m[3] * m[2] for m in menus)
@@ -1059,7 +1302,7 @@ def _listmenu(font: Font, archive, off: int, region: str = ""):
 # Entry point
 # ---------------------------------------------------------------------------
 
-def build(rom, log=print, theme=themes.DEFAULT_THEME) -> bytes:
+def build(rom, log=print, theme=themes.DEFAULT_THEME, overlays=None) -> bytes:
     """Return the label blob for this ROM.
 
     `rom` is an ndspy NintendoDSRom. Raises LabelError if anything about the
@@ -1100,68 +1343,111 @@ def build(rom, log=print, theme=themes.DEFAULT_THEME) -> bytes:
         raise LabelError(f"{FONT_NARC} has no file {FONT_FILE}")
     font = Font(fonts[FONT_FILE])
 
-    # Each image set: its layout, how many highlighted variants, pixel width and
-    # tile width. A geometry then pairs one of those sets with its destination
-    # rows. Keeping those concepts separate lets the field yes/no geometry alias
-    # the battle yes/no images without copying them into the blob a second time.
+    # Each image set: its layout, how many highlighted variants, pixel width,
+    # tile width, and whether it is banded (BANDED). A geometry then pairs one
+    # of those sets with its destination rows. Keeping those concepts separate
+    # lets the field yes/no geometry alias the battle yes/no images without
+    # copying them into the blob a second time. Every set is banded: one plain
+    # image and a rectangle per choice.
     sets = [
-        (_layout(font, labels), 4, CELL_W, GRID_COLS, False),
-        (_layout_yesno(font, choices), 2, YN_CELL_W, YN_COLS, False),
+        (_layout(font, labels), 4, CELL_W, GRID_COLS, True),
+        (_layout_yesno(font, choices), 2, YN_CELL_W, YN_COLS, True),
         # Oak's two prompts used to invert - white ink, no shadow - because the
         # band was whatever saturated colour his intro happened to be using, and
         # dark text vanished into it. A theme picks that colour now, and picks a
         # light one, so ordinary dark ink is both legible and consistent with
         # every other prompt. Inverting here is what made his selected choice
-        # come out white while the rest came out black.
-        (_layout_yesno(font, oak), 2, YN_CELL_W, YN_COLS, False),
+        # come out white while the rest came out black - and an inverted set
+        # could not be banded.
+        (_layout_yesno(font, oak), 2, YN_CELL_W, YN_COLS, True),
         (_layout_row(font, gender, GENDER_CELL_W), 2, GENDER_CELL_W, GENDER_COLS,
-         False),
+         True),
     ]
-
+    battle_rows = _row_addrs(BATTLE_CHAR_BASE, WIN_BASE_TILE, GRID_BASE_COL)
     geometries = [
-        (0, _row_addrs(BATTLE_CHAR_BASE, WIN_BASE_TILE, GRID_BASE_COL)),
+        (0, battle_rows),
         (1, _row_addrs(BATTLE_CHAR_BASE, WIN_BASE_TILE, YN_BASE_COL)),
         (2, _row_addrs(OAK_CHAR_BASE, OAK_BASE_TILE, YN_BASE_COL)),
         (3, _row_addrs(OAK_CHAR_BASE, OAK_BASE_TILE, GENDER_BASE_COL)),
         (1, _row_addrs(FIELD_CHAR_BASE, FIELD_BASE_TILE, YN_BASE_COL)),
     ]
-    if len(geometries) != GEO_COUNT:
+    if len(geometries) != GEO_HEAD_COUNT:
         raise LabelError(
-            f"there are {len(geometries)} geometries, expected {GEO_COUNT}")
+            f"there are {len(geometries)} geometries, expected {GEO_HEAD_COUNT}")
+
+    # The special command menus. Each is optional: a word this ROM does not have,
+    # or a row it cannot fit, leaves that record empty, and the hook hands that
+    # menu to the touch screen exactly as before.
+    def words(msgs):
+        out = [_decode_message(archive[MSGDATA_FILE], m) for m in msgs]
+        if not all(out):
+            raise LabelError(f"msg_0197 {msgs} has an empty entry")
+        return out
+
+    extra_layouts = {
+        "cancel": lambda: _layout(font, words(CANCEL_MSGS)),
+        "safari": lambda: _layout(font, words(SAFARI_MSGS)),
+        "bug": lambda: _layout(font, words(BUG_MSGS)),
+        "park": lambda: _layout_sparse(font, *words(PARK_MSGS)),
+        "rival": lambda: _layout_sparse(font, *words(RIVAL_MSGS)),
+    }
+    extra_missing = []
+    for name in EXTRA_GEOS:
+        try:
+            placed = extra_layouts[name]()
+            _banded_set(font, placed, CELL_W, GRID_COLS)
+        except (LabelError, IndexError, KeyError) as exc:
+            extra_missing.append(f"{name} ({exc})")
+            geometries.append((None, battle_rows))
+            continue
+        sets.append((placed, 4, CELL_W, GRID_COLS, True))
+        geometries.append((len(sets) - 1, battle_rows))
 
     # Allocate offsets only for unique image sets. Geometry 4 deliberately gets
     # the same offset as geometry 1, while retaining its own destination rows.
+    # The wipe is NOT stored. It is one image of solid paper per set, and four of
+    # them came to 3840 bytes of 0xFF in a blob with no room to spare, so the hook
+    # fills instead of copying when asked for the last image. The records still
+    # count it, so nothing that asks for a wipe changed.
     off = BLOB_HEADER
-    set_offsets = []
-    for _placed, variants, _w, cols, _inv in sets:
+    set_offsets, set_data = [], []
+    for placed, variants, width, cols, banded in sets:
+        set_offsets.append(off)
+        if banded:
+            plain, rects = _banded_set(font, placed, width, cols)
+            data = plain + rects
+        else:
+            data = b"".join(_to_tiles(_render(font, placed, sel, width), cols)
+                            for sel in range(variants))
+        set_data.append(data)
+        off += len(data)
+
+    def record(set_id, addrs):
+        if set_id is None:                          # a special menu left out
+            return struct.pack("<IIHH", 0, 0, GRID_COLS * 32, 0) + \
+                struct.pack(f"<{GRID_ROWS}I", *addrs)
+        if not 0 <= set_id < len(sets):
+            raise LabelError(f"geometry references missing image set {set_id}")
+        _placed, variants, _width, cols, banded = sets[set_id]
         row_bytes = cols * 32
         image_bytes = row_bytes * GRID_ROWS
-        set_offsets.append(off)
-        # The wipe is NOT stored. It is one image of solid paper per set, and
-        # four of them came to 3840 bytes of 0xFF in a blob with no room to
-        # spare, so the hook fills instead of copying when asked for the last
-        # image. The records still count it, so nothing that asks for a wipe
-        # changed.
-        off += variants * image_bytes
+        return struct.pack("<IIHH", set_offsets[set_id], image_bytes, row_bytes,
+                           (variants + 1) | (BANDED if banded else 0)) + \
+            struct.pack(f"<{GRID_ROWS}I", *addrs)
 
     blob = bytearray(struct.pack("<4sBBH", BLOB_MAGIC, GRID_ROWS,
                                  len(geometries), 0))
-    for set_id, addrs in geometries:
-        if not 0 <= set_id < len(sets):
-            raise LabelError(f"geometry references missing image set {set_id}")
-        _placed, variants, _width, cols, _invert = sets[set_id]
-        row_bytes = cols * 32
-        image_bytes = row_bytes * GRID_ROWS
-        blob += struct.pack("<IIHH", set_offsets[set_id], image_bytes,
-                            row_bytes, variants + 1)
-        blob += struct.pack(f"<{GRID_ROWS}I", *addrs)
+    for set_id, addrs in geometries[:GEO_HEAD_COUNT]:
+        blob += record(set_id, addrs)
     if len(blob) > SM_RECORD_OFF:
         raise LabelError(f"the geometry records reach {len(blob)}, over the start "
                          f"menu record at {SM_RECORD_OFF}")
+    extra_records = b"".join(record(s, a) for s, a in geometries[GEO_HEAD_COUNT:])
 
     # `off` now points past the last image, which is where the panel's own data
     # goes, so the record can carry absolute blob offsets like the others.
-    sm_record, sm_payload = _startmenu(font, archive, off)
+    layouts_ok = overlays is not None and touch_layouts_in(overlays)
+    sm_record, sm_payload, sm_plans = _startmenu(font, archive, off, layouts_ok)
     # The fourth letter of the game code is the region, which is the only thing
     # that decides your own PC's row - the one label not taken from the ROM.
     try:
@@ -1174,16 +1460,21 @@ def build(rom, log=print, theme=themes.DEFAULT_THEME) -> bytes:
     blob += sm_record
     blob += b"\0" * (LIST_RECORD_OFF - len(blob))
     blob += list_record
-    blob += b"\0" * (BLOB_HEADER - len(blob))
+    if len(blob) > SM_PLANS_OFF:
+        raise LabelError(f"the list records reach {len(blob)}, over the layout "
+                         f"plans at {SM_PLANS_OFF}")
+    blob += b"\0" * (SM_PLANS_OFF - len(blob))
+    blob += sm_plans
+    if len(blob) != EXTRA_GEO_OFF:
+        raise LabelError(f"the layout plans end at {len(blob)}, not at the extra "
+                         f"geometry records' {EXTRA_GEO_OFF}")
+    blob += extra_records
     if len(blob) != BLOB_HEADER:
         raise LabelError(f"header is {len(blob)} bytes, expected {BLOB_HEADER}")
 
-    images_bytes = 0
-    for placed_set, variants, width, cols, invert in sets:
-        for sel in range(variants):
-            blob += _to_tiles(
-                _render(font, placed_set, sel, width, invert), cols)
-        images_bytes += variants * cols * 32 * GRID_ROWS
+    for data in set_data:
+        blob += data
+    images_bytes = sum(len(d) for d in set_data)
     blob += sm_payload
     blob += list_payload
     expect = BLOB_HEADER + images_bytes + len(sm_payload) + len(list_payload)
@@ -1195,11 +1486,20 @@ def build(rom, log=print, theme=themes.DEFAULT_THEME) -> bytes:
     log(f"  Labels   : commands {fmt(labels)} px, battle yes/no {fmt(choices)} px, "
         f"field alias, Oak yes/no {fmt(oak)} px, gender {fmt(gender)} px, "
         f"{len(blob)} bytes")
+    drawn = [n for n in EXTRA_GEOS if not any(m.startswith(n + " ") for m in extra_missing)]
+    log(f"  Battles  : also drawn - {', '.join(drawn) or 'none'}"
+        + (f"; left to the touch screen - {'; '.join(extra_missing)}"
+           if extra_missing else ""))
     log(f"  Theme    : {chosen['label']}, panel paper "
         f"{SM_PAL_NORM_RGB[PAPER]:#06x}, band {chosen['band']:#06x}")
     log(f"  X menu   : {len(sm_labels)} labels, widest "
         f"{max(_text_width(font, c) for _a, c in sm_labels)} px, "
         f"{_startmenu_cell_w(font, sm_labels)}x{SM_CELL_H} tile cells")
+    drawn = [i for i in range(SM_N_LAYOUTS)
+             if sm_plans[i * SM_CELLS] != SM_PLAN_UNDRAWABLE]
+    log(f"  X menu   : touch layouts "
+        + ("confirmed in overlay 27" if layouts_ok else "NOT found - normal menu only")
+        + f", drawn for {drawn}")
     return bytes(blob)
 
 

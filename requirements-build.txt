@@ -1,0 +1,6 @@
+# Pinned for tools/build_exe.py, locally and in .github/workflows/release.yml.
+# These are the versions the macOS build was made and checked with. The Python
+# running them needs Tk 8.6: tkinterdnd2's library is compiled for Tcl 8.
+ndspy==4.2.0
+pyinstaller==6.22.3
+tkinterdnd2==0.6.3

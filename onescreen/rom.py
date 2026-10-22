@@ -84,7 +84,7 @@ def patch(rom_bytes: bytes, log=print, auto_battle=True,
         log(f"  WARNING  : {code} recognised but the SHA-1 does not match the "
             "tested dump. Continuing anyway; report problems.")
     else:
-        log(f"  NOTE     : {code} has not been tested (only IPGF/IPKF have). "
+        log(f"  NOTE     : {code} has not been tested (only IPGF/IPKF/IPKE have). "
             "The scanner works by instruction shape, so this may still be fine.")
 
     rom = ndspy.rom.NintendoDSRom(rom_bytes)
@@ -168,6 +168,25 @@ def patch(rom_bytes: bytes, log=print, auto_battle=True,
         # palettes untouched, which is what every build did before themes.
         values["theme_band"] = themes.get(theme)["band"]
 
+        # NPC lists the patch does not draw itself go to the game's own
+        # top-screen list instead of taking the screen: script command 752 is
+        # pointed at OneScreen_MenuExec, and the move tutors' 653 at
+        # OneScreen_TutorExec. Found by shape and cross-checked; anything
+        # unexpected and the lists swap, the safe fallback for a ROM we cannot
+        # vouch for - there is no option to ask for that any more.
+        for field in ("menu_exec_orig", "open_list", "string_width",
+                      "setup_native", "tutor_exec_orig"):
+            values[field] = 0
+        native, redirects, detail = regions.resolve_native_lists(arm9, overlays)
+        if native:
+            values.update(native)
+            for site, symbol in redirects:
+                struct.pack_into("<I", arm9, site - 0x02000000,
+                                 meta["symbols"][symbol] | 1)
+            log(f"  Lists    : the game's top-screen list; {detail}")
+        else:
+            log(f"  Lists    : {detail}; NPC lists keep the touch screen")
+
         payload = inject.fill_config(payload, meta["symbols"]["OneScreen_Config"],
                                      meta["load_addr"], values)
 
@@ -177,7 +196,7 @@ def patch(rom_bytes: bytes, log=print, auto_battle=True,
         # them: the hook checks the blob's magic and simply draws nothing, which
         # costs the labels but leaves every other behaviour intact.
         try:
-            blob = labels.build(rom, log=log, theme=theme)
+            blob = labels.build(rom, log=log, theme=theme, overlays=overlays)
             payload = inject.fill_labels(payload,
                                          meta["symbols"]["OneScreen_Labels"],
                                          meta["load_addr"], blob)
@@ -195,12 +214,13 @@ def patch(rom_bytes: bytes, log=print, auto_battle=True,
                 + ("verified" if ok else
                    "CODE DOES NOT MATCH - entry dropped, this app will not swap"))
         inject.patch_main_loop(arm9, meta["symbols"]["OneScreen_Frame"])
+        inject.patch_key_read(arm9, meta["symbols"]["OneScreen_ReadKeys"])
         inject.patch_evolution_task(
             arm9, meta["symbols"]["OneScreen_EvolutionTask"])
         arm9 = inject.add_autoload_block(arm9, payload, meta["load_addr"])
         log(f"  ITCM     : {len(payload)} bytes at {meta['load_addr']:#010x} "
             f"(payload v{meta['payload_version']}), main loop "
-            f"{inject.MAIN_LOOP_SITE:#010x} and evolution task hooked")
+            f"{inject.MAIN_LOOP_SITE:#010x}, keypad read and evolution task hooked")
         log(f"  Region   : data shifted {delta:+#x} from the French reference")
         for name in inject.CONFIG_FIELDS:
             log(f"             {name:<15} {values[name]:#010x}")

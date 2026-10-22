@@ -195,7 +195,8 @@ class App:
         self.bar.grid(row=7, column=0, pady=(8, 0))
         self.bar.start(12)
         self.say("Patching...")
-        threading.Thread(target=self.work, args=(self.rom, out, self.theme.get()),
+        threading.Thread(target=self.work,
+                         args=(self.rom, out, self.theme.get()),
                          daemon=True).start()
 
     def work(self, src, dst, theme):
@@ -231,8 +232,27 @@ class App:
         self.status.config(text=text)
 
 
+def make_root():
+    """A drop-capable root when the tkdnd library loads, a plain one otherwise.
+
+    tkinterdnd2 can import fine and still fail here: its compiled library is
+    built for Tcl 8, so under Tk 9 loading it raises. `TkinterDnD.Tk()` would
+    then have already made its window and take the app down with it; loading
+    the library into an ordinary root instead - all `TkinterDnD.Tk` adds, the
+    drop methods being on every widget from import - costs only the drop
+    target, which App already treats as optional.
+    """
+    root = tk.Tk()
+    if TkinterDnD is not None:
+        try:
+            root.TkdndVersion = TkinterDnD._require(root)
+        except (RuntimeError, tk.TclError):
+            pass
+    return root
+
+
 def main():
-    root = TkinterDnD.Tk() if TkinterDnD is not None else tk.Tk()
+    root = make_root()
     App(root)
     root.mainloop()
 

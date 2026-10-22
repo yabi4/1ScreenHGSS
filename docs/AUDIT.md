@@ -20,7 +20,7 @@ was originally found by probing:
 |---|---|---|
 | `+0x00` | `GFIntrCB vBlankIntr` | `app_callback` |
 | `+0x38` | `int heldKeysRaw` | `pad_held` |
-| `+0x44` | `int newKeys` | — (edges are derived in the hook instead) |
+| `+0x48` | `int newKeys` | — (edges are derived in the hook instead) |
 | `+0x69` | `u8 screensFlipped` | the flag name entry sets, at `0x021D1195` |
 
 `app_callback` being `vBlankIntr` explains why it works as an app identity: **every
@@ -37,17 +37,18 @@ void GfGfx_SwapDisplay(void) {                 // src/gf_gfx_planes.c
 }
 ```
 
-That is the shared helper at `0x02022D3E` which had to be marked `KEEP` because flipping
-it inverted the overworld — now explained. And it explains the behaviour the hook works
+That is the shared helper at `0x02022D3C`, whose `POWCNT1` site (`0x02022D3E`) had to be
+marked `KEEP` because flipping it inverted the overworld — now explained. And it explains the behaviour the hook works
 around in two separate places: **any app that calls `GfGfx_SwapDisplay` stamps its own idea
 of the routing back over ours**, which is why the battle sub-screens and the returning
 field app undo a one-shot `POWCNT1` write and the hook has to re-apply it every frame.
 
 **Setting `gSystem.screensFlipped` would be the game-native way to do all of this** and
-would not need re-applying. It is not changed today because the current approach is tested
-and shipping, but it is the first thing to consider in any rework — it could plausibly
-replace much of the per-frame re-application logic, and possibly some of the 80 static site
-flips.
+would not need re-applying. Today the hook writes it in one place only, the PC box
+(`OneScreen_SetFlipped`, called from `OneScreen_PcExec` / `OneScreen_PcHold`); everywhere
+else it still re-applies `POWCNT1`, because that approach is tested and shipping. Using the
+flag more widely is the first thing to consider in any rework — it could plausibly replace
+much of the per-frame re-application logic, and possibly some of the 80 static site flips.
 
 ## Method
 
@@ -84,19 +85,18 @@ looked riskiest:
 The remaining touch-heavy files are framework, not screens: `touchscreen.c`,
 `touch_hitbox_controller.c`, `touchscreen_list_menu.c`.
 
-This is consistent with what shipped: the three screens the patch deliberately leaves on
+This is consistent with what shipped: the screens the patch deliberately leaves on
 the bottom are the trainer-card signature, the Alph puzzles and the Pokéathlon — all
 genuinely stylus-driven, and none of them fixable, because moving them to the top would
 make them visible but untappable.
 
 ## What this method cannot clear
 
-**75 of 119 overlays are still raw assembly in the decomp** (34 fully decompiled, 10
-partly). The gap includes several of the most-used screens:
+**75 of 119 overlays were still raw assembly in pret** when this audit was done (34 fully
+decompiled, 10 partly). The gap included several of the most-used screens:
 
-| overlay | app | decomp coverage |
+| overlay | app | pret coverage |
 |---|---|---|
-| 5 | party menu | **asm only** |
 | 14 | PC box storage | **asm only** |
 | 15 | bag | **asm only** |
 | 52 | trainer card signature | not in `main.lsf` as src |
@@ -104,9 +104,20 @@ partly). The gap includes several of the most-used screens:
 | 18 | Pokédex | partial |
 | 96 | Pokéathlon | partial |
 
+This table first listed overlay 5 as the party menu. It is not: overlay 5 is the link
+battle's party preview / VS / result screens (`link_battle_screen.c`), and the party menu
+is ARM9 static code (`party_menu.c`). The audit result for it stands — it was cleared in
+play.
+
 So the source audit above is a *lower bound*: it proves the Alph puzzle is stylus-only and
-clears the apps it covers, but it cannot vouch for the bag, the party menu or the PC box.
+clears the apps it covers, but it cannot vouch for the bag or the PC box.
 **Those have since been play-tested and all pass** — see the checklist below.
+
+Since then a full, byte-matching decompilation has appeared
+([ctrl-cheeb-del/pokeheartgold](https://github.com/ctrl-cheeb-del/pokeheartgold), US only,
+every overlay in C). It names everything this audit had to leave blank; see
+[DECOMP.md](DECOMP.md). Re-running the touch/key census over it is the obvious next step for
+the apps still marked untested below.
 
 ## The five ways this breaks
 
@@ -146,20 +157,72 @@ stranded on the bottom. That makes them the risk list:
 
 | overlay | what it is |
 |---|---|
-| 16 | berry pots |
+| 16 | berry pots - the outer app; it runs the UI in overlay 17 as a child |
 | 43 | Pal Pad |
+| 45 | Wi-Fi Plaza |
+| 50 | trainer card (the outer app; the signature is 52) |
 | 53 | Oak's speech (intro) |
+| 55 | mail - a wrapper that runs the mail viewer (56) or Easy Chat (102) |
 | 58 | apricorn box |
 | 61 | choose starter |
 | 69 | Geonet globe |
+| 76 | credits |
+| 78 | certificates |
+| 91, 92, 93 | Wi-Fi Plaza games (Swalot Plop, Mime Jr. top, Wobbuffet Pop) |
+| 95 | egg hatching |
 | 96 | Pokéathlon course |
-| 45, 50, 55, 76, 78, 91, 92, 93, 95, 104, 105, 121 | unnamed in the decomp |
+| 104 | a cutscene launched by the Magnet Train (the decomp's name is a guess) |
+| 105 | ship departure cutscene |
+| 121 | view rankings |
+
+The names in the second half come from the full decompilation's `main.lsf`; pret left
+them as overlay numbers. `onescreen/table.py` lists berry pots as overlay 17 and this table
+as 16 — both are right, for different halves of the same app.
 
 An inheriting app is not necessarily wrong — it is right whenever the routing it inherits
 happens to suit it. But it is the population where a wrong screen is most likely, and it
 has the worst record so far: **Oak's speech (53) was the first one played and it was
-wrong**, as were the fly map and the evolution scene. All three are now handled
-explicitly. The rest remain untested.
+wrong**, and it is now handled explicitly. Three screens outside this table kept a routing
+they should not have too - the evolution scene (ARM9 code), the fly map and the move
+relearner (overlay 68, whose template is built on the stack) - and are handled as well. The
+rest of the table remains untested.
+
+### Each one, checked against the full decompilation (v0.3)
+
+"Sets nothing" counted `POWCNT1` writes inside the overlay. That misses the commonest way
+an app routes itself: `gSystem.screensFlipped = TRUE; GfGfx_SwapDisplay();`, which goes
+through the shared ARM9 helper the static flips must never touch (`0x02022D3C`) and sends
+**engine A to the touch screen**. So each overlay was read for three things - how it
+routes, which engine its windows and backgrounds are on, and whether it takes buttons -
+and, where it matters, what it inherits from the screen that opens it.
+
+| overlay | what it is | how it routes | verdict |
+|---|---|---|---|
+| 16 / 17 | berry pots | 17 writes `POWCNT1` itself | covered by the static flip |
+| 43 | Pal Pad | helper, flag set; every window on engine A | **was wrong - app-table entry, engine A on top** |
+| 45, 91-93 | Wi-Fi Plaza and its games | - | online only; not examined |
+| 50 | trainer card (outer) | runs 51 and 52, which have sites | covered (52, the signature, stays on touch) |
+| 53 | Oak's speech | - | handled explicitly |
+| 55 | mail | runs the viewer (56) or Easy Chat (102), both with sites | covered by the static flip |
+| 58 | apricorn box (outer) | its screens are overlay 59, with sites | covered by the static flip |
+| 61 | choose starter | helper, flag set | left alone: the question and the Pokémon are on engine B, which ends up on top; Left/Right/A choose |
+| 69 | Geonet globe | helper, flag set | left alone: the globe lands on the bottom, its text on top; offline it only shows your own entry |
+| 76 | credits | flips at every scene change by design (`FlipScreensCB`) | left alone: a two-screen show; no one-shot swap fits it |
+| 78 | certificates | none | fine: the same certificate is printed on both engines |
+| 95 | egg hatching | none | fine: all on engine A, opened from the field, which has engine A on top |
+| 96 | Pokéathlon course | helper | stays on touch, with the rest of the Pokéathlon |
+| 104, 105 | Magnet Train and ship cutscenes | helper, flag as the field left it | fine: 3D on engine A, which stays on top |
+| 121 | view rankings | helper, flag set; every window on engine A | **was wrong - app-table entry, engine A on top** |
+
+Two screens that *do* write `POWCNT1` were also reconsidered. Overlay 37 is the Union Room's
+group drawing, a canvas drawn on with the stylus; the default flip put it on top, so it is
+now `TOUCH` like the signature. Overlay 59 was labelled battle code in the patch log; it is
+the apricorn box.
+
+The app-table entries are matched on the VBlank callback each app installs, found by masked
+search in its overlay. Both apps set the flag earlier in the same call that installs the
+callback, so the hook's one-shot swap on the callback edge always comes after theirs - in
+the Pal Pad's case also when it rebuilds its screens after the naming keyboard.
 
 ### Play-test checklist
 
@@ -174,8 +237,8 @@ Start/Select only. Note anything that responds only to a tap.
 - [x] **Pokégear** — map, radio tuning, phone call list, configuration
 - [x] **Shops** — buy and sell, quantity selection
 
-That closes the three biggest gaps this method left open. The bag, the party menu and the
-PC box are all raw assembly in the decomp, so nothing but play could have cleared them —
+That closes the biggest gaps this method left open. The bag and the PC box were raw
+assembly in pret when this audit was done, so nothing but play could have cleared them —
 and the Pokégear was the largest touch surface in the whole audit at 187 references.
 
 **Still open:**
@@ -184,6 +247,7 @@ and the Pokégear was the largest touch surface in the whole audit at 187 refere
 - [ ] Mail writing (Easy Chat)
 - [ ] Voltorb Flip
 - [ ] Apricorn box, berry pots
+- [ ] Pal Pad, view rankings (app-table entries added in v0.3, unplayed)
 - [ ] Trainer card pages (the signature page is expected to fail)
 
 Anything that fails is fixable the same way the Pokédex was, provided it is an

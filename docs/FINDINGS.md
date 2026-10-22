@@ -211,9 +211,20 @@ HP bars, input, cursors", so the action-select menu lives *inside* ov12 and ther
 overlay boundary to hook. ov10 merely happens to be resident across the turn, which made
 it look like a usable signal. It is not.
 
+*Later, with the full decompilation:* it is a usable signal after all, just not a hook
+point. `BattleSystem_SetTrainerAIOverlayLoaded` swaps ov7 out for ov10 exactly when
+command selection starts and back when every battler has chosen, which is why the
+overlay-slot proxy described below tracks the phase so well.
+
 What shipped instead: `OneScreen_Frame` in ITCM, reached by replacing the main loop's
 `bl 0x0200110C` at **`0x02000DB0`** with a call to our code, which runs the original and
-then polls the pad. **L+R toggles POWCNT1 bit 15.**
+then polls the pad. **L+R toggles POWCNT1 bit 15.** (Since payload v36 the chord is read
+by `OneScreen_ReadKeys` instead, which wraps the next call, `bl ReadKeypadAndTouchpad` at
+`0x02000DB4`: the chord's first key, a frame or two ahead of the second, used to reach the
+game on its own - a bag pocket, a Pokédex page, an A under the *L=A* button mode. A lone
+shoulder is now held back three frames for its pair, and the chord is hidden from the
+game's cooked key words until both keys are up. `heldKeysRaw` is left as the pad has it,
+for the next frame's edges and the soft-reset check.)
 
 - Pad state is read from `0x021D1164` (1 = pressed); rising-edge latched in an ITCM word.
 - `inject.py:patch_main_loop` asserts the site really holds `bl 0x0200110C` before
@@ -578,7 +589,8 @@ static PMiLoadedOverlay sOverlayRegions[OVY_REGION_NUM][OVY_MAX_PER_REGION];
 
 So `0x021D0E28` is `sOverlayRegions[OVY_REGION_MAIN][3].id` — the overlay id occupying
 main-region slot 3. The battle loads a different overlay per phase, which is why it tracks
-the phase: `10` = the command menu, `8` = a sub-screen, `7` = the turn executing. `27` is
+the phase: `10` = the trainer AI, loaded for exactly the command-selection phase, `8` = a
+sub-screen, `7` = the turn executing. `27` is
 just a stale id in an inactive slot, which is what "outside battle" was really measuring.
 
 **This closes the US gap.** The array is BSS so it cannot be found by shape, but exactly
@@ -1044,7 +1056,7 @@ needed an `arm9_resident` shape — exactly one match per ROM (FR `0x020FA468`, 
 |---|---|---|
 | `battleInput` | `BattleSystem + 0x19C` | a scan for a word pointing back at `BattleSystem` found `0x19C` at runtime |
 | `curMenuId` | `BattleInput + 0x68B` | literal census (below) |
-| `menuCursor` | `BattleInput + 0x6D4` | same +0x20 shift; learned from the D-pad at runtime as a check |
+| `menuCursor` | `BattleInput + 0x6DC` | the full decompilation; earlier builds learned it at runtime from a wrong 0x6D4 start (see below) |
 
 **The literal census.** pret warns at `battle_input.h:168` that its offsets in this struct
 drift, and they do — by `0x20`. Offsets that large cannot be a Thumb immediate, so every
@@ -1056,19 +1068,55 @@ Scanning ov12's word-aligned literals in `[0x500,0x800)` shows
 six consecutive single-byte offsets — pret's run of six `u8` fields. What confirms the
 alignment rather than merely fitting it is the *gap*: `0x688` and `0x689` are absent
 entirely, and those are the two fields pret calls `unused_668`/`unused_669`. Unreferenced
-fields leave no literals. The same +0x20 lands the cursor on `0x6d4`, corroborated by
-`keyPressed` (`0x6d8`), `tutorial.finger` (`0x6dc`) and the three closing sprite pointers
-(`0x6e4/0x6e8/0x6ec`).
+fields leave no literals.
 
-**Menu ids 1..8 are all the root menu**, not just the two the enum names —
-`sBattleMenuTemplates` gives every one of them `BattleInput_CursorMove_MainMenu`, and 3
-and 4 are the "put the menu back up" states you land on after backing out of a submenu.
-Testing only 1 and 2 left the screens swapped with no labels after a trip into the bag.
+**The cursor was the one thing the census got wrong.** Extending the same +0x20 put
+`menuCursor` on `0x6d4`, with `0x6d8` and `0x6dc` read as `keyPressed` and
+`tutorial.finger`. The full decompilation (ctrl-cheeb-del/pokeheartgold, byte-matching, so
+its layout is the compiler's) gives `0x6d4` `scrollXEnd`, `0x6d8` `BattleCursor *cursor`
+and `0x6dc` **`menuCursor`** — and that reading explains the census counts better: `0x6d8`
+x8 and `0x6dc` x7 are the eight functions that touch the sprite cursor and the seven that
+take `&menuCursor`. pret's labels drift by `0x20` to `0x28` here, not by a constant.
+Earlier builds recovered from the wrong start by learning the offset at runtime
+(`OneScreen_BattleLearn`), which converged on `0x6dc`; v0.3 uses the fixed value and drops
+the learner, which had also been diffing freed memory whenever the bag was open.
+
+**Menu ids 1..4 are the root menu**, not just the two the enum names — 3 and 4 are the
+"put the menu back up" states you land on after backing out of a submenu. Testing only 1
+and 2 left the screens swapped with no labels after a trip into the bag. v0.2b drew 1..8,
+which the full decompilation shows was too wide: `sBattleMenuTemplates` gives the
+main-menu cursor to ten ids, but 5/6 are the first rival battle (FIGHT alone, a 1x1
+cursor), 7/8 the Safari Zone (BALL / BAIT / MUD / RUN) and 19/20 the Bug Contest (BALL in
+place of BAG). Drawing FIGHT / BAG / POKéMON / RUN over those labels choices the game is
+not offering.
+
+### Every command menu, in its own words (v0.3)
+
+The words on the touch buttons come from `BattleInput_CreateMainMenuObjects`, which every
+3x2 menu id shares, and it picks them by **battle type**, not menu id: msg_0197 931/932/933
+(BALL / BAIT / MUD) in the Safari Zone, 1270 (BALL) for BAG in the Bug Contest, and 928
+(CANCEL) for RUN whenever `BattleInput.cancelShown` is set - a double battle's second
+Pokémon. Pal Park's menu (9/10) and the first rival's (5/6) are the same objects with
+words hidden: BALL (1223) above RUN, and FIGHT alone. So the hook reads
+`BattleSystem.battleType` (+0x2C) and `cancelShown` (+0x68F) and draws the matching set,
+in the same box; Pal Park's 1x2 cursor picks the top word or RUN by `menuY`.
+
+Room was the problem: a set is four 1792-byte images, and the blob had under 1 KB spare.
+But a selected image differs from the plain one only inside the selected word's
+rectangle, where paper (15) becomes band (12) - glyph pixels are never paper. So a
+**banded** set stores the plain image and four 4-byte rectangles, and
+`OneScreen_BandRect` lays the band in VRAM after the copy, a tile row at a time: VRAM
+takes no byte writes, and 0xF -> 0xC is clearing a nibble's two low bits, which a word
+can do for all eight pixels at once. The command set went banded too, which paid for the
+five new ones. `labels._banded_set` refuses any set where banding the plain image does
+not reproduce `_render`'s image exactly, and `tools/test_hook.py` compares every image
+the hook draws with `_render`, byte for byte.
 
 **Two things the menu id cannot see**, both found by playing:
 
-- The bag and party run as **overlay 8** and leave `curMenuId` on the root menu, so they
-  drew on the bottom screen until the overlay id was checked first.
+- The bag and party run as **overlay 8** and free the `BattleInput` that `curMenuId` lives
+  in (`graphicsMode` 3). The stale byte still read as the root menu, so they drew on the
+  bottom screen until the overlay id was checked first.
 - Confirming a choice resets the game's cursor *before* the menu id changes, so the
   highlight flashed back to FIGHT on the way out. Fixed by freezing the image at the
   moment A is pressed and holding it across a submenu trip — which is also simply correct,
@@ -1391,7 +1439,7 @@ The only permanently allocated window on the layer is the map-name card at `0x19
 
 Everything between is scratch belonging to script list menus (`0x3D`, `0xDD`), the mart,
 and the comm club — none of which can be open while the start menu is. Parking the panel at
-`0x90` is therefore safe, and it is exactly what the game does to itself: script yes/no
+`0x84` (first `0x90`; moved down so the PC box menu fits) is therefore safe, and it is exactly what the game does to itself: script yes/no
 sits at baseTile `0x21F` (`src/scrcmd_c.c:131`), *inside* the map-name window's range,
 because the two never coexist.
 
@@ -1448,13 +1496,32 @@ enabled ones*, which is what `+0xD3` counts.
 Watch the enums: they are different. `START_MENU_ACTION_POKEGEAR` is **11**, but
 `START_MENU_ACTION_DISABLE_POKEGEAR` is **9**.
 
-**The special zones cannot be reproduced, and are detected rather than drawn wrong.**
-Safari, the Bug Contest and Pal Park use different grids (`ov27_0225CFC8` rows 1-3) that
-put RETIRE in slot 0 and shift everything after it, and the active variant lives in
-overlay 27's own struct, out of reach. But all of them leave RETIRE **enabled**, while the
-normal layout always inhibits it (`src/start_menu.c:307`) — so bit 8 separates them. In
-those zones `OneScreen_StartMenu` returns 0 and the caller swaps the screen, exactly as the
-patch did before any of this.
+**The special zones were detected rather than drawn, until v0.3.** Safari, the Bug Contest
+and Pal Park use different grids (`ov27_0225CFC8` rows 1-3) that put RETIRE in slot 0 and
+shift everything after it, and the active variant lives in overlay 27's own struct, which
+this once called out of reach. The RETIRE bit separated them from the normal menu, and in
+those zones `OneScreen_StartMenu` returned 0 and the caller swapped.
+
+It is not out of reach. The full decompilation names the struct - `TouchscreenMenuData`,
+the touch app's own data - and the path to it is the one the field prompts already walk:
+`FieldSystem.bottomScreenTask` -> `BottomScreenAppManager` (app 0, running) -> the app's
+SysTask -> data. Everything the panel needs is in there, every offset confirmed in pret's
+retail assembly of overlay 27:
+
+| offset | field | what it gives the panel |
+|---|---|---|
+| `+0x10` | `fieldSystem` | the back-pointer that proves it is this field's menu |
+| `+0x14` | `selection` | the selected **slot** — no more counting enabled entries |
+| `+0x470` | `icons[7].shown`, stride 8 | which slots exist right now |
+| `+0x51C` | `layout:4` at bits 1-4 | which of the game's seven grids is up |
+
+So v0.3 draws the game's own grid for all seven layouts — normal, Safari, Bug Contest, Pal
+Park, the Union Room (with CHAT and LOG, `msg_0196` 34/35), the Colosseum and the Battle
+Tower partner room — from the game's own table, which the patcher first checks is really in
+the ROM's overlay 27. The inhibit-flag logic survives as the fallback for frames when the
+touch app is switching, and that test had to be tightened on the way: the RETIRE bit alone
+also passes in the Union Room, Colosseum and partner room, and drew the normal grid in the
+Union Room.
 
 ### Why it is a grid and not a list
 
@@ -1544,15 +1611,167 @@ When a script passes no msgdata (`ScrCmd_064`), `ov01_021EDAFC` loads
 321/322/323 for the shop, 62/63/64/75 for the PC list, 73/74/65/66 for the PC's
 item menu, 67-72 for the box menu.
 
-### Why only the shop is drawn
+### Why the shop was drawn alone at first
 
-Storage, not difficulty. The four label sets need **15.3 KB** together; after the
-shop there are about 3.6 KB left between free ITCM and the blob reservation. The
-PC box alone needs 8.3 KB and 269 VRAM tiles against the 263 free below the
-map-name window, because its entries are two lines tall. The remaining menus need
-the tile pool compressed - it is almost all paper and would RLE well - rather
-than any new reverse engineering. Everything they need is in this section.
+Storage, not difficulty. The four label sets needed **15.3 KB** together; after the
+shop there were about 3.6 KB left between free ITCM and the blob reservation. The
+PC box alone needed 8.3 KB and 269 VRAM tiles against the 263 free below the
+map-name window, because its entries are two lines tall. Compressing the tile
+pool (it is almost all paper) and moving the strips down to tile `0x84` is what
+let all four in.
 
+### The first entry is not enough (v0.3)
+
+The full decompilation's script corpus turned up a menu the key could not tell
+apart: a Pokéathlon mart menu, `msg_0191` 321 / 324 / 323 - BUY / INFO / SEE YA
+(`scr_seq_0003_056` and `_060`) - has three entries and the shop's first entry, so
+it would be drawn as ACHETER / VENDRE / QUITTER. Nothing in the decompilation calls
+those two scripts (they would be std 2056 and 2060); the Dome's live counters use
+325 / 324 / 323, PRIZE EXCHANGE / INFO / SEE YA!, whose French text the
+decompilation does not have. Each record now also carries a 16-bit hash of every
+other entry the patcher can know in advance (`_menu_hash` in `labels.py`,
+`OneScreen_ListHash` in the hook - the same function, tested against each other
+under emulation in `tools/test_hook.py`). Entries it cannot know, such as your own
+PC's row, are left out by a per-record skip mask.
+
+The menu pointer is read from `TouchscreenChoiceMenuData.menu` (`+0x0C`) rather
+than `+0x3A0`. Both held the same pointer in every savestate, but `+0x3A0` is
+really `selectionCallbackArg`, which `ScrCmd_MenuExec` fills in - and the move
+tutor's list (`ScrCmd_MoveTutorChooseMove`) enters the list state without setting
+it, leaving whatever the previous menu put there.
+
+
+### The game's own top-screen list (v0.3)
+
+The full decompilation shows HGSS never dropped Diamond and Pearl's top-screen list
+window. Two script-command families build a `ScriptMenu` the same way -
+`ScriptListMenuInit` / `ScriptListMenuItemAdd` (68-70) and `MenuInit` / `MenuItemAdd`
+(749-751) - and differ in where they keep it and how they show it:
+
+| command | shows it with | waits with |
+|---|---|---|
+| 752 `ScrCmd_MenuExec` | the touch choice app, state 7 | `NativeScript_WaitMenuExec` |
+| 71 `ScrCmd_ScriptListMenuExec` | `ScriptMenu_ShowList`, a window on `MAIN_3` | `NativeScript_WaitMultichoice` |
+
+HGSS's scripts use 752 for nearly every list (146 sites in 49 scripts). So v0.3 points
+table entry 752 at `OneScreen_MenuExec`, which gives any menu it does not draw itself to
+`ScriptMenu_ShowList` - the game's window, cursor, scrolling past eight entries and help
+text - instead of letting it take the screen. The choice app stays idle on the hidden
+screen, which `OneScreen_ScriptMenu` already routes as "keep the world".
+
+What had to line up, all from the decompilation:
+
+- **The menu.** `ScrCmd_MenuExec` takes it from the choice controller's own slot
+  (`+0x0C`); the redirect reads it from there, after checking the controller is the running
+  app 3, idle, and points back at this field.
+- **The result.** `ScriptMenu_Init` already set `*ret_p = 0xEEEE`; the redirect sets it again.
+  On A both paths write the entry's value. On **B** they differ: the touch list picks the
+  last entry, `ScriptMenu_ListTask` writes `0xFFFE`. Scripts are written for the touch list -
+  the apricorn juice stand and the fossil menus test for the last entry's value and carry on
+  with anything else as if something had been chosen - so `OneScreen_WaitList` replaces
+  `0xFFFE` with the last entry's value.
+- **Freeing it.** `ScriptMenu_CloseList` frees the menu itself; `NativeScript_WaitMenuExec`
+  would free it a second time, so the redirect installs its own wait.
+- **Placement.** The scripts' x/y were written for the top screen and always clear the
+  dialogue box, but nothing stops a long translation running past column 31, so x is
+  pulled left if the list's width says it must be.
+- **What it will not take.** Recognised menus (the shop, the PC) keep the themed panel.
+  Until payload v33, entries with a line break or a control code kept the touch screen too,
+  because `ListMenu` prints one 16-pixel row per entry - see the next section for how they
+  are taken now. (Control codes survive into the menu's strings: `StringExpandPlaceholders`
+  copies every one that is not a `STRVAR`.)
+- **Room.** The list's window goes on `MAIN_3`, the layer the script's own boxes use, and
+  on the touch screen the two never met. Mom's savings menu opens `ShowSavingsBox 1,1` - a
+  16x8 window at (1, 1) drawn from tile 1 - then asks for a list at (1, 1), whose window
+  takes tiles from `0x3D`. So before handing over, `OneScreen_ListRoom` reads the layer's
+  tilemap buffer: anything already inside the list's rectangle or its one-tile frame, or
+  anywhere using a tile the window would be given, keeps the touch list. The dialogue box
+  (tiles from `0x237`, rows 18-23) never trips it; every corpus list ends above row 18.
+  A themed panel left over from the menu before is cleared first, so it does not count.
+
+The patcher finds all of it by shape: the 853-entry table (entries 0 and 1 are
+`movs r0, #0; bx lr`), then the calls and literal pools of entries 752 and 71, cross-checked
+against ARM9 addresses that do not move between regions (`MenuExec_PrintItemHelp`,
+`NativeScript_WaitMenuExec`, `NativeScript_WaitMultichoice`) and `ShowList`'s retail
+prologue. Any mismatch and the table is left alone.
+
+
+### Formatted entries and the move tutors (payload v33)
+
+A census of the decompilation's scripts: of the 146 `MenuExec` sites, 27 build lists whose
+entries hold something besides plain characters, and there are exactly two kinds of it.
+
+| kind | example | sites |
+|---|---|---|
+| `CHAR_LF` (`0xE000`) | `DEPOSIT\nPOKéMON`, `PROTEIN\n1 BP`, `NUGGET\n$4,500`, Pokéathlon courses | 20 |
+| `CURSOR_X` (`0xFFFE 0x0203 1 x`) | `FRESH WATER{CURSOR_X 80}$200`, `50 Coins{CURSOR_X 60}$1,000`, the day-care's `Lv.` column | 8 |
+
+(one, the mulch shop, has both: `GROWTH MULCH{CURSOR_X 90}\n$200`). No entry has two line
+breaks, and no other control appears. What each does on the top-screen list:
+
+- **`CURSOR_X` already renders.** `RenderText` (src/render_text.c) handles `0x203` by setting
+  the pen to its argument, an absolute x in the window. The only problem was the window:
+  `ScriptMenu_GetListItemsWidth` measures with `GetStringWidth`, which *skips* control codes,
+  so `FRESH WATER{CURSOR_X 80}$200` was sized as `FRESH WATER$200` and the price ran off the
+  window's right edge.
+- **`CHAR_LF` drops the pen a line** - 16 pixels, onto the next entry's row.
+
+So `OneScreen_MenuExec` no longer opens the list through `ScriptMenu_ShowList`. It measures
+the entries itself (`OneScreen_ListFormat`), the way the printer moves: from `item_X` (12),
+each run of characters adds its width, each `CURSOR_X` sets the pen; the furthest the pen
+reaches is the window's width. It then does what `ShowList` does with that width - rounds
+it up to tiles, moves an anchored list left or up by its own size - and calls
+`ScriptMenu_OpenListWindow(menu, tiles)` itself. The runs are measured with the game's own
+`FontID_String_GetWidth(0, string, 0)`, the call `GetListItemsWidth` makes, on a copy of the
+entry cut short at each column. The copy has to be a real `String`, header and magic: the
+retail `String_c_str` keeps its `GF_ASSERT(magic == 0xB6F8D2EC)` (pret's `asm/pm_string.s`
+before it was decompiled shows the check and the `GF_AssertFail` call).
+
+A line break is folded before measuring. Followed by three spaces or more it was laid out
+as an indented second column, and becomes a `CURSOR_X` to one column for the whole list,
+8 pixels past the widest first half; otherwise it was a wrapped line, and becomes a space.
+Neither lengthens the entry - four codes replace a break and three or more spaces, one
+replaces a break and fewer - so it always fits the entry's own buffer. Plain lists measure
+exactly as `GetListItemsWidth` did (12 plus the widest entry).
+
+Everything is done on a copy in ITCM and written back only after every check has passed,
+the room check included: a list that falls back shows the touch list its own text. Turned
+down, keeping the touch screen: any other control code, a second line break, a code from
+`0xE000` up that is neither, a `CURSOR_X` that would move the pen back over text already
+drawn (a translation longer than the column it sits before: the top list prints from x 12
+in font 0, the touch list from x 0 of each button in font 4), an entry whose `String` is
+not the one `items[]` prints or is longer than the 80 codes `ScriptMenu_Init` gives it.
+
+**The move tutors** (`ScrCmd_MoveTutorChooseMove`, command 653) build their `ScriptMenu`
+themselves: each move with its price from the script's own messages - entry 0
+`{move}{CURSOR_X 120}{cost} BP`, or entry 1 `{move}\n           {cost} BP` once there are
+four entries or more - then NEXT (`0xFFFD`) when there is another page and QUIT (`0xFFFE`).
+Then:
+
+```c
+FieldSystem_SetTouchscreenChoiceMenuState(fieldSystem, 3, 7, result);
+SetupNativeScript(ctx, NativeScript_WaitMoveTutorMenu);
+```
+
+and `FieldSystem_SetTouchscreenChoiceMenuState` (src/field/bottom_screen_app.c) only writes
+the controller's `state` and `result`. Nothing is drawn until the controller's own task next
+runs and finds state 7. So table entry 653 now points at `OneScreen_TutorExec`, which lets
+the real command run untouched, then - if the controller was idle beforehand and the command
+left exactly state 7, its own result var and its menu in the controller's slot - hands the
+menu to the same `OneScreen_ListOpen` and, if that opens it, puts the controller's state
+and result pointer back. The native wait is replaced with `OneScreen_WaitList`:
+`NativeScript_WaitMoveTutorMenu` calls `ScriptMenu_Free`, and `ScriptMenu_CloseList` has
+already freed the menu by then. B needs no translation here: the menu is cancellable, the
+touch list's B picks the last row, and the last row is QUIT, whose value is the `0xFFFE`
+`ScriptMenu_ListTask` writes. The indented entry 1 folds into a price column.
+
+The patcher finds `OpenListWindow` as `ShowList`'s second call (and `ShowListWithWidth`, just
+before it, is `ldr r3, =OpenListWindow; bx r3`), and `FontID_String_GetWidth` as
+`GetListItemsWidth`'s one call, each checked against pret's retail disassembly. Command 653
+must match the retail prologue (pret's `asm/scrcmd_move_tutor.s`, before the file was
+decompiled), start with the same menu-slot getter `MenuExec` calls, and end with the same
+state setter and `SetupNativeScript`, passing a wait whose pool holds `0xEEEE`. If 653 does
+not check out, only the tutors keep the touch screen.
 
 ## Who owns the VRAM you just drew into
 
@@ -1600,15 +1819,16 @@ smaller one drawn where a larger one was leaves the old edges on screen.
 
 `msg_0191` is the archive the script list menus default to, so scanning it for
 short strings enumerates the candidates. Everything below already works with the
-renderer in place - each needs a label set and its first entry as an identifying
-key, nothing more.
+renderer in place - each needs a label set and a record matched on its count, its
+first entry and a hash of the rest (see "The first entry is not enough"). Written
+before v0.3: since then the plain ones already open in the game's own top-screen
+list, so drawing them would add only the theme.
 
 Worth doing, common in ordinary play:
 
 | menu | msg_0191 entries |
 |---|---|
 | GTS / trade counter | 133 DEPOSER POKeMON, 134 CHERCHER POKeMON, 130 INFOS, 131 ECHANGE, 132 RETOUR |
-| Move Deleter / Tutor / Name Rater | short confirm lists |
 | Union Room | 168 SALUER, 169 DISCUTER, 170 TCHAT |
 
 Occasional or optional content:
@@ -1623,16 +1843,18 @@ Occasional or optional content:
 | Fossil selection | 159-165, seven fossil names |
 
 Two caveats. Several of these live in the special zones - Safari, the Bug
-Contest, the Pokeathlon - where the X menu already falls back to swapping because
-their grids cannot be reproduced, so each needs checking on its own. And every
+Contest, the Pokeathlon - so each needs checking on its own. And every
 `OUI / NON` prompt (42/43, 46/47) goes through the field yes/no path instead, not
-this renderer.
+this renderer. An earlier version of the table listed the Move Deleter, the tutors
+and the Name Rater: the Name Rater only asks `{YESNO}` questions, and the tutors'
+list is built by `ScrCmd_MoveTutorChooseMove` (653), not by a script list menu.
 
 **The day-care is not on this list, and the first version of it was wrong to say
 so.** msg_0191 132/133/134 look like a deposit/retrieve menu but belong to the
 GTS counter - OFFER POKeMON / SEEK POKeMON / INFO / TRADE / EXIT in English. The
-day-care itself is `msg_0439`, and every one of its prompts is a `{YESNO}`: nine
-of them, no list menu anywhere. It is already covered by the field yes/no path.
+day-care itself is `msg_0439`, and its prompts are `{YESNO}`s, covered by the field
+yes/no path. Its one list - which Pokémon to take back - is msg_0191 136-138, built at
+runtime from the Pokémon's own names and levels, so it could never be rasterised.
 
 Worth taking as the general lesson: a plausible-looking run of short strings in
 msg_0191 is not evidence that a menu exists, or of which feature owns it. Check
@@ -1641,7 +1863,7 @@ the feature's own message file before building anything.
 The honest read after that correction: none of these is clearly worth the label
 budget and the play-test round-trips. The GTS needs servers that no longer exist,
 the Pokeathlon and Safari are special-zone content, and the rest are one-offs
-where swapping costs nothing.
+that already open in the game's own top-screen list.
 
 ## Still outstanding
 
@@ -1780,6 +2002,8 @@ Theming it means writing palettes the patch did not previously write:
 Written per frame from each draw site while a prompt is up - never from the frame
 hook unconditionally. Palette memory is shared, and colouring 11 or 12 outside a
 prompt would recolour whatever else happened to be using index 12 at the time.
+In battles and the evolution scene it also goes into the game's palette buffer,
+and comes out of it again with the prompt; see below.
 
 `_render`'s `invert` flag is orthogonal to all of this: it does not change the
 band, only the glyphs on it, dropping the shadow and turning ink to paper. Oak's
@@ -1787,38 +2011,70 @@ two prompts used it because the band used to be whatever saturated colour his
 intro was showing. A theme picks a light colour deliberately, so inverting made
 his selected choice white while every other prompt's was black - it is off now.
 
-### Oak's prompts still flash, and why that was left alone
+### Oak's prompts used to flash - solved with the full decompilation (v0.3)
 
-The band behind Oak's selected choice alternates between the theme colour and the
-game's own red. This predates themes; the earlier edition-colour version flashed
-the same way.
+The band behind Oak's selected choice alternated with a salmon red, and with white, about
+once a second. This section once blamed a race with the print task and then the multichoice
+controller; both were wrong, and v0.2b left it alone. The full decompilation names the
+real culprit in one look.
 
-It is a race, not a stale value. `OneScreen_OakDraw` redraws **every frame** on
-purpose - Oak repaints that window as he builds each state, so a draw-once would
-simply be painted over - and the band colour is written every frame with it. The
-game wins some of those frames because, as the focus-indicator work already
-established, **the print task runs later in the main loop than this hook does.**
+`OakSpeech_InitMsgPrinter` starts a **`PaletteBlink`** on top-screen BG palette 6 - the
+dialog window's own palette - to animate the "look at the bottom screen" icon, whose colours
+are 11-14 (`src/palette_blink.c`). It is a SysTask on the main queue, which runs *after* the
+overlay manager and therefore after `OneScreen_OakExec`, and on ticks 0 and 24 of its
+32-tick cycle it writes **all sixteen** colours of palette 6 back to palette RAM from its own
+copy. The band is palette 6 colour 12, so on tick 0 the copy's `0x62FF` - the salmon - came
+back, and on tick 24 colour 12 went to the copy's white paper. The main loop runs at about
+30 Hz, so that is one flash of each per ~1.07 s.
 
-Two things were ruled out:
+Two consequences that shaped the fix:
 
-- **It is not the palette shadow buffer.** Gen-IV keeps an unfaded copy in
-  `PaletteData.buffers[].opaque` and pushes it to palette RAM, which would have
-  been the same shape as the tilemap fix. Searching a savestate's main RAM for a
-  `PaletteBuffer`-shaped record with a plausible palette found exactly one, and
-  its palette 6 matches neither Oak's dialogue nor our colour.
-- **It is not a missing write.** `oak_drawn` confirms the draw runs, and the theme
-  write sits on the same path.
+- **Moving the band to another colour does not help.** The blink writes every colour, so
+  any index would be reset from its snapshot twice a cycle (to black, for 7-10).
+- **The blink has nothing to show in those states anyway.** The icon it animates is
+  suppressed in exactly the three questions that draw a band.
 
-What is left is the native multichoice controller drawing its own highlight into
-the same window during the INPUT states (65, 69, 98). The existing suppression -
-which neutralises the `{YESNO 0}` control in the live string before the printer
-sees it - only runs at the INIT states (61, 67, 97), where the string is created.
-Neutralising the controller's own rendering during input is a bigger and riskier
-intervention than suppressing one control code, and it touches the part of Oak's
-flow that works.
+So `OneScreen_OakBlink` holds it still - `state = PALETTE_BLINK_PAUSE` - while states 65,
+69 or 98 are up, and sets `PALETTE_BLINK_RESTART` when they end, but only if it was the
+one that paused it. It never writes `END`, which would destroy the task. Before writing a
+byte it checks the struct is the one expected: in main RAM, palette 6, top screen, no
+`PaletteData`, and its `apply` pointer equal to `PaletteBlink_LoadMainBgPltt`
+(`0x020165A5`, ARM9, the same in every region).
 
-Left alone deliberately: cosmetic, pre-existing, and confined to two prompts in
-the opening minutes. If it is ever worth chasing, the next step is two savestates
-a frame or two apart during the flash, diffed over Oak's dialogue window tiles -
-that separates "the red arrives as pixels" from "the red arrives as a palette
-entry", which decides which of the two fixes applies.
+The same research found the hook's own damage in the same window. On every frame outside
+the three prompts, the hook held an all-paper image over the dialog's columns 24-26, on the
+belief that text never reaches them. Only messages carrying the `{YESNO}` icon keep clear of
+that corner; with the US text, five of Oak's lines run past x = 192 (`msg 2`, `3`, `6`, `36`
+and `43`) and lost their last letters once printing paused, and the tutorial's own icon was
+painted out as well. That wipe is gone; our box is taken down once when a prompt ends.
+
+### The band in battles and the evolution scene (v0.3)
+
+Palette 11 colour 12 had two more writers there, both found in the full decompilation.
+
+**The VBlank push.** Both scenes keep a `PaletteData` with `autoTransparent` set
+(`battle_main.c`, `evolution_scene.c`), and their VBlank callbacks call
+`PaletteData_PushTransparentBuffers`, which loads the whole main-BG `transparent` buffer into
+palette RAM. `main.c` runs that callback after its *second* VBlank wait of each 30 Hz logic
+frame, so the second video frame of every pair started with the game's colour 12, and ours
+only came back when the next exec wrote it - reaching the message window's rows (152 and
+down) only when the exec ran early in the frame. The band now goes into that buffer too, and
+on the way down the entry is put back from the buffer's `opaque` copy, the game's own
+unfaded colour.
+
+**A `PaletteBlink` on the same palette.** The battle's `msgIcon` and the evolution scene's
+`paletteBlink` animate colours 11-14 of palette 11, colour 12 included, writing both buffers
+on ticks 0 and 24 of their 32-tick cycle - colour 15, white, at tick 24. Note that
+`PaletteBlink_SetState(blink, 1)` *pauses* a blink; the command numbers are not the state
+numbers.
+
+- The battle's runs through the command menu, so `OneScreen_BandBuffer` holds it paused
+  while the commands or a yes/no box are drawn and restarts it after, like Oak's - unless
+  the bag or the party has taken the screen by then (`graphicsMode != 0`): they pause it
+  before their fade and restart it themselves on the way out.
+- The evolution scene pauses its own at `EVO_STATE_WAIT_CRY` and never restarts it, wherever
+  in the cycle it was. A quarter of the time that is the white phase, and colour 12 stays
+  white for the rest of the scene - which made the band behind the move-learning *Oui / Non*
+  white on white paper. The buffer write is enough there; a pause the game made is never
+  undone.
+

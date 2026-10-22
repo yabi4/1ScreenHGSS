@@ -1,6 +1,139 @@
 # Changelog
 
-## Unreleased — `V0.2b`
+## `V0.3`
+
+Built against the full decompilation of HeartGold/SoulSilver
+([ctrl-cheeb-del/pokeheartgold](https://github.com/ctrl-cheeb-del/pokeheartgold)), which
+appeared after v0.2b. It confirmed almost every offset this patch had measured from the game,
+and corrected a handful. `docs/DECOMP.md` has the cross-reference.
+
+### Battles
+
+- **The Safari Zone, the Bug Contest, Pal Park and the first rival battle draw their own
+  commands on the scene** - BALL / BAIT / MUD / RUN, BALL in place of BAG, BALL above RUN,
+  and FIGHT alone - in the game's own words, where they used to be drawn as
+  FIGHT / BAG / POKéMON / RUN (Safari, first rival) or handed to the touch screen. The words
+  are chosen the way the game chooses them, by battle type.
+- **A double battle's second Pokémon shows CANCEL**, as the touch screen does, instead of
+  RUN.
+- To make room, the command images are stored once, plain, with a rectangle per choice:
+  the hook lays the band under the selected word itself. Every image it draws was checked
+  byte for byte against the patcher's own rendering. A ROM whose words for one of these
+  menus cannot be read just leaves that menu to the touch screen.
+- **The highlight's position is fixed, not learned.** The hook used to discover where the
+  game keeps its cursor by watching it move, starting from a wrong guess. The decompilation
+  says where it is, so the guess and the learning are gone.
+- **The selected band holds its colour in battles and after an evolution.** Both scenes copy
+  their own palette buffer over palette RAM every frame, so the theme's colour, written
+  only to palette RAM, lasted until the next copy and the band could flicker back to the
+  game's salmon or white. The colour now goes into that buffer as well, and the battle's
+  message-icon blink, which rewrites the same colours twice a second, is held still while
+  the commands or a yes/no box are up. The evolution scene pauses its own blink wherever it
+  happens to be, which could leave the band white behind *Oui / Non* for the rest of the
+  scene; that is covered by the same buffer write.
+- **No more reads from freed memory.** The bag, the party and the catch naming screen free
+  the structure the command menu lives in; the hook now checks the game's own
+  `graphicsMode` before reading it, and only uses the battle's data while the battle proper
+  is running.
+
+### Oak's speech
+
+- **The band behind Oak's selected answer no longer flashes.** The full decompilation
+  showed the cause: a palette blink animating the bottom-screen icon rewrites the dialog
+  window's whole palette twice a second, after this patch has written its colour. It is
+  held still while his three questions are up - the icon it animates is hidden there - and
+  restarted afterwards.
+- **The ends of Oak's longest lines are no longer erased.** The patch painted over the
+  right-hand corner of his dialog box on every frame, believing text never reached it; in
+  English five of his lines do. It now only takes its own box down when a question ends.
+
+### Menus
+
+- **NPC list menus open on the top screen, in the game's own list window.** HGSS kept the
+  top-screen list it inherited from Diamond and Pearl - `ScriptMenu_ShowList`, the same
+  menu object the touch list reads - so the NPC lists the patch does not draw itself
+  (fossils, the apricorn juice stand, the Pokéathlon Dome's counters, most one-off NPC
+  choices...) are handed to it instead of taking the screen. B answers the way the touch
+  list does. A list that would land on a box the script already has up there (Mom's
+  savings) keeps the touch screen.
+- **Formatted lists and the move tutors open there too** (payload v33). Entries laid out in
+  two lines on the touch screen - Battle Frontier prize shops, *DEPOSIT / POKéMON*,
+  Pokéathlon courses - are folded onto one line, an indented second line becoming a price
+  column shared by the whole list; entries that already have a `CURSOR_X` column (drink
+  machines, the Game Corner's coins, the day-care's levels) get a window wide enough for
+  it, which the game's own sizing, skipping the column, came up short of. The Battle
+  Frontier move tutors build their list with a command of their own (653); the patch lets
+  it run, then takes its list back before the touch screen shows it. An entry with any
+  other formatting keeps the touch screen, and nothing about a list is changed unless it
+  does open on top.
+- **List menus are recognised by every entry, not just the first.** The script corpus has
+  a Pokéathlon mart menu, BUY / INFO / SEE YA, that shares the shop's first entry and would
+  have been drawn as the shop's words. Nothing in the decompilation seems to call it; the
+  Dome's own counters read PRIZE EXCHANGE / INFO / SEE YA! and now get the game's own
+  top-screen list.
+- **The X menu is drawn in the Safari Zone, the Bug Contest, Pal Park and the Union Room**,
+  in each one's own arrangement, instead of taking the screen. The panel now reads the touch
+  menu's own data - which layout is up, which icons it shows and which is selected -
+  rather than reconstructing it, so it matches the touch screen everywhere. The Union Room
+  used to be drawn with the normal grid, without CHAT and with LOG labelled POKéGEAR.
+- **Choosing RETIRE keeps the world on top** for the question that follows, instead of
+  handing the screen to the touch menu. RETIRE jumps straight from the menu to a script, and
+  the screen is now only handed over while the menu itself is what is showing something
+  the patch cannot draw - the save box.
+- Every pointer the X menu walks is range-checked against the size of what it points at.
+
+### L + R
+
+- **L + R no longer lets one shoulder through to the game** (payload v36). The two keys
+  rarely go down in the same frame, so the game acted on whichever came first, alone: a
+  pocket change in the bag, a page in the Pokédex, and - under the *L=A* button mode - an A
+  press, which in a battle chose FIGHT before the screens swapped. The patch now looks at
+  the pad straight after the game reads it. A lone L or R is held back for three frames,
+  about a tenth of a second: if the other arrives in that time it is the swap, and the game
+  sees neither key until both are up; if not, the press goes through then, or at once if
+  the key is let go first. Nothing else about the pad changes.
+- The yes/no answers and Oak's gender question are stored like the battle commands now, one
+  plain image and a band per choice, which made the room in ITCM this needed.
+
+### Screens nobody had played
+
+- **The Pal Pad and the rankings viewer open on the top screen.** Both draw every window
+  they have on engine A and then send engine A to the touch screen through the game's
+  shared display helper, which the static flips cannot reach. They now have app-table
+  entries, like name entry and the move relearner.
+- **The Union Room's group drawing stays on the touch screen**, as the trainer-card
+  signature does: its canvas is drawn on with the stylus, and the default flip had put it
+  on top, where it cannot be tapped.
+- The rest of the 19 screens that set no routing of their own were checked against the
+  decompilation; `docs/AUDIT.md` gives the verdict for each.
+- An app-table entry whose code does not match no longer switches off the entries after
+  it, and the overlay search no longer misses a match that ends exactly at the end of an
+  overlay - which could have let a duplicate through the one-match rule.
+
+### Development
+
+- `tools/test_hook.py` runs routines from the assembled hook against synthetic game
+  structures under an ARM emulator (`pip install unicorn`). It also checks that
+  `CONFIG_FIELDS` in `onescreen/inject.py` still lines up with the hook's config block.
+- `tools/make_payload.py` finds `arm-none-eabi` binutils on `PATH` or `$DEVKITARM`, and
+  refuses a payload that would not fit in ITCM.
+- `docs/AUDIT.md` corrects overlay 5 (the link battle screens, not the party menu) and names
+  the overlays pret left unnamed.
+- The patch log names every overlay it touches after the decompilation's linker spec;
+  four of the old names were wrong (57, 59, 70 and 72 are the Ball Capsule editor, the
+  apricorn box, the GTS and the Wi-Fi connection screen, not battle code).
+- `tools/testsaves/` builds play-test saves from a complete one with PKHeX.Core - today the
+  evolution test - and puts back the RTC date PKHeX rewrites, re-checksumming the game's way.
+- **The standalone patcher builds on macOS and Linux too** - an `.app` and a Linux binary
+  beside the Windows `.exe` - each with a command-line build of `patch.py`.
+  `.github/workflows/release.yml` builds all of them, for both kinds of Mac, and drafts a
+  release for a `v*` tag, with `docs/release-notes/<tag>.md` as its text and every file's
+  SHA-256 under it. The window no longer fails to open when tkinterdnd2 imports but
+  its library cannot load (any Tk 9 Python): it opens without drag and drop.
+- A GitHub Actions workflow (`.github/workflows/payload.yml`) rebuilds the payload, checks
+  it is byte-identical to the committed one, and runs the emulated tests on every push.
+
+## `V0.2b`
 
 ### Colour themes
 

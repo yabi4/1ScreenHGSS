@@ -1,0 +1,39 @@
+# Rebuild the resident hook from src/hook.s, check it is the payload the
+# repository ships, and run the emulated tests. No ROM is needed for any of it.
+name: payload
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install arm-none-eabi binutils, unicorn and ndspy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y binutils-arm-none-eabi
+          python -m pip install --upgrade pip
+          python -m pip install unicorn ndspy
+
+      - name: Byte-compile the patcher and tools
+        run: python -m compileall -q patch.py patch-gui.py onescreen tools
+
+      - name: Rebuild the payload
+        run: python tools/make_payload.py
+
+      # make_payload.py regenerates hook.bin and hook.json. If either differs
+      # from what is committed, the payload was not rebuilt after an edit to
+      # src/hook.s - or was edited by hand.
+      - name: The committed payload matches src/hook.s
+        run: git diff --exit-code -- onescreen/payload
+
+      - name: Emulated tests
+        run: python tools/test_hook.py

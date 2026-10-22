@@ -5,16 +5,31 @@ symbol metadata, so the addresses can never drift out of sync with the code
 (hand-writing them once produced a load address 0xA00 bytes off, which silently
 put the payload in the wrong place).
 
-Requires devkitARM.  https://devkitpro.org/
+Requires devkitARM (https://devkitpro.org/) or any arm-none-eabi binutils on PATH.
+Set DEVKITARM to pick a specific install.
 """
 
 import json
+import os
 import pathlib
+import shutil
 import subprocess
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-DEVKIT = pathlib.Path(r"C:\devkitPro\devkitARM\bin")
-AS, LD, OBJCOPY, NM = (DEVKIT / f"arm-none-eabi-{t}" for t in ("as", "ld", "objcopy", "nm"))
+
+
+def _toolchain():
+    """$DEVKITARM/bin, else arm-none-eabi-* on PATH, else the Windows default."""
+    if os.environ.get("DEVKITARM"):
+        bindir = pathlib.Path(os.environ["DEVKITARM"]) / "bin"
+    elif shutil.which("arm-none-eabi-as"):
+        bindir = pathlib.Path(shutil.which("arm-none-eabi-as")).parent
+    else:
+        bindir = pathlib.Path(r"C:\devkitPro\devkitARM\bin")
+    return (bindir / f"arm-none-eabi-{t}" for t in ("as", "ld", "objcopy", "nm"))
+
+
+AS, LD, OBJCOPY, NM = _toolchain()
 
 ITCM_BASE = 0x01FF8000
 ITCM_END = 0x02000000
@@ -45,6 +60,9 @@ def main(auto_battle=True):
             symbols[parts[2]] = f"0x{int(parts[0], 16):08X}"
 
     payload = binf.read_bytes()
+    if LOAD_ADDR + len(payload) > ITCM_END:
+        raise SystemExit(f"payload is {len(payload)} bytes and overruns ITCM by "
+                         f"{LOAD_ADDR + len(payload) - ITCM_END}")
 
     # Read the version out of the assembled blob rather than repeating it here.
     # It lives in OneScreen_Signature: "1SGS" followed by the version word.
