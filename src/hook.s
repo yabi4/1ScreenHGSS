@@ -240,10 +240,33 @@ LABEL_GEO_BANDED = 0x8000
 @ Reserved space for the label images; the patcher refuses rather than overrun it.
 @ The ten geometry records, the start-menu and list records, the banded command
 @ sets and the yes/no sets fit here. The field geometry aliases the battle Yes/No.
-LABEL_BLOB_SIZE = 22912         @ reserved; the patcher refuses rather than overrun it
+LABEL_BLOB_SIZE = 20864         @ reserved; the patcher refuses rather than overrun it
 
 @ The main-loop call we displace: `bl 0x0200110C` at 0x02000DB0.
 ORIG_LOOP_FN = 0x0200110C + 1   @ +1 = Thumb
+
+@ The one after it, at 0x02000DB4: `bl ReadKeypadAndTouchpad`, which turns the
+@ pad into gSystem's key words and then calls ApplyButtonModeToInput: under the
+@ L=A option it copies L to A and removes L and R from the cooked words, so in
+@ that mode the game never sees a shoulder at all. (Its START=X and X/Y-swap
+@ cases are left over from Diamond and Pearl; HGSS's options only ever pick
+@ NORMAL or L=A.) Both are ARM9 code, at the same address in
+@ every region; inject.patch_key_read checks both before hooking. The words,
+@ as offsets from gSystem.heldKeysRaw - which is what cfg_pad_held points at:
+READ_KEYS_ORIG    = 0x0201A4DC + 1
+APPLY_BUTTON_MODE = 0x0201A5E8 + 1
+PAD_XY_BUF  = 0x027FFFA8        @ bit 15 set: the lid is shut (PAD_DetectFold)
+GS_HELD_RAW = 0x00              @ the pad as it is, never touched: the next frame's
+                                @ edges and the soft reset (L+R+START+SELECT) read it
+GS_NEW_RAW  = 0x04              @ the raw edges, rewritten along with the cooked
+GS_REP_RAW  = 0x08              @ ones so no reader of either sees a hidden key
+GS_HELD     = 0x0C              @ these three are what the game acts on, after
+GS_NEW      = 0x10              @ ApplyButtonModeToInput
+GS_REP      = 0x14
+SHOULDER_WINDOW = 3             @ logic frames (~100 ms) a lone L or R waits for its pair
+LR_IDLE     = 0
+LR_PENDING  = 1                 @ one shoulder down and hidden, waiting
+LR_CHORD    = 2                 @ L+R: both hidden until both are up
 
 @ Pokedex area map. The species grid and the per-Pokemon detail level share one
 @ app callback and the same POWCNT1 value, so neither app_table nor a scan for a
@@ -884,7 +907,7 @@ EVOLUTION_TASK_ORIG     = 0x02075D09 @ sub_02075D08, Thumb
     .global OneScreen_Signature
 OneScreen_Signature:
     .ascii  "1SGS"
-    .word   0x00000023          @ payload version
+    .word   0x00000024          @ payload version
 
 @ Filled in by the patcher from the ROM being patched. Defaults are French, so
 @ an unconfigured payload still works there. Keep the field order in step with
@@ -959,6 +982,9 @@ wl_last:        .word 0         @ that list's last value, which B stands for
 oak_blink_held: .word 0         @ 1 while we hold Oak's palette blink paused
 bt_band:        .word 0         @ BAND_* bits for the battle's palette buffer and blink
 evo_band:       .word 0         @ the same for the evolution scene's
+lr_state:       .word 0         @ LR_*: the L+R chord, see OneScreen_ReadKeys
+lr_pending:     .word 0         @ the shoulder held back while LR_PENDING
+lr_timer:       .word 0         @ frames left before it is let through
 
 @ Kept below the word variables above, not among them: tools/savestate.py reads
 @ that run as a flat array of words and a six-byte table in the middle of it
@@ -1104,6 +1130,123 @@ OneScreen_Toggle:
     eors    r1, r0
     strh    r1, [r2]
     bx      lr
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ void OneScreen_ReadKeys(void)
+@
+@ Installed in place of the main loop's `bl ReadKeypadAndTouchpad`. Runs it,
+@ then keeps L+R - the manual screen swap - to itself.
+@
+@ Two keys pressed "together" land in different frames, so the game used to see
+@ whichever shoulder came first on its own: a pocket change in the bag, a box
+@ change in the PC, a page in a summary, and A itself under the L=A button
+@ mode. Now a lone L or R is held back for SHOULDER_WINDOW frames. If the other
+@ one arrives in that time it is the swap, and the game sees neither key until
+@ both are released; if not, the game gets the press then, late by at most the
+@ window - or at once, if the key is let go first.
+@
+@ Only the words the game acts on change, and only on a frame when something
+@ is hidden or let through: they are rebuilt from the raw words without the
+@ hidden keys, then ApplyButtonModeToInput runs again on them. heldKeysRaw keeps
+@ the pad as it is, which the next frame's edges, the soft reset and
+@ OneScreen_UpdatePad all read.
+@ ---------------------------------------------------------------------------
+    .global OneScreen_ReadKeys
+    .thumb_func
+OneScreen_ReadKeys:
+    push    {r4, r5, r6, r7, lr}
+    ldr     r3, =READ_KEYS_ORIG
+    blx     r3
+    ldr     r0, =PAD_XY_BUF
+    ldrh    r0, [r0]
+    lsls    r0, r0, #16
+    bmi     99f                     @ lid shut: the game left the words stale
+    ldr     r4, =cfg_pad_held
+    ldr     r4, [r4]                @ &gSystem.heldKeysRaw
+    ldr     r5, [r4, #GS_HELD_RAW]
+    movs    r0, #(TOGGLE_MASK >> 8)
+    lsls    r0, r0, #8              @ L | R
+    ands    r5, r0                  @ the shoulders down this frame
+    movs    r6, #0                  @ keys to hide from the game
+    movs    r7, #0                  @ a held-back press to let through
+    ldr     r3, =lr_state
+    ldr     r2, [r3]
+    cmp     r2, #LR_CHORD
+    bne     91f
+    movs    r6, r0                  @ the swap: hide both until both are up
+    cmp     r5, #0
+    bne     98f
+    b       95f
+
+91: cmp     r2, #LR_PENDING
+    bne     93f
+    cmp     r5, r0
+    beq     96f                     @ the other one arrived: the swap
+    ldr     r1, =lr_pending
+    ldr     r1, [r1]
+    tst     r5, r1
+    bne     92f
+    movs    r7, r1                  @ let go inside the window: the press, now
+    b       95f
+92: ldr     r2, =lr_timer
+    ldr     r0, [r2]
+    subs    r0, #1
+    str     r0, [r2]
+    bgt     94f
+    movs    r7, r1                  @ the window ran out: the press, late
+    b       95f
+94: movs    r6, r1                  @ still waiting for its pair
+    b       98f
+
+93: ldr     r1, [r4, #GS_NEW_RAW]
+    ands    r1, r0                  @ shoulders newly down
+    beq     98f
+    cmp     r5, r0
+    beq     96f                     @ both down: the swap
+    ldr     r2, =lr_pending
+    str     r1, [r2]
+    ldr     r2, =lr_timer
+    movs    r0, #SHOULDER_WINDOW
+    str     r0, [r2]
+    movs    r2, #LR_PENDING
+    str     r2, [r3]
+    movs    r6, r1
+    b       98f
+
+95: movs    r2, #LR_IDLE
+    str     r2, [r3]
+    b       98f
+
+96: movs    r2, #LR_CHORD
+    str     r2, [r3]
+    movs    r6, #(TOGGLE_MASK >> 8)
+    lsls    r6, r6, #8
+    bl      OneScreen_Toggle
+    ldr     r0, =bt_manual          @ stop the battle logic re-asserting, so a
+    movs    r1, #1                  @ manual override sticks until the menu you
+    str     r1, [r0]                @ are on changes, or the phase does
+
+98: movs    r0, r6
+    orrs    r0, r7
+    beq     99f                     @ nothing hidden, nothing let through
+    ldr     r0, [r4, #GS_HELD_RAW]
+    bics    r0, r6
+    str     r0, [r4, #GS_HELD]
+    ldr     r0, [r4, #GS_NEW_RAW]
+    bics    r0, r6
+    orrs    r0, r7
+    str     r0, [r4, #GS_NEW_RAW]
+    str     r0, [r4, #GS_NEW]
+    ldr     r0, [r4, #GS_REP_RAW]
+    bics    r0, r6
+    orrs    r0, r7
+    str     r0, [r4, #GS_REP_RAW]
+    str     r0, [r4, #GS_REP]
+    ldr     r3, =APPLY_BUTTON_MODE
+    blx     r3                      @ the game's own L=A, if that option is on
+99: pop     {r4, r5, r6, r7, pc}
     .align  2
     .pool
 
@@ -5319,7 +5462,7 @@ OneScreen_ScriptMenu:
 
 @ ---------------------------------------------------------------------------
 @ void OneScreen_Poll(void)
-@ L+R swaps the screens anywhere. In the overworld, X brings the menu up with it
+@ In the overworld, X brings the menu up with it
 @ and B puts the world back - the field app draws that menu itself without
 @ touching POWCNT1, so there is no transition to detect and it is driven from
 @ the buttons the player already presses.
@@ -5333,20 +5476,9 @@ OneScreen_Poll:
     ldr     r4, =pad_new
     ldr     r4, [r4]
 
-    @ --- L+R: manual swap, available everywhere ---
-    ldr     r1, =TOGGLE_MASK
-    movs    r0, r6
-    ands    r0, r1
-    cmp     r0, r1
-    bne     10f                     @ not both held
-    movs    r0, r4
-    ands    r0, r1
-    cmp     r0, #0
-    beq     10f                     @ neither is new: still held from before
-    bl      OneScreen_Toggle
-    ldr     r0, =bt_manual          @ stop the battle logic re-asserting, so a
-    movs    r1, #1                  @ manual override sticks until the menu you
-    str     r1, [r0]                @ are on changes, or the phase does
+    @ L+R, the manual swap, is no longer read here but straight after the game
+    @ reads the pad - OneScreen_ReadKeys - so the game never sees the L or R
+    @ that starts it.
 
 10: ldr     r5, =menu_swapped
     ldr     r0, =cfg_app_callback

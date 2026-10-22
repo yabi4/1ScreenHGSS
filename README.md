@@ -82,8 +82,8 @@ That includes lists whose entries are laid out in two lines or in columns on the
 screen — Battle Frontier prize shops, the Game Corner's coins, drink machines, the
 day-care's level column, Pokéathlon courses — which are folded onto one line, and the
 Battle Frontier move tutors' lists, whose prices line up in a column. A list that would land on a
-box the script already has up (Mom's savings), an entry holding formatting the patch does
-not know, and everything with `--touch-lists` keep the touch screen.
+box the script already has up (Mom's savings) and an entry holding formatting the patch
+does not know keep the touch screen.
 
 Starting a new game works the same way. **GARÇON / FILLE** for the gender question and
 **OUI / NON** for the confirmations are drawn beside Oak's text, so the screen stays on him
@@ -93,7 +93,9 @@ indicator is suppressed before it can flash.
 The tutorial menu still swaps: three options of running text will not fit beside the
 question the way two words do.
 
-**L + R** swaps the screens manually at any time, as an escape hatch.
+**L + R** swaps the screens manually at any time, as an escape hatch. The game never sees
+those two keys, so the swap does not also turn a bag pocket or, with the *L=A* button mode,
+press A; a lone L or R reaches the game a tenth of a second late.
 
 ## Themes
 

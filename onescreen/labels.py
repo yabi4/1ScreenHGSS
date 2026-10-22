@@ -1347,19 +1347,21 @@ def build(rom, log=print, theme=themes.DEFAULT_THEME, overlays=None) -> bytes:
     # tile width, and whether it is banded (BANDED). A geometry then pairs one
     # of those sets with its destination rows. Keeping those concepts separate
     # lets the field yes/no geometry alias the battle yes/no images without
-    # copying them into the blob a second time.
+    # copying them into the blob a second time. Every set is banded: one plain
+    # image and a rectangle per choice.
     sets = [
         (_layout(font, labels), 4, CELL_W, GRID_COLS, True),
-        (_layout_yesno(font, choices), 2, YN_CELL_W, YN_COLS, False),
+        (_layout_yesno(font, choices), 2, YN_CELL_W, YN_COLS, True),
         # Oak's two prompts used to invert - white ink, no shadow - because the
         # band was whatever saturated colour his intro happened to be using, and
         # dark text vanished into it. A theme picks that colour now, and picks a
         # light one, so ordinary dark ink is both legible and consistent with
         # every other prompt. Inverting here is what made his selected choice
-        # come out white while the rest came out black.
-        (_layout_yesno(font, oak), 2, YN_CELL_W, YN_COLS, False),
+        # come out white while the rest came out black - and an inverted set
+        # could not be banded.
+        (_layout_yesno(font, oak), 2, YN_CELL_W, YN_COLS, True),
         (_layout_row(font, gender, GENDER_CELL_W), 2, GENDER_CELL_W, GENDER_COLS,
-         False),
+         True),
     ]
     battle_rows = _row_addrs(BATTLE_CHAR_BASE, WIN_BASE_TILE, GRID_BASE_COL)
     geometries = [

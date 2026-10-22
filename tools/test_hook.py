@@ -355,9 +355,23 @@ def geo_record_addr(base, geo):
     return base + labels.EXTRA_GEO_OFF + (geo - labels.GEO_HEAD_COUNT) * labels.GEO_RECORD
 
 
+YES_NO = [a("OUI"), a("NON")]
+GENDER = [a("GARCON"), a("FILLE")]
+
+
+def choice_sets(font):
+    """geometry -> (layout, cell width, columns) of the two-choice sets, as
+    build() makes them. Geometry 4, the field's yes/no, aliases geometry 1."""
+    yn = (labels._layout_yesno(font, YES_NO), labels.YN_CELL_W, labels.YN_COLS)
+    return {1: yn, 2: yn,
+            3: (labels._layout_row(font, GENDER, labels.GENDER_CELL_W),
+                labels.GENDER_CELL_W, labels.GENDER_COLS)}
+
+
 def put_command_sets(h: Hook, font=None, leave_out=()):
-    """The command box's banded sets and the battle yes/no set, as build()
-    writes them, into the payload's blob. Returns (font, battle rows)."""
+    """The command box's sets, the yes/no sets and the gender row - every one
+    banded - as build() writes them into the payload's blob. Returns (font,
+    battle rows)."""
     font = font or inked_font()
     base = blank_blob(h)
     h.w8(base + 4, labels.GRID_ROWS)
@@ -376,15 +390,30 @@ def put_command_sets(h: Hook, font=None, leave_out=()):
         h.write(rec, struct.pack("<IIHH4I", off, len(plain), labels.CMD_ROW_BYTES,
                                  5 | labels.BANDED, *rows))
         off += len(plain) + len(rects)
-    yn = labels._layout_yesno(font, [a("OUI"), a("NON")])
-    yn_rows = labels._row_addrs(labels.BATTLE_CHAR_BASE, labels.WIN_BASE_TILE,
-                                labels.YN_BASE_COL)
-    data = b"".join(labels._to_tiles(labels._render(font, yn, s, labels.YN_CELL_W),
-                                     labels.YN_COLS) for s in range(2))
-    h.write(base + off, data)
-    h.write(geo_record_addr(base, 1), struct.pack(
-        "<IIHH4I", off, labels.YN_IMAGE_BYTES, labels.YN_ROW_BYTES, 3, *yn_rows))
+    set_off = {}
+    for geo, (placed, width, cols) in choice_sets(font).items():
+        if geo == 2 or geo not in set_off:            # Oak's words are his own
+            plain, rects = labels._banded_set(font, placed, width, cols)
+            h.write(base + off, plain + rects)
+            set_off[geo] = off
+            off += len(plain) + len(rects)
+        h.write(geo_record_addr(base, geo), struct.pack(
+            "<IIHH4I", set_off[geo], cols * 32 * labels.GRID_ROWS, cols * 32,
+            3 | labels.BANDED, *choice_rows(geo)))
+    h.write(geo_record_addr(base, 4), struct.pack(
+        "<IIHH4I", set_off[1], labels.YN_IMAGE_BYTES, labels.YN_ROW_BYTES,
+        3 | labels.BANDED, *choice_rows(4)))
     return font, rows
+
+
+def choice_rows(geo):
+    char_base, tile, col = {
+        1: (labels.BATTLE_CHAR_BASE, labels.WIN_BASE_TILE, labels.YN_BASE_COL),
+        2: (labels.OAK_CHAR_BASE, labels.OAK_BASE_TILE, labels.YN_BASE_COL),
+        3: (labels.OAK_CHAR_BASE, labels.OAK_BASE_TILE, labels.GENDER_BASE_COL),
+        4: (labels.FIELD_CHAR_BASE, labels.FIELD_BASE_TILE, labels.YN_BASE_COL),
+    }[geo]
+    return labels._row_addrs(char_base, tile, col)
 
 
 def drawn_box(h: Hook, rows, row_bytes=labels.CMD_ROW_BYTES):
@@ -414,6 +443,25 @@ def test_banded_images_match_the_renderer():
         h.call("OneScreen_BattleMenu", code)
         assert h.read(rows[0], 4) == b"\x5a" * 4, hex(code)
     assert signed(h.call("OneScreen_BattleWipe", 12)) == -1
+
+
+def test_two_choice_sets_are_banded_exactly():
+    """The yes/no sets - battle, field and Oak's - and the gender row are banded
+    like the command box now, which freed the ITCM the L+R filter needed. Each
+    choice the hook draws from them is still what labels._render makes of it,
+    the field's included, which shares the battle's images."""
+    h = Hook()
+    font, _rows = put_command_sets(h)
+    sets = choice_sets(font)
+    sets[4] = sets[1]
+    for geo, (placed, width, cols) in sets.items():
+        rows = choice_rows(geo)
+        for sel in range(2):
+            h.call("OneScreen_BattleMenu", (geo << 4) | sel)
+            want = labels._to_tiles(labels._render(font, placed, sel, width), cols)
+            assert drawn_box(h, rows, cols * 32) == want, (geo, sel)
+        h.call("OneScreen_BattleMenu", (geo << 4) | 2)  # the wipe
+        assert drawn_box(h, rows, cols * 32) == b"\xff" * len(want), geo
 
 
 def test_battle_image_picks_the_words_the_game_shows():
@@ -979,6 +1027,175 @@ def test_save_box_still_takes_the_screen():
     h.w16(sm + SM_STATE, 3)                            # back to the menu
     assert poll_in_field(h, fs) == SWAP_BIT
     assert h.r32(h.var("sm_shown")) == 1
+
+
+# --- L+R, the manual swap ------------------------------------------------------
+
+KEY_A, KEY_START, KEY_R, KEY_L = 0x001, 0x008, 0x100, 0x200
+NORMAL, L_EQUALS_A = 0, 3     # the only two Options_SetButtonModeOnMain sets
+GS_BUTTON_MODE, GS_HELD_RAW, GS_NEW_RAW, GS_REP_RAW = 0x34, 0x38, 0x3C, 0x40
+GS_HELD, GS_NEW, GS_REP = 0x44, 0x48, 0x4C
+PAD_XY_BUF, LID_SHUT = 0x027FFFA8, 0x8000
+READ_KEYS, APPLY_BUTTON_MODE = 0x0201A4DD, 0x0201A5E9
+
+
+def apply_button_mode(h: Hook, gsys):
+    """ApplyButtonModeToInput, for the two modes HGSS's options can set: it
+    rewrites the three cooked words only, and under L=A no shoulder survives."""
+    if h.r32(gsys + GS_BUTTON_MODE) != L_EQUALS_A:
+        return
+    for off in (GS_NEW, GS_HELD, GS_REP):
+        v = h.r32(gsys + off)
+        if v & KEY_L:
+            v |= KEY_A
+        h.w32(gsys + off, v & ~(KEY_L | KEY_R))
+
+
+def key_reader(mode=NORMAL):
+    """A Hook whose ReadKeypadAndTouchpad reads `pad[0]`, as the game's does
+    (key repeat aside). Returns (hook, gSystem, pad, frame), where frame(keys)
+    runs one main-loop read and returns what the game is then given."""
+    h = Hook()
+    h.uc.mem_map(PAD_XY_BUF & ~0xFFF, 0x1000)
+    gsys = h.alloc(0x80)
+    h.w32(gsys + GS_BUTTON_MODE, mode)
+    h.w32(h.var("cfg_pad_held"), gsys + GS_HELD_RAW)
+    pad = [0]
+
+    def read(hk, *_):
+        if hk.r16(PAD_XY_BUF) & LID_SHUT:
+            for off in (GS_NEW, GS_HELD, GS_REP):
+                hk.w32(gsys + off, 0)
+            return
+        raw = pad[0]
+        new = raw & (raw ^ hk.r32(gsys + GS_HELD_RAW))
+        for off, v in ((GS_NEW_RAW, new), (GS_REP_RAW, new), (GS_HELD_RAW, raw),
+                       (GS_NEW, new), (GS_HELD, raw), (GS_REP, new)):
+            hk.w32(gsys + off, v)
+        apply_button_mode(hk, gsys)
+
+    h.stub(READ_KEYS, read)
+    h.stub(APPLY_BUTTON_MODE, lambda hk, *_: apply_button_mode(hk, gsys))
+
+    def frame(keys):
+        pad[0] = keys
+        h.call("OneScreen_ReadKeys")
+        return {k: h.r32(gsys + off) for k, off in
+                (("held", GS_HELD), ("new", GS_NEW), ("rep", GS_REP),
+                 ("raw", GS_HELD_RAW))}
+    return h, gsys, pad, frame
+
+
+def test_a_lone_shoulder_reaches_the_game_late():
+    """L alone waits three frames for an R that does not come, then the game
+    gets the press. The raw word keeps the pad as it is the whole time, for the
+    next frame's edges and the soft reset."""
+    h, _g, _pad, frame = key_reader()
+    h.w16(POWCNT1, 0)
+    seen = [frame(KEY_L) for _ in range(5)]
+    assert [s["new"] for s in seen] == [0, 0, 0, KEY_L, 0], seen
+    assert [s["held"] for s in seen] == [0, 0, 0, KEY_L, KEY_L], seen
+    assert [s["rep"] for s in seen] == [0, 0, 0, KEY_L, 0], seen
+    assert all(s["raw"] == KEY_L for s in seen), seen
+    assert h.r16(POWCNT1) == 0                          # no swap
+    assert frame(0)["new"] == 0 and frame(KEY_R)["new"] == 0   # R waits too
+
+
+def test_a_quick_shoulder_tap_is_not_lost():
+    _h, _g, _pad, frame = key_reader()
+    assert frame(KEY_R)["new"] == 0
+    got = frame(0)                                      # let go in the window
+    assert got["new"] == KEY_R and got["held"] == 0, got
+    assert frame(0)["new"] == 0
+
+
+def test_l_then_r_swaps_and_the_game_sees_neither():
+    """The chord as fingers make it: one shoulder a frame or two first. The swap
+    fires once, and neither key reaches the game until both are up - letting go
+    of one first does not hand the other over."""
+    h, _g, _pad, frame = key_reader()
+    h.w16(POWCNT1, 0)
+    h.w32(h.var("bt_manual"), 0)
+    seen = [frame(k) for k in (KEY_L, KEY_L, KEY_L | KEY_R, KEY_L | KEY_R,
+                               KEY_L, KEY_L, 0)]
+    assert h.r16(POWCNT1) & SWAP_BIT
+    assert h.r32(h.var("bt_manual")) == 1
+    for s in seen:
+        assert not (s["new"] | s["held"] | s["rep"]) & (KEY_L | KEY_R), seen
+    seen = [frame(KEY_L) for _ in range(4)]             # and a later lone L
+    assert [s["new"] for s in seen] == [0, 0, 0, KEY_L], seen
+    assert h.r16(POWCNT1) & SWAP_BIT                    # still swapped once
+
+
+def test_both_shoulders_in_one_frame_swap():
+    h, _g, _pad, frame = key_reader()
+    h.w16(POWCNT1, SWAP_BIT)
+    got = frame(KEY_L | KEY_R)
+    assert h.r16(POWCNT1) == 0
+    assert got["held"] == 0 and got["new"] == 0, got
+    assert frame(KEY_L | KEY_R)["held"] == 0
+    assert h.r16(POWCNT1) == 0                          # held: no second swap
+
+
+def test_shoulder_window_keeps_the_button_mode():
+    """The words are rebuilt from the raw ones, so the game's button mode has
+    to be applied again. Under L=A the held-back L is the A that waits, a tap
+    is an A on release, R is nothing - the game hides it there, patch or no
+    patch - and the chord gives no A at all."""
+    _h, _g, _pad, frame = key_reader(mode=L_EQUALS_A)
+    seen = [frame(KEY_L) for _ in range(4)]
+    assert [s["new"] for s in seen] == [0, 0, 0, KEY_A], seen
+    assert seen[3]["held"] == KEY_A, seen
+    _h, _g, _pad, frame = key_reader(mode=L_EQUALS_A)
+    assert [frame(k)["new"] for k in (KEY_L, 0)] == [0, KEY_A]
+    assert [frame(KEY_R)["new"] for _ in range(5)] == [0] * 5
+    _h, _g, _pad, frame = key_reader(mode=L_EQUALS_A)
+    for keys in (KEY_L, KEY_L | KEY_R, KEY_L | KEY_R, 0):
+        assert frame(keys)["new"] == 0, keys
+
+
+def test_other_keys_are_not_held_back():
+    """Only the shoulders wait. A or START pressed in the same frame as a lone
+    L reach the game at once, held and new."""
+    _h, _g, _pad, frame = key_reader()
+    got = frame(KEY_L | KEY_START | KEY_A)
+    assert got["new"] == KEY_START | KEY_A, hex(got["new"])
+    assert got["held"] == KEY_START | KEY_A, hex(got["held"])
+    assert frame(KEY_L | KEY_START | KEY_A)["held"] == KEY_START | KEY_A
+
+
+def test_shoulders_left_alone_with_the_lid_shut():
+    """With the lid shut the game zeroes the cooked words and leaves the raw
+    ones stale. The filter must not hand a stale shoulder to the game."""
+    h, gsys, _pad, frame = key_reader()
+    frame(KEY_L)                                        # an L held back
+    h.w16(PAD_XY_BUF, LID_SHUT)
+    for _ in range(5):
+        got = frame(KEY_L)
+        assert got["new"] == 0 and got["held"] == 0, got
+    assert h.r32(h.var("lr_state")) == 1                # still waiting
+
+
+def test_key_read_hook_site_is_checked():
+    from onescreen import inject
+    arm9 = bytearray(0x20000)
+    for site, target in ((inject.KEY_READ_SITE, inject.ORIG_KEY_READ_FN),
+                         (inject.BUTTON_MODE_CALL, inject.BUTTON_MODE_FN)):
+        off = site - inject.ARM9_RAM
+        arm9[off:off + 4] = inject.thumb_bl(site, target)
+    hook = Hook().var("OneScreen_ReadKeys")
+    good = bytearray(arm9)
+    inject.patch_key_read(good, hook)
+    off = inject.KEY_READ_OFF
+    assert good[off:off + 4] == inject.thumb_bl(inject.KEY_READ_SITE, hook)
+    for site in (inject.KEY_READ_SITE, inject.BUTTON_MODE_CALL):
+        bad = bytearray(arm9)
+        bad[site - inject.ARM9_RAM] ^= 1
+        try:
+            inject.patch_key_read(bad, hook)
+        except ValueError:
+            continue
+        raise AssertionError(f"{site:#x} was not checked")
 
 
 # --- native top-screen lists ---------------------------------------------------

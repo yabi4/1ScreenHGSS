@@ -218,7 +218,13 @@ overlay-slot proxy described below tracks the phase so well.
 
 What shipped instead: `OneScreen_Frame` in ITCM, reached by replacing the main loop's
 `bl 0x0200110C` at **`0x02000DB0`** with a call to our code, which runs the original and
-then polls the pad. **L+R toggles POWCNT1 bit 15.**
+then polls the pad. **L+R toggles POWCNT1 bit 15.** (Since payload v36 the chord is read
+by `OneScreen_ReadKeys` instead, which wraps the next call, `bl ReadKeypadAndTouchpad` at
+`0x02000DB4`: the chord's first key, a frame or two ahead of the second, used to reach the
+game on its own - a bag pocket, a Pokédex page, an A under the *L=A* button mode. A lone
+shoulder is now held back three frames for its pair, and the chord is hidden from the
+game's cooked key words until both keys are up. `heldKeysRaw` is left as the pad has it,
+for the next frame's edges and the soft-reset check.)
 
 - Pad state is read from `0x021D1164` (1 = pressed); rising-edge latched in an ITCM word.
 - `inject.py:patch_main_loop` asserts the site really holds `bl 0x0200110C` before

@@ -39,11 +39,14 @@ The hook does not hardcode the addresses it reads. `OneScreen_Config` at the top
 (`onescreen/regions.py` → `inject.fill_config`). The defaults compiled into the payload
 are the French values, so an unconfigured payload still works there.
 
-The resident code is entered from two fixed ARM9 sites, and from pointers the patcher
+The resident code is entered from three fixed ARM9 sites, and from pointers the patcher
 finds by shape: the exec slots of five `OverlayManagerTemplate`s (Pokédex, PC box, fly map,
 Oak, battle) and script commands 752, `ScrCmd_MenuExec`, and 653,
 `ScrCmd_MoveTutorChooseMove`. The main-loop call at `0x02000DB0`
-drives global routing, while the callback literal at `0x02075D04` wraps the evolution
+drives global routing; the call after it, `ReadKeypadAndTouchpad` at `0x02000DB4`, is
+wrapped by `OneScreen_ReadKeys`, which keeps L+R from the game and re-runs
+`ApplyButtonModeToInput` (`0x0201A5E8`, checked at its call in `0x0201A556`) on the words
+it changes; and the callback literal at `0x02075D04` wraps the evolution
 SysTask so its mirrored Yes/No highlight is drawn after native input in the same frame.
 `inject.py` checks the displaced call/pointer before changing either fixed site.
 

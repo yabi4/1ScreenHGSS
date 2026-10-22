@@ -55,8 +55,7 @@ and corrected a handful. `docs/DECOMP.md` has the cross-reference.
   (fossils, the apricorn juice stand, the Pokéathlon Dome's counters, most one-off NPC
   choices...) are handed to it instead of taking the screen. B answers the way the touch
   list does. A list that would land on a box the script already has up there (Mom's
-  savings) keeps the touch screen. `--touch-lists` (or *Old-style NPC lists* in the window)
-  keeps all of them there.
+  savings) keeps the touch screen.
 - **Formatted lists and the move tutors open there too** (payload v33). Entries laid out in
   two lines on the touch screen - Battle Frontier prize shops, *DEPOSIT / POKéMON*,
   Pokéathlon courses - are folded onto one line, an indented second line becoming a price
@@ -82,6 +81,19 @@ and corrected a handful. `docs/DECOMP.md` has the cross-reference.
   the screen is now only handed over while the menu itself is what is showing something
   the patch cannot draw - the save box.
 - Every pointer the X menu walks is range-checked against the size of what it points at.
+
+### L + R
+
+- **L + R no longer lets one shoulder through to the game** (payload v36). The two keys
+  rarely go down in the same frame, so the game acted on whichever came first, alone: a
+  pocket change in the bag, a page in the Pokédex, and - under the *L=A* button mode - an A
+  press, which in a battle chose FIGHT before the screens swapped. The patch now looks at
+  the pad straight after the game reads it. A lone L or R is held back for three frames,
+  about a tenth of a second: if the other arrives in that time it is the swap, and the game
+  sees neither key until both are up; if not, the press goes through then, or at once if
+  the key is let go first. Nothing else about the pad changes.
+- The yes/no answers and Oak's gender question are stored like the battle commands now, one
+  plain image and a band per choice, which made the room in ITCM this needed.
 
 ### Screens nobody had played
 

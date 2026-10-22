@@ -41,6 +41,16 @@ MAIN_LOOP_SITE = 0x02000DB0
 MAIN_LOOP_OFF = MAIN_LOOP_SITE - ARM9_RAM
 ORIG_LOOP_FN = 0x0200110C
 
+# The call after it, `bl ReadKeypadAndTouchpad` at 0x02000DB4. OneScreen_ReadKeys
+# runs it and then keeps L+R, the manual swap, from reaching the game; it also
+# re-runs ApplyButtonModeToInput, which ReadKeypadAndTouchpad calls from
+# 0x0201A556 - checked too, since the hook calls it by address.
+KEY_READ_SITE = 0x02000DB4
+KEY_READ_OFF = KEY_READ_SITE - ARM9_RAM
+ORIG_KEY_READ_FN = 0x0201A4DC
+BUTTON_MODE_CALL = 0x0201A556
+BUTTON_MODE_FN = 0x0201A5E8
+
 # sub_02075A7C passes this literal to SysTask_CreateOnMainQueue. Replacing the
 # verified callback pointer lets the resident wrapper run immediately after the
 # native evolution task, when its binary selection and window are authoritative.
@@ -161,6 +171,20 @@ def patch_main_loop(arm9: bytearray, frame_addr: int) -> None:
             f"main loop hook site {MAIN_LOOP_SITE:#x} does not hold the expected "
             f"`bl {ORIG_LOOP_FN:#x}` (found {actual.hex()}, wanted {expected.hex()})")
     arm9[MAIN_LOOP_OFF:MAIN_LOOP_OFF + 4] = thumb_bl(MAIN_LOOP_SITE, frame_addr)
+
+
+def patch_key_read(arm9: bytearray, read_keys_addr: int) -> None:
+    """Route the main loop's keypad read through OneScreen_ReadKeys."""
+    for site, target, what in ((KEY_READ_SITE, ORIG_KEY_READ_FN, "keypad read"),
+                               (BUTTON_MODE_CALL, BUTTON_MODE_FN, "button-mode call")):
+        off = site - ARM9_RAM
+        expected = thumb_bl(site, target)
+        actual = bytes(arm9[off:off + 4])
+        if actual != expected:
+            raise ValueError(
+                f"{what} at {site:#x} does not hold the expected `bl {target:#x}` "
+                f"(found {actual.hex()}, wanted {expected.hex()})")
+    arm9[KEY_READ_OFF:KEY_READ_OFF + 4] = thumb_bl(KEY_READ_SITE, read_keys_addr)
 
 
 def patch_evolution_task(arm9: bytearray, task_addr: int) -> None:

@@ -32,10 +32,6 @@ def main():
     ap.add_argument("--no-hook", action="store_true",
                     help="static screen flips only: no ITCM code, no automatic "
                          "battle swapping and no L+R toggle")
-    ap.add_argument("--touch-lists", action="store_true",
-                    help="leave NPC list menus the patch does not draw itself on "
-                         "the touch screen (swapping for them) instead of using "
-                         "the game's own top-screen list")
     ap.add_argument("--theme", default=themes.DEFAULT_THEME,
                     choices=sorted(themes.THEMES),
                     help="colour scheme for the menus this patch draws")
@@ -64,7 +60,7 @@ def main():
 
     print(f"1ScreenHGSS - patching {src.name}")
     out = onescreen_rom.patch(data, auto_battle=not args.no_hook,
-                              theme=args.theme, touch_lists=args.touch_lists)
+                              theme=args.theme)
     dst.write_bytes(out)
     print(f"  Written  : {dst}  ({len(out):,} bytes)")
     print("\nDone. Put your .sav next to it with a matching name, and set your\n"

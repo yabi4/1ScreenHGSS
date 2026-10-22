@@ -85,7 +85,7 @@ unpatched ROM too — you can switch back and forth whenever you like.
 |---|---|
 | **X** | opens the overworld menu **as a panel on the world**; press again to close |
 | **B** | closes it |
-| **L + R** | swaps the screens manually, any time — except inside the PC box, which holds its own routing every frame; press B to leave first |
+| **L + R** | swaps the screens manually, any time — except inside the PC box, which holds its own routing every frame; press B to leave first. The game never sees these two keys, so the swap does not also turn a page or, with the *L=A* button mode, press A. A lone L or R still works, a tenth of a second late, while the patch waits to see whether the other one follows. |
 
 Everything else plays normally. You should rarely need L+R: the patch follows the game
 rather than your button presses, so pressing X somewhere the menu cannot open (on a
@@ -211,9 +211,6 @@ Some lists still swap to the touch screen:
 - an entry with formatting the patch does not know, more than one line break, or a column
   its own text runs past (possible in a translation, since the top window's text starts
   further right than the touch screen's).
-
-To keep **every** list on the touch screen as before, patch with `--touch-lists` (or tick
-*Old-style NPC lists* in the window).
 
 **Starting a new game**, Oak's questions are answered on his own screen:
 

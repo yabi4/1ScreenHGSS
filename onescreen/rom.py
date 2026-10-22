@@ -64,15 +64,11 @@ def identify(rom_bytes: bytes):
 
 
 def patch(rom_bytes: bytes, log=print, auto_battle=True,
-          theme=themes.DEFAULT_THEME, touch_lists=False):
+          theme=themes.DEFAULT_THEME):
     """Return the patched ROM image.
 
     `theme` colours what the patch draws - the panels' palettes and the band
     behind a highlighted choice. It changes no sizes or offsets.
-
-    `touch_lists` keeps every script list menu the patch does not draw itself on
-    the touch screen, swapping for it as earlier builds did, instead of handing
-    it to the game's own top-screen list.
     """
     code, title, known, sha1 = identify(rom_bytes)
     log(f"  ROM      : {title}  [{code}]")
@@ -176,22 +172,20 @@ def patch(rom_bytes: bytes, log=print, auto_battle=True,
         # top-screen list instead of taking the screen: script command 752 is
         # pointed at OneScreen_MenuExec, and the move tutors' 653 at
         # OneScreen_TutorExec. Found by shape and cross-checked; anything
-        # unexpected and the lists swap as before.
+        # unexpected and the lists swap, the safe fallback for a ROM we cannot
+        # vouch for - there is no option to ask for that any more.
         for field in ("menu_exec_orig", "open_list", "string_width",
                       "setup_native", "tutor_exec_orig"):
             values[field] = 0
-        if touch_lists:
-            log("  Lists    : touch screen (--touch-lists)")
+        native, redirects, detail = regions.resolve_native_lists(arm9, overlays)
+        if native:
+            values.update(native)
+            for site, symbol in redirects:
+                struct.pack_into("<I", arm9, site - 0x02000000,
+                                 meta["symbols"][symbol] | 1)
+            log(f"  Lists    : the game's top-screen list; {detail}")
         else:
-            native, redirects, detail = regions.resolve_native_lists(arm9, overlays)
-            if native:
-                values.update(native)
-                for site, symbol in redirects:
-                    struct.pack_into("<I", arm9, site - 0x02000000,
-                                     meta["symbols"][symbol] | 1)
-                log(f"  Lists    : the game's top-screen list; {detail}")
-            else:
-                log(f"  Lists    : {detail}; NPC lists keep the touch screen")
+            log(f"  Lists    : {detail}; NPC lists keep the touch screen")
 
         payload = inject.fill_config(payload, meta["symbols"]["OneScreen_Config"],
                                      meta["load_addr"], values)
@@ -220,12 +214,13 @@ def patch(rom_bytes: bytes, log=print, auto_battle=True,
                 + ("verified" if ok else
                    "CODE DOES NOT MATCH - entry dropped, this app will not swap"))
         inject.patch_main_loop(arm9, meta["symbols"]["OneScreen_Frame"])
+        inject.patch_key_read(arm9, meta["symbols"]["OneScreen_ReadKeys"])
         inject.patch_evolution_task(
             arm9, meta["symbols"]["OneScreen_EvolutionTask"])
         arm9 = inject.add_autoload_block(arm9, payload, meta["load_addr"])
         log(f"  ITCM     : {len(payload)} bytes at {meta['load_addr']:#010x} "
             f"(payload v{meta['payload_version']}), main loop "
-            f"{inject.MAIN_LOOP_SITE:#010x} and evolution task hooked")
+            f"{inject.MAIN_LOOP_SITE:#010x}, keypad read and evolution task hooked")
         log(f"  Region   : data shifted {delta:+#x} from the French reference")
         for name in inject.CONFIG_FIELDS:
             log(f"             {name:<15} {values[name]:#010x}")
