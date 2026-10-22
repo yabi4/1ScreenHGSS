@@ -43,8 +43,9 @@ jobs:
 
       - name: The command line runs
         shell: bash
+        # PyInstaller leaves its .spec beside the build, and the archive is there too.
         run: |
-          cli=$(ls dist-gui/1screenhgss-cli-* | grep -v '\.tar\.gz$')
+          cli=$(ls dist-gui/1screenhgss-cli-* | grep -v -E '\.(tar\.gz|spec)$')
           "$cli" --version
 
       - uses: actions/upload-artifact@v4
