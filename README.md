@@ -8,10 +8,9 @@ Play **Pokémon HeartGold / SoulSilver** on a single screen.
 and font — nothing is swapped in from the touch screen — and takes its colours from the
 theme you choose when patching.*
 
-> **v0.3** — v0.2b is playable start to finish on French SoulSilver and HeartGold, and
-> play-tested on US HeartGold. v0.3's changes were built against the full decompilation and
-> tested under emulation, but have not been played yet. See
-> [Compatibility](#compatibility) and [Status](#status).
+> **v0.3** — play-tested on French SoulSilver. v0.2b was played start to finish on French
+> SoulSilver and HeartGold, and play-tested on US HeartGold. A few of v0.3's new screens
+> have not been played yet. See [Compatibility](#compatibility) and [Status](#status).
 
 The DS puts half of HGSS on the touch screen — the bag, the party, the Pokédex, and
 critically the battle command menu. That makes the game awkward on a handheld like the
@@ -49,7 +48,10 @@ FIGHT / BAG / POKéMON / RUN without the patcher knowing which is which.
 
 Battles are the interesting part. The scene never leaves the top screen while you are
 choosing: **FIGHT / BAG / POKéMON / RUN are drawn onto it**, laid out the way the game's
-own cursor moves, and the highlight follows the D-pad. The screen only changes once you
+own cursor moves, and the highlight follows the D-pad. The Safari Zone, the Bug Contest,
+Pal Park and the first rival battle get their own words (BALL / BAIT / MUD / RUN, BALL in
+place of BAG, FIGHT alone), and a double battle's second Pokémon gets CANCEL, as on the
+touch screen. The screen only changes once you
 have actually picked something — the move list, the bag and the party come up then, and
 the scene returns the instant the turn starts. Binary prompts ("… changer de Pokémon?")
 get a small **Oui / Non** box in the same message window instead of taking the screen.
@@ -69,7 +71,9 @@ tiles mirror the game's own selection. The patch does not handle the buttons or 
 
 The overworld menu works the same way: **X** draws it in the top-right corner of the world
 instead of taking the screen, laid out two columns by four because that is the grid the
-game's own cursor walks. Picking an entry opens it on the top screen exactly as before.
+game's own cursor walks. In the Safari Zone, the Bug Contest, Pal Park and the Union Room
+it is drawn in each one's own arrangement, as the touch screen shows it. Picking an entry
+opens it on the top screen exactly as before.
 
 **Shops and the PC** are drawn the same way — the clerk's `ACHETER / VENDRE / QUITTER`, and
 all three of the PC's menus including its 2×3 storage grid. These are the same object
@@ -168,14 +172,15 @@ Diamond/Pearl/Platinum are **not** supported — different code, different overl
 
 ## Status
 
-**v0.3 has not been played yet.** Its changes — the battle-menu fixes, the X menu in the
-special zones, NPC lists in the game's own top-screen window (formatted ones and the move
-tutors' included), and a steady selected band in Oak's speech, battles and the evolution
-scene —
-were built against the full decompilation and their routines unit-tested under a CPU
-emulator (`tools/test_hook.py`), but the game has not been played with them, on hardware or
-in melonDS. What follows is what v0.2b
-was played through.
+**v0.3 has been played on French SoulSilver** in melonDS: Oak's speech, ordinary battles,
+evolutions, the X menu, saving, shops, the PC, drink machines, the day-care, field
+questions and L + R, with the Pokédex, PC boxes, Fly, Dig and Escape Rope, the Pokégear and
+the opening cinematic checked again. Its other changes were built against the full
+decompilation and their routines unit-tested under a CPU emulator (`tools/test_hook.py`),
+but have not been played: the Safari Zone, Bug Contest, Pal Park and first-rival battle
+menus, double battles, the X menu in those zones and the Union Room, the Battle Frontier
+lists and move tutors, the Game Corner and Mom's savings. What follows is what v0.2b was
+played through.
 
 Everything below has been played through, not merely implemented: the overworld and its
 menus, battles including sub-screens, the bag through every pocket, the party menu
@@ -224,7 +229,10 @@ what is still unchecked.
 
 The whole toolchain is here: ROM unpacking, the display-site scanner, savestate diffing,
 build and emulator-driving helpers. `patch-gui.py` is the window; `tools/build_exe.py`
-freezes it into the released Windows, macOS and Linux builds and `tools/make_icon.py` draws its icon. See **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** to
+freezes it into the released Windows, macOS and Linux builds and `tools/make_icon.py` draws its icon.
+`tools/test_hook.py` runs the resident hook's routines under an ARM emulator; GitHub
+Actions rebuilds the hook and runs those tests on every push, and a `v*` tag builds the
+patcher on every system and drafts the release. See **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** to
 get set up, **[docs/AUDIT.md](docs/AUDIT.md)** for the button-navigation audit and what
 the decomp says about the game's own screen routing, and
 **[docs/FINDINGS.md](docs/FINDINGS.md)** for the reverse-engineering

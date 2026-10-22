@@ -16,8 +16,9 @@ next to your original, which is never modified.
 | Linux | `1ScreenHGSS-<version>-linux-x86_64.tar.gz` | `1screenhgss-cli-<version>-linux-x86_64.tar.gz` |
 
 On macOS, unzip it and move `1ScreenHGSS-<version>.app` wherever you like. It is not
-signed with an Apple developer ID, so the first time, Control-click it and choose **Open**
-(or run `xattr -dr com.apple.quarantine 1ScreenHGSS-<version>.app`). The same goes for the
+signed with an Apple developer ID, so the first time, Control-click it and choose **Open**;
+on macOS 15, try to open it once, then click **Open Anyway** in System Settings → Privacy &
+Security (or run `xattr -dr com.apple.quarantine 1ScreenHGSS-<version>.app`). The same goes for the
 command-line build. The command line takes exactly the arguments `patch.py` does, below:
 
 ```bash

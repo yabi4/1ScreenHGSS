@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — `V0.3`
+## `V0.3`
 
 Built against the full decompilation of HeartGold/SoulSilver
 ([ctrl-cheeb-del/pokeheartgold](https://github.com/ctrl-cheeb-del/pokeheartgold)), which
@@ -127,7 +127,8 @@ and corrected a handful. `docs/DECOMP.md` has the cross-reference.
 - **The standalone patcher builds on macOS and Linux too** - an `.app` and a Linux binary
   beside the Windows `.exe` - each with a command-line build of `patch.py`.
   `.github/workflows/release.yml` builds all of them, for both kinds of Mac, and drafts a
-  release for a `v*` tag. The window no longer fails to open when tkinterdnd2 imports but
+  release for a `v*` tag, with `docs/release-notes/<tag>.md` as its text and every file's
+  SHA-256 under it. The window no longer fails to open when tkinterdnd2 imports but
   its library cannot load (any Tk 9 Python): it opens without drag and drop.
 - A GitHub Actions workflow (`.github/workflows/payload.yml`) rebuilds the payload, checks
   it is byte-identical to the committed one, and runs the emulated tests on every push.
