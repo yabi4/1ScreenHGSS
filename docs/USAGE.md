@@ -4,9 +4,25 @@
 
 ### The easy way
 
-Download `1ScreenHGSS.exe`, drop your ROM on the window (or click to browse) and press
-**Patch**. Nothing else to install — no Python, no ndspy. The patched file appears next
-to your original, which is never modified.
+Download the patcher for your system, drop your ROM on the window (or click to browse) and
+press **Patch**. Nothing else to install — no Python, no ndspy. The patched file appears
+next to your original, which is never modified.
+
+| system | the window | the command line |
+|---|---|---|
+| Windows | `1ScreenHGSS-<version>.exe` | `1screenhgss-cli-<version>-windows-x86_64.exe` |
+| macOS, Apple silicon | `1ScreenHGSS-<version>-macos-arm64.zip` | `1screenhgss-cli-<version>-macos-arm64.tar.gz` |
+| macOS, Intel | `1ScreenHGSS-<version>-macos-x86_64.zip` | `1screenhgss-cli-<version>-macos-x86_64.tar.gz` |
+| Linux | `1ScreenHGSS-<version>-linux-x86_64.tar.gz` | `1screenhgss-cli-<version>-linux-x86_64.tar.gz` |
+
+On macOS, unzip it and move `1ScreenHGSS-<version>.app` wherever you like. It is not
+signed with an Apple developer ID, so the first time, Control-click it and choose **Open**
+(or run `xattr -dr com.apple.quarantine 1ScreenHGSS-<version>.app`). The same goes for the
+command-line build. The command line takes exactly the arguments `patch.py` does, below:
+
+```bash
+./1screenhgss-cli-0.3-macos-arm64 mygame.nds --theme soulsilver
+```
 
 The theme is chosen for you from the game — HeartGold or SoulSilver — and you can pick a
 different one before pressing Patch.
@@ -36,8 +52,8 @@ python patch.py mygame.nds --identify                  # just report what the RO
 python patch.py mygame.nds --no-hook                   # static flips only, no toggle
 ```
 
-`python patch-gui.py` opens the same window as the .exe, if you would rather run it
-from source.
+`python patch-gui.py` opens the same window as the standalone builds, if you would rather
+run it from source.
 
 ## Colour themes
 

@@ -115,14 +115,16 @@ your game, and you can override it; `patch.py` uses `classic` unless you pass `-
 
 - Your own dump of Pokémon HeartGold or SoulSilver (**French SoulSilver/HeartGold and US
   HeartGold are the tested ones** — see [Compatibility](#compatibility))
-- Nothing else, if you use `1ScreenHGSS.exe`
+- Nothing else, if you use the standalone patcher for Windows, macOS or Linux
 - To run from source: [Python 3.9+](https://www.python.org/) and
   [ndspy](https://github.com/RoadrunnerWMC/ndspy) — `pip install ndspy`
 
 ## Use
 
-**Windows:** download `1ScreenHGSS.exe`, drop your ROM on the window and press Patch.
-Nothing to install - it picks the theme to match your game, and you can override it.
+**Windows, macOS, Linux:** download the patcher for your system, drop your ROM on the window
+and press Patch. Nothing to install - it picks the theme to match your game, and you can
+override it. Each system also has a command-line version that takes the same arguments as
+`patch.py`. See [docs/USAGE.md](docs/USAGE.md#the-easy-way) for which file is which.
 
 **From source:**
 
@@ -220,7 +222,7 @@ what is still unchecked.
 
 The whole toolchain is here: ROM unpacking, the display-site scanner, savestate diffing,
 build and emulator-driving helpers. `patch-gui.py` is the window; `tools/build_exe.py`
-freezes it into the released executable and `tools/make_icon.py` draws its icon. See **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** to
+freezes it into the released Windows, macOS and Linux builds and `tools/make_icon.py` draws its icon. See **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** to
 get set up, **[docs/AUDIT.md](docs/AUDIT.md)** for the button-navigation audit and what
 the decomp says about the game's own screen routing, and
 **[docs/FINDINGS.md](docs/FINDINGS.md)** for the reverse-engineering

@@ -1,6 +1,6 @@
 # Runtime requirement for patch.py
 ndspy>=4.0
 
-# Optional, for the windowed patcher and building it into a standalone .exe.
-# Neither is needed to run patch.py, and the built .exe needs none of this.
-#   pip install pyinstaller tkinterdnd2
+# Optional, for the windowed patcher and building the standalone builds:
+# pip install -r requirements-build.txt. Neither is needed to run patch.py,
+# and the built patchers need none of this.

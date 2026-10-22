@@ -1,0 +1,75 @@
+# Build the standalone patcher on every system it ships for - PyInstaller cannot
+# cross-build - and, for a v* tag, put them all in a DRAFT release to review.
+# Run it by hand from the Actions tab to get the builds without a release.
+name: release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-24.04, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # python.org-based builds: Tk 8.6, which tkinterdnd2's library needs.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Tk for the Linux build
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tk-dev
+
+      - name: Build tools
+        run: python -m pip install -r requirements-build.txt
+
+      - name: The window
+        run: python tools/build_exe.py
+
+      - name: The command line
+        run: python tools/build_exe.py --cli
+
+      - name: The command line runs
+        shell: bash
+        run: |
+          cli=$(ls dist-gui/1screenhgss-cli-* | grep -v '\.tar\.gz$')
+          "$cli" --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 1screenhgss-${{ matrix.os }}
+          path: |
+            dist-gui/*.exe
+            dist-gui/*.zip
+            dist-gui/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME" dist/*
+          --draft --title "$GITHUB_REF_NAME" --generate-notes
+          --repo "$GITHUB_REPOSITORY"

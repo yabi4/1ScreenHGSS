@@ -95,6 +95,29 @@ python patch.py roms/ipgf.nds -o build/check.nds
 
 Both `IPGF` and `IPKF` were verified this way against the tested v15 builds.
 
+## Standalone builds
+
+`tools/build_exe.py` freezes the window - or, with `--cli`, `patch.py` - with PyInstaller,
+for the system it runs on: a one-file `.exe` on Windows, an `.app` bundle and a `.zip` of it
+on macOS, a one-file binary and a `.tar.gz` of it on Linux (the archive keeps the executable
+bit, which downloads lose). PyInstaller cannot cross-build, so
+`.github/workflows/release.yml` runs it on Windows, Ubuntu, and macOS on both Apple silicon
+and Intel; run it from the Actions tab for the builds, or push a `v*` tag to also get them
+in a draft release.
+
+```bash
+pip install -r requirements-build.txt
+python tools/build_exe.py          # the window
+python tools/build_exe.py --cli    # the command line
+```
+
+Use a Python with **Tk 8.6**. Apple's `/usr/bin/python3` has the deprecated Tk 8.5, and
+recent standalone Python builds have Tk 9, under which tkinterdnd2's library - compiled for
+Tcl 8 - does not load: the window still opens, without drag and drop. The python.org
+installers, the ones `actions/setup-python` uses, have Tk 8.6. On macOS the build makes its
+`.icns` from the committed PNG with `sips` and `iconutil`, sets the bundle's version, and
+signs it ad hoc again after editing its `Info.plist`; it is not signed with a developer ID.
+
 ## Play-test saves
 
 `tools/testsaves/` turns a complete save into one that reaches a test in seconds rather
