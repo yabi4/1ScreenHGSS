@@ -69,7 +69,31 @@ CONFIG_FIELDS = ("pad_held", "app_callback", "field_callback",
                  "battle_exec_orig", "intro_a_exec", "intro_b_exec",
                  "intro_c_exec", "intro_clock",
                  "theme_band", "menu_exec_orig", "open_list",
-                 "string_width", "setup_native", "tutor_exec_orig")
+                 "string_width", "setup_native", "tutor_exec_orig",
+                 # The functions the hook calls on the game's behalf. They are
+                 # the same in every retail region, but a ROM whose main loop
+                 # or key reader was rewritten in C has its own.
+                 "orig_loop_fn", "read_keys_orig", "apply_button_mode",
+                 # The battle engine, for a build that runs its own: the mode
+                 # word and the addresses the hook reads its command menu
+                 # from. All zero in a retail build.
+                 "battle_mode", "origin_menu_ptr", "origin_menu_flag",
+                 "origin_cursor", "origin_state", "origin_battle_data",
+                 # The start menu's own struct, whose offsets a build that grew
+                 # that struct moves: the retail values are the defaults.
+                 "startmenu_state_off", "startmenu_inhibit_off",
+                 # Origin's Oak speech app, whose exec pointer lives in the
+                 # overlay's own data rather than in an ARM9 template.
+                 "origin_oak_exec_orig",
+                 # The evolution scene's main-queue task. The hook calls the
+                 # game's own task through this, and a ROM whose ARM9 moved the
+                 # evolution code has it somewhere else.
+                 "evolution_task_orig",
+                 # The two-option prompt's own cursor, and the byte in the menu
+                 # object that says the command menu belongs to the player's
+                 # second battler - the CANCEL variant of the words.
+                 "origin_prompt_cursor", "origin_cancel_flag",
+                 "origin_battle_vblank", "origin_evo_get_mon", "origin_evo_done")
 
 
 def fill_config(payload: bytes, config_addr: int, load_addr: int,
@@ -163,38 +187,53 @@ def set_uncompressed(arm9: bytearray) -> None:
     struct.pack_into("<I", arm9, COMPRESSED_STATIC_END, 0)
 
 
-def patch_main_loop(arm9: bytearray, frame_addr: int) -> None:
-    expected = thumb_bl(MAIN_LOOP_SITE, ORIG_LOOP_FN)
-    actual = bytes(arm9[MAIN_LOOP_OFF:MAIN_LOOP_OFF + 4])
+def patch_main_loop(arm9: bytearray, frame_addr: int,
+                    site: int = MAIN_LOOP_SITE, orig_fn: int = ORIG_LOOP_FN) -> None:
+    expected = thumb_bl(site, orig_fn)
+    actual = bytes(arm9[site - ARM9_RAM:site - ARM9_RAM + 4])
     if actual != expected:
         raise ValueError(
-            f"main loop hook site {MAIN_LOOP_SITE:#x} does not hold the expected "
-            f"`bl {ORIG_LOOP_FN:#x}` (found {actual.hex()}, wanted {expected.hex()})")
-    arm9[MAIN_LOOP_OFF:MAIN_LOOP_OFF + 4] = thumb_bl(MAIN_LOOP_SITE, frame_addr)
+            f"main loop hook site {site:#x} does not hold the expected "
+            f"`bl {orig_fn:#x}` (found {actual.hex()}, wanted {expected.hex()})")
+    arm9[site - ARM9_RAM:site - ARM9_RAM + 4] = thumb_bl(site, frame_addr)
 
 
-def patch_key_read(arm9: bytearray, read_keys_addr: int) -> None:
+def patch_key_read(arm9: bytearray, read_keys_addr: int,
+                   site: int = KEY_READ_SITE, orig_fn: int = ORIG_KEY_READ_FN,
+                   button_call: int = BUTTON_MODE_CALL,
+                   button_fn: int = BUTTON_MODE_FN) -> None:
     """Route the main loop's keypad read through OneScreen_ReadKeys."""
-    for site, target, what in ((KEY_READ_SITE, ORIG_KEY_READ_FN, "keypad read"),
-                               (BUTTON_MODE_CALL, BUTTON_MODE_FN, "button-mode call")):
-        off = site - ARM9_RAM
-        expected = thumb_bl(site, target)
+    checks = [(site, orig_fn, "keypad read")]
+    if button_call:
+        checks.append((button_call, button_fn, "button-mode call"))
+    for where, target, what in checks:
+        off = where - ARM9_RAM
+        expected = thumb_bl(where, target)
         actual = bytes(arm9[off:off + 4])
         if actual != expected:
             raise ValueError(
-                f"{what} at {site:#x} does not hold the expected `bl {target:#x}` "
+                f"{what} at {where:#x} does not hold the expected `bl {target:#x}` "
                 f"(found {actual.hex()}, wanted {expected.hex()})")
-    arm9[KEY_READ_OFF:KEY_READ_OFF + 4] = thumb_bl(KEY_READ_SITE, read_keys_addr)
+    arm9[site - ARM9_RAM:site - ARM9_RAM + 4] = thumb_bl(site, read_keys_addr)
 
 
-def patch_evolution_task(arm9: bytearray, task_addr: int) -> None:
-    """Wrap the post-evolution main-queue task at its checked pointer literal."""
-    actual = struct.unpack_from("<I", arm9, EVOLUTION_TASK_LITERAL_OFF)[0]
-    if actual != EVOLUTION_TASK_ORIG:
+def patch_evolution_task(arm9: bytearray, task_addr: int,
+                         literal: int = EVOLUTION_TASK_LITERAL,
+                         orig: int = EVOLUTION_TASK_ORIG) -> None:
+    """Wrap the post-evolution main-queue task at its checked pointer literal.
+
+    A ROM whose evolution code was rewritten has no such literal; the caller
+    passes literal=0 and the hook simply does not take the task over.
+    """
+    if not literal:
+        return
+    off = literal - ARM9_RAM
+    actual = struct.unpack_from("<I", arm9, off)[0]
+    if actual != orig:
         raise ValueError(
-            f"evolution task literal {EVOLUTION_TASK_LITERAL:#x} does not hold "
-            f"the expected {EVOLUTION_TASK_ORIG:#x} (found {actual:#x})")
-    struct.pack_into("<I", arm9, EVOLUTION_TASK_LITERAL_OFF, task_addr | 1)
+            f"evolution task literal {literal:#x} does not hold "
+            f"the expected {orig:#x} (found {actual:#x})")
+    struct.pack_into("<I", arm9, off, task_addr | 1)
 
 
 def add_autoload_block(arm9: bytearray, payload: bytes,
@@ -211,6 +250,20 @@ def add_autoload_block(arm9: bytearray, payload: bytes,
     payload = payload + b"\0" * (-len(payload) % 4)
     if dest + len(payload) > ITCM_END:
         raise ValueError(f"payload of {len(payload)} bytes does not fit in free ITCM")
+
+    # The payload must not land on top of an image the game already loads. The
+    # retail ARM9 uses 0x620 bytes of ITCM, so the payload goes at 0x01FF8620;
+    # a ROM whose own code takes more of the ITCM needs its own address, and
+    # pointing the payload at the retail one silently overwrote the game's code
+    # with ours - the game booted to a white screen with nothing to show for it.
+    for i in range(len(old_list) // 12):
+        block_dest, block_size, _bss = struct.unpack_from("<III", old_list, 12 * i)
+        if block_dest < dest < block_dest + block_size:
+            raise ValueError(
+                f"the payload at {dest:#010x} overlaps the autoload block at "
+                f"{block_dest:#010x} ({block_size:#x} bytes)")
+    if dest < ITCM_BASE:
+        raise ValueError(f"the payload at {dest:#010x} is below the ITCM")
 
     head = bytes(arm9[:list_off])                 # static + existing images
     tail = bytes(arm9[list_off_end:])

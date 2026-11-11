@@ -2078,3 +2078,339 @@ numbers.
   white on white paper. The buffer write is enough there; a pause the game made is never
   undone.
 
+### Origin HeartGold
+
+Origin HeartGold (起源心金) v4.0.3 with the English patch 1.0.0-rc8 is not a retail
+HeartGold build: `hg-engine` rebuilt it over the *Japanese* one, with its own overlays,
+its own battle engine and its own ARM9. What survived of retail is the shape of the parts
+the patch touches - the `System` struct, the main loop's shape, the display helper - and
+enough of the message archives and the font to rasterise the same words in the same glyphs.
+
+**Its battle engine has no `BattleSystem` and no `BattleInput`.** There is no menu id to
+read and no cursor in a struct; what there is, measured live in this ROM:
+
+| what | where |
+|---|---|
+| the pointer to the battle's menu object | `0x02255B94` |
+| the cursor, as the game's own command id | `0x02255B9C` |
+| the menu object's "it is open" flag | `object + 0x1B1` |
+| the battle scene's state | `object + 0x3D0` (0 outside, 1 in the intro, 2 at the menu) |
+
+The cursor ids are the retail ones - 0 FIGHT, 1 BAG, 2 POKéMON, 3 RUN - plus a fifth, 4
+INFO, above FIGHT, which has no word of its own. The game moves the cursor with the D-Pad
+and draws its own touch buttons on the bottom screen, so the hook only mirrors it: the
+words go on the top screen, in the message window, and the band follows the cursor.
+
+**The message window is where retail puts it.** The commands occupy the right-hand
+fourteen tile columns. FIGHT sits above BAG, RUN and POKéMON, following the game's
+2x3 cursor grid. The second battler in doubles gets CANCEL in the RUN position.
+Origin prints its question on one line, so a question that reaches the right-hand
+columns can be clipped by the commands.
+
+**Its palette blink is the same fight as retail's, and retail's fix does not reach it.**
+The band is palette 11's colour 12, the salmon `0x62FF` (#f8b8c0) the battle scene keeps
+there, and the scene's `PaletteBlink` animates colours 11 to 14 and runs colour 12 through
+white every few frames - a white band on white paper is no band, and the band blinked out
+about once a second. The retail fix writes the colour into the scene's palette buffer and
+pauses its blink; in Origin both live on the heap, in a block nothing points to, so the
+hook writes the colour straight into palette RAM (0x05000178) every frame the menu is up
+instead. The scene pushes its own palette at the start of the frame and the hook writes
+after that, so the entry survives to the screen.
+
+**How the battle's exec is reached, and why taking it over froze the battle.** The battle
+application is described by an `OverlayManagerTemplate` in ARM9 static data at `0x020F70B8`:
+`init`, `exec`, `exit` and the overlay id 14. Its three function pointers are thin ARM9
+wrappers - `exec` is `0x0203DA59`, four bytes of Thumb that jump into the overlay's own
+dispatcher at `0x02214CED`. The hook replaces that `exec` with its own routine, exactly as it
+does in retail, and the game's launcher calls it **every frame** while the battle runs (the
+hook counted 700+ calls in one battle), which is what gives the hook the right moment to draw:
+after the application has run for the frame, so the words land on top of the game's own text
+and not under it.
+
+Replacing it froze the battle completely - the scene stopped animating, the D-Pad stopped
+moving the cursor, and the hook's own words were never drawn. Three controls narrowed it down:
+the **unpatched** ROM runs the battle perfectly, a build with **every** patch except this one
+template runs the battle perfectly, and the hook's own counters showed it being entered and
+returning several hundred times. So the hook was reached and came back; it was dying *inside*
+its drawing routine.
+
+The cause was one instruction too many. The probe stores the cursor the game keeps in
+`bt_origin_cur` - and stores the **value** (the command id, 0 FIGHT), not the address of it.
+The drawing code treated that word as a pointer and read a byte through it, so with the cursor
+on FIGHT it read from address 0, the ARM9 took a data abort, and the battle froze with the
+words half-drawn. The value is now read once.
+
+The lesson is the same one the label checker was written for: a word that holds a *value* and
+a word that holds an *address* look identical in the source, and the difference only shows up
+when the value happens to be 0 - which is exactly what "the cursor is on FIGHT" means.
+
+**The field's yes/no prompts were never broken - they were never reached.** The hook's
+field path is the one that mirrors a binary prompt into the world's dialog on the top
+screen, and it asks the game for the choice controller through a chain of pointers: the
+FieldSystem, its bottom-screen task, that task's data, the app inside it, and the task
+inside that. Every step is a retail offset, and Origin keeps them - measured live against
+the game, not assumed:
+
+| what | where | what it read |
+|---|---|---|
+| the bottom-screen task | `FieldSystem + 0xD8` | the same |
+| the app's data | `task + 0x10` | the same |
+| the app inside it | `app + 0x04` | the same |
+| the controller | `task + 0x10` again | the same |
+| the controller's state | `controller + 0x00` | 4 - the prompt is waiting for an answer |
+| the FieldSystem inside it | `controller + 0x24` | the very FieldSystem the player stands in |
+| the selected choice | `controller + 0x394` | 0 Yes, 1 No - it moves with the D-Pad |
+| the bottom screen's app id | `app + 0x00` | 3, the choice menu, as in retail |
+| the field's saved app id | `FieldSystem + 0x1C` | 3, as in retail |
+
+The way in is the Headbutt tree north of New Bark Town's shop: *"It's a moderately sized
+tree. Would you like to use Headbutt?"* - a real field prompt, in state 4. The patched
+build draws the two words on the **top** screen, in the dialog, with the band on the
+selected one; the unpatched build leaves the two white boxes the game draws there empty.
+The two pictures differ in exactly that, and the difference is the patch's work.
+
+One place where the struct is *not* retail's: the game writes the ScriptMenu pointer and
+the result pointer at the far end of it, `controller + 0x3A0` and `controller + 0x39C`,
+where retail keeps the result at `+0x04`. The hook never reads those two, so it makes no
+difference - but it is why the struct's tail was measured rather than copied.
+
+**Origin's touch-menu layout table is the retail one, in another overlay.** The seven
+layouts - the normal one, Safari, Bug Contest, Pal Park, Union Room, Colosseum, Battle
+Tower - are the game's own table, `sTouchscreenMenuLayouts`, and Origin kept it byte for
+byte, because hg-engine took it from the decomp instead of writing its own. It sits in
+overlay 28 here rather than the retail build's 27, and the patcher only ever looked at
+overlay 27 - so it did not find the table and drew the normal layout alone. It is now
+looked for by its content, and all seven layouts are drawn.
+**Origin's touch menu data is retail's, field for field.** The hook reads the touch
+app's own data to know which of the seven layouts is up, which icons it shows and which
+slot is selected - at retail's offsets `0x51C`, `0x470` and `0x14`. Measured live in
+Origin, with the menu open and the cursor moved, all three answer exactly where retail
+has them:
+
+| what | where | what it read |
+|---|---|---|
+| the FieldSystem inside it | `data + 0x10` | the very FieldSystem the player stands in |
+| the selected slot | `data + 0x14` | 0, then 1 when the D-Pad moved down |
+| the icons' shown flags | `data + 0x470`, stride 8 | seven bytes, all set |
+| the layout index | `data + 0x51C` | 0, the normal layout |
+
+The start menu's own task data carries the rest: its state at `+0x2A` reads 3 while the
+menu is up, and its inhibit flags at `+0x350` read `0x180` - the normal layout's own set,
+which is what the hook compares against to tell the layouts apart. hg-engine grew that
+struct by four bytes at the front, so both offsets are four further on than in the retail
+build, and both were measured rather than assumed.
+
+The result on screen is the same panel the retail build draws, word for word: the
+touch screen keeps the game's own buttons, the top screen gets the words.
+
+**The battle's screen came back only if the battle's own state was asked first.** Using
+an item in a battle - a Poke Ball - left the screen on engine B for the rest of the
+fight: the top screen kept showing the ball's throw animation while the battle scene
+lay on the bottom one. The cause was the order of the probe's questions, not the signal
+it asked.
+
+Origin's battle keeps its menu object at `0x02255B94`, and the object's own state byte
+at `+0x3D0` says what is on the screen: 1 at the command menu, 2 while the move list or
+the party has it, 0 while no battle menu is up - the turn is running, an item is being
+used. One word below the pointer, at `0x02255B90`, sits a byte that says "a full-screen
+battle app owns the screen": the options, the info, the bag. Those screens take the menu
+object away with them, so the byte is the only signal left while they are up.
+
+The probe believed that byte first, and it STAYS SET after an item is used: the game
+throws the ball with the flag still up and only clears it much later, if at all. The
+probe therefore kept handing the screen to engine B - the flag said so - and the battle
+scene never came back to the top. Measured live, the whole story fits in one line:
+
+| what | menu object | state `+0x3D0` | flag `+0x1B1` | byte `0x02255B90` | POWCNT1 |
+|---|---|---|---|---|---|
+| the command menu | there | 1 | 1 | 0 | `0x8207`, scene on top |
+| the party list | there | 2 | 1 | 0 | `0x020F`, list on top |
+| the options, the info, the bag | none | - | - | 1 | `0x020F`, app on top |
+| the ball is thrown | there | 0 | 0 | **1** | `0x020F`, **ball on top** |
+
+The fix is to ask the state first and to consult the byte only where there is no state
+to ask - that is, while the menu object is gone and a full-screen app may own the
+screen. Then the ball's throw leaves the state at 0, the scene keeps the screen, and the
+flag is only believed while it is the only thing that can say anything.
+
+The battle's own command menu is not the retail one either, and that is worth writing
+down because it changes what "the cursor" means. The game's cursor byte at
+`0x02255B9C` is live - it follows the D-Pad - but its ids are the build's own, not
+retail's: 0 opens the party, 4 opens the info, and 1 opens the four-button menu with
+HP/PP RESUME, POKe MON, STATUS HEALERS and BATTLE ITEMS. The bag is two steps deeper
+still: the battle menu, then BATTLE ITEMS, then the item list with the Poke Ball in it.
+**The shop's list is on the top screen.** Verified live in the New Bark Town shop,
+with the save from after the parcel quest: the clerk's BUY / SELL / ASK A FRIEND menu
+and the list of goods come up on the **top** screen - prices, the page counter and the
+SELL button included - while the shop's scene and the description of the highlighted
+item stay on the bottom screen. That is the split the retail build gives.
+
+The shop needs the quest first: the clerk hands out Elm's parcel for Professor Oak, and
+the shop only opens once that is delivered. A save from before the quest cannot be used
+to check it - the clerk's dialogue repeats and the list never comes up.
+
+The chain that opens it, measured live:
+
+| step | what | where |
+|---|---|---|
+| the clerk's dialogue | the field's message box, on the top screen | `POWCNT1` `0x820F` |
+| the list opens | the choice controller goes to state 8 (the ScriptMenu's own states are 7..10) and the menu pointer is set | `controller + 0x00`, `+0x0C` |
+| the list is up | the screen is on engine B, so the list the game draws there lands on the top screen | `POWCNT1` `0x020F` |
+
+#### The onboarding's routing was the blanket flip's doing
+
+Origin's onboarding - the content warning, the intro text, the intro menu with
+Oak's dialog and the name entry - draws its **text on engine A**, and the
+application that starts it raises engine A. The patch's blanket flip inverts
+every such site, so the patched build put the text on the touch screen for the
+whole onboarding.
+
+Measured live, the same walk in both builds, POWCNT1's bit 15 meaning "engine
+A on top":
+
+| build | POWCNT1 during the onboarding | the content warning is on |
+|---|---|---|
+| unpatched | `0x820F` | the top screen |
+| patched, before the fix | `0x020F` | the bottom screen |
+| patched, after the fix | `0x820F` | the top screen |
+
+The onboarding applications never write POWCNT1 themselves. The content warning
+and the intro text are drawn by overlay 49 and the name entry by overlay 58,
+and neither overlay holds a display-routing site at all - of the 87 sites the
+scanner finds in this ROM, none is in those two. So the one write that decides
+it is the application's that starts the onboarding, and it is enough: the value
+stays at `0x020F` from the content warning all the way to the intro menu.
+
+Which application it is took a bisection. The candidates are the 38 "SET" sites
+of the overlays - the ones the blanket flip turns from "raise engine A" into
+"lower engine A" - and the site is
+
+    overlay 71, at 0x02224B28
+
+in the routine that starts at `0x02224AC0`; the application's own template sits
+in the ARM9's static data at `0x020F2C58`. Restoring that single site is the
+whole fix, and it uses the mechanism the retail build already uses for the Pal
+Pad and the rankings viewer: the site is marked KEEP, so the application that
+draws its text on engine A keeps engine A on top.
+
+The route to the answer is worth writing down, because every obvious guess was
+wrong:
+
+* The onboarding's own applications do not write the register - overlays 49 and
+  58 hold no POWCNT1 site at all.
+* `gSystem.screensFlipped` stays 0 through the whole onboarding, so the game's
+  own display helper is not what routes it.
+* The hook's battle probe is not it either: the battle's menu pointer and its
+  submenu byte both read 0 during the onboarding, so the hook never touches
+  the routing.
+* melonDS's GDB stub answers `Z0` and `Z2` with `OK` and then ignores them: a
+  write watchpoint on POWCNT1 never fires, not even on the key reader's word,
+  which the game writes every frame. The boot-time write cannot be caught that
+  way.
+
+What is left is a bisection over the sites themselves, and it is cheap: the
+patcher stores the overlays uncompressed, so a site can be put back the way the
+original ROM had it by copying two bytes, and every candidate is a 30-second
+walk away from an answer.
+
+**Oak's speech in Origin is the intro application, and it is retail's window.** The
+opening is not overlay 53 - retail's Oak application - but overlay 49, the intro
+application, and its exec is not reached through an ARM9 template at all: the word
+`0x021E4C59` sits as a data word inside that overlay, at file offset `0x250`, exactly
+once. The patcher puts the hook there and keeps the original address.
+
+The app object keeps retail's `OakSpeechData` layout, eight bytes further on: the state
+byte is at `+0x0C`, the number of options at `+0x169`, the cursor at `+0x16B`. The state
+numbers are the retail ones, with one exception:
+
+| state | what | retail |
+|---|---|---|
+| `0x03` | the tutorial menu, three options, the D-Pad moves the cursor | 0..7 |
+| `0x2E`..`0x3C` | Oak's speech pages | 62..93 |
+| `0x3D` | "Or are you boy or a girl?" | 61 |
+| `0x41` | the outfit picker, the cursor moves with LEFT and RIGHT | 65 |
+| `0x45` | "So... you're a boy then?", the cursor moves with UP and DOWN | 69 |
+| `0x66` | "Your name is ...?" | **98** |
+
+The name question is the exception: hg-engine put four states into Oak's speech before
+it, so retail's 98 is 102 here. It is worth writing down because a state number that is
+one too low draws nothing at all, and the symptom is the game's own two empty boxes -
+exactly what the unpatched build shows.
+
+**The window is retail's, down to the tile.** Oak's box in Origin is on MAIN_0, and it
+is the same rectangle the retail build draws into:
+
+| | value |
+|---|---|
+| character base | `0x06018000` (engine A's extended VRAM, 4bpp, 32-byte tiles) |
+| base tile | `0x36D` |
+| screen base | 15, so the map is at `0x06007800` |
+| window column, row | 2, 19 |
+| width | 27 tiles, stride 27 |
+| content | rows 19..22, columns 0..26 |
+| palette | bank 6 of engine A's BG0: 1 ink, 2 shadow, 11/15 paper, 12 the band |
+
+That it is retail's is not an assumption: the window's first glyph - the "S" of "So...
+you're a boy then?" - sits at `0x06018000 + 0x36D * 32`, and the nibble pattern of that
+tile matches the pixels of the screenshot exactly. The retail geometry records can be
+reused as they are; only the boy/girl record needed a new one, because Origin keeps its
+second line of text on screen while the outfit picker is up ("Won't you please tell
+me?" is still there), and the retail record covers all four rows of the window. The
+Origin record stops after the first line.
+
+**The name entry is hg-engine's own, and it is two apps.** Retail's name entry is a
+single ARM9 routine at `0x02083141`; the retail app table sends it to the top screen.
+Origin has two pieces instead:
+
+| what | what it is | where |
+|---|---|---|
+| the list of outfits, with the name field | an overlay application | overlay 58, exec `0x021E85AD` |
+| the keyboard behind it | an ARM9 routine, retail's shape | `0x02081E0D` |
+
+The keyboard routine is retail's routine with the same shape - a push, four literal
+loads, the task's data at `+0x168`, the callback and its argument written into the
+task - and retail's own bytes are `08b59df76bfa88f76df80...` where Origin's are
+`08b59ef79dff89f7d7f90...`. It draws the keyboard on engine A and routes that engine to
+the bottom screen, which is why the keyboard came up on the touch screen while the
+name field stayed on the top one. The app table now sends both of hg-engine's pieces to
+the top, with the name field at the bottom of the screen and the keyboard above it -
+the retail build's arrangement.
+
+The list of outfits is driven by the D-Pad, not by touch: the red cursor walks down the
+list with DOWN, and A on "OK" confirms it. The name field is the bar at the bottom of
+the screen.
+
+**The overlays are renumbered, and the numbers can be recovered from the data.** hg-engine
+rewrote every overlay's CODE in C, so no amount of comparing code identifies an overlay.
+It did keep the large DATA tables, and those are the same bytes in both ROMs: the overlay
+that still holds a retail overlay's blocks is that application. Counting the 32-byte
+blocks two overlays share separates the real matches from the noise by an order of
+magnitude (`tools/ov_map_all.py` prints the whole map):
+
+| application | retail | Origin | shared blocks |
+|---|---|---|---|
+| the Pokedex | 18 (91488 B) | **5** (96192 B) | 160 (5.6%) |
+| the flight map | 101 (80832 B) | **92** (80608 B) | 93 (3.7%) |
+| Oak's speech | 53 (12192 B) | **49** (14912 B) | 15 (3.9%) - and live-verified |
+| the move relearner | 68 | 65 | found by content, and the map agrees |
+| the Pal Pad | 43 | 44 | found by content, and the map agrees |
+| the rankings viewer | 121 | 113 | found by content, and the map agrees |
+
+Origin's overlay 53 is retail's overlay **57** - a different application - and Origin's
+overlay 18 is retail's overlay 16. So the two take-overs that used retail's numbers were
+pointed at strangers: the Pokedex hook sat on retail's overlay 16, and the Oak hook on
+retail's overlay 57, reading a foreign `OakSpeechData` and drawing Oak's words into an
+application that has none. The Oak take-over is gone in the Origin build - Origin's Oak
+is overlay 49, hooked by its own content - and the Pokedex and the flight map now use
+the numbers the data gives.
+
+**The evolution scene is retail's, at another address.** hg-engine moved the evolution
+code in the ARM9 but kept it, byte for byte: the application's vBlank callback is
+retail's `0x02077270` at `0x020759A4`, and the main-queue task that runs the
+move-learning screen is retail's `sub_02075D08` at `0x020743C0`. The task is started
+from a pointer literal - the word that holds the callback and is handed to
+`SysTask_CreateOnMainQueue` - which in retail sits at `0x02075D04` and in Origin at
+`0x020743BC`. Both are found the same way: exactly one `ldr r0, [pc, #imm]` in the ARM9
+resolves to the pool word that holds the callback. The retail build replaces that word
+with the hook's own wrapper; the Origin build now does the same, and the wrapper calls
+the game's task through a config field, because the address is a build's own.

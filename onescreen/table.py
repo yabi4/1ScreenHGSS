@@ -9,6 +9,46 @@ should come to the top, so the exceptions are the interesting part.
 
 FLIP, KEEP, TOUCH = "FLIP", "KEEP", "TOUCH"
 
+# Origin HeartGold's own anchors. hg-engine renumbered the overlays and moved
+# the code, so the retail addresses above mean nothing there; these are
+# the sites that must not be flipped in that build:
+#
+#  * 0x020233FE - the shared display-select helper, which reads
+#    gSystem.screensFlipped and applies POWCNT1 bit 15. ~75 call sites use it,
+#    the field among them; flipping it inverts the overworld.
+#  * 0x0201AA9A - the boot-time graphics init, called once from NitroMain.
+#
+# The trainer card's signature is stylus-only and stays on the touch screen in
+# both builds (overlay 52 is overlay 52 in both).
+ORIGIN_SITE_INTENT = {
+    0x020233FE: KEEP,
+    0x0201AA9A: KEEP,
+    # The onboarding application's own routing write, in overlay 71.
+    #
+    # The onboarding raises engine A when it starts - the text of the content
+    # warning, the intro text, the intro menu and Oak's dialog is drawn on
+    # engine A - and the onboarding never routes the screens again afterwards,
+    # so this one write decides where the text of the whole onboarding lands.
+    #
+    # Flipping it is what the blanket flip does to every "SET" site, and it puts
+    # the text on the touch screen for the whole onboarding: measured, the
+    # unpatched build runs the onboarding at POWCNT1 0x820F (text on top) and
+    # the patched one at 0x020F (text at the bottom).
+    0x02224B28: KEEP,
+}
+
+# Per-MODULE decisions for the Origin build, on top of the table below.
+#
+# The battle is overlay 14 here, not the retail 12 - and it must not be flipped:
+# Origin puts the battle scene on the TOP screen itself and drives its own
+# command buttons on the bottom one, so the hook's words go onto the scene
+# rather than replacing it. (As measured, that overlay holds no display-routing
+# site at all, so nothing there can be flipped either way - the entry says so
+# rather than leaves it to chance.)
+ORIGIN_MODULE_INTENT = {
+    "ov014": KEEP,
+}
+
 # Per-SITE decisions, keyed by the address of the POWCNT1 LDR. These win over the
 # per-module table below.
 SITE_INTENT = {
@@ -85,7 +125,13 @@ MODULE_INTENT = {
 FIELD_OVERLAYS = (1, 2, 3, 27)
 
 
-def intent_for(module: str, addr=None) -> str:
+def intent_for(module: str, addr=None, origin_build: bool = False) -> str:
+    if origin_build:
+        if addr is not None and addr in ORIGIN_SITE_INTENT:
+            return ORIGIN_SITE_INTENT[addr]
+        if module in ORIGIN_MODULE_INTENT:
+            return ORIGIN_MODULE_INTENT[module]
+        return MODULE_INTENT.get(module, FLIP)
     if addr is not None and addr in SITE_INTENT:
         return SITE_INTENT[addr]
     return MODULE_INTENT.get(module, FLIP)

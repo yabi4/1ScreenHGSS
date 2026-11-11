@@ -18,10 +18,8 @@ Things this has to get right, all easy to get wrong by accident:
 * PyInstaller writes to `build/` and `dist/` by default. `build/` in this repo
   already holds unpacked ROM modules and is gitignored, so a default run would
   scatter its work in among them. Both paths are redirected to `dist-gui/`.
-* The patcher reads `onescreen/payload/hook.bin` and `hook.json` at runtime, so
-  they are bundled as data. `onescreen/rom.py` resolves them relative to its own
-  file, which PyInstaller reproduces under `sys._MEIPASS`, so no code change is
-  needed for the frozen build to find them.
+* The patcher selects the retail or Origin hook at runtime. Both payloads are
+  bundled as data next to `onescreen/rom.py`.
 * macOS wants an .app bundle rather than one file - PyInstaller is retiring
   one-file .app builds - and an .icns icon, made here from the committed PNG
   with the system's own sips and iconutil. The Tk it bundles is the build
@@ -107,8 +105,11 @@ def main():
         sys.exit("PyInstaller is required.  pip install pyinstaller")
 
     payload = ROOT / "onescreen" / "payload"
-    if not (payload / "hook.bin").is_file():
-        sys.exit(f"missing {payload/'hook.bin'} - run tools/make_payload.py first")
+    origin_payload = ROOT / "onescreen" / "payload_origin"
+    for directory in (payload, origin_payload):
+        for name in ("hook.bin", "hook.json"):
+            if not (directory / name).is_file():
+                sys.exit(f"missing {directory / name} - see docs/DEVELOPMENT.md")
     assets = ROOT / "assets"
     ico, png = assets / "1screenhgss.ico", assets / "1screenhgss.png"
     if not ico.is_file() or not png.is_file():
@@ -144,6 +145,7 @@ def main():
         "--noconfirm", "--clean", *mode,
         "--name", name,
         "--add-data", f"{payload}{sep}onescreen/payload",
+        "--add-data", f"{origin_payload}{sep}onescreen/payload_origin",
         "--add-data", f"{assets}{sep}assets",
         *(["--icon", str(icon)] if icon else []),
         "--workpath", str(work),

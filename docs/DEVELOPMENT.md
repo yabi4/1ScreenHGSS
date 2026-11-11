@@ -32,6 +32,21 @@ That regenerates `onescreen/payload/hook.bin` **and** `hook.json`. Never hand-ed
 JSON — an early hand-conversion put the load address 0xA00 bytes off, which silently
 loaded the payload to the wrong place.
 
+**Origin HeartGold needs a second payload.** Its ARM9 keeps more of the ITCM for
+itself than retail does — `0xFC0` bytes where retail uses `0x620` — so the payload
+goes after that block, at `0x01FF8FC0`, and reserves less room for the label blob.
+Pointing it at the retail address put our code on top of the game's and the game
+booted to a white screen:
+
+```bash
+python tools/make_payload.py --dest payload_origin \
+    --load-addr 0x01FF8FC0 --defsym LABEL_BLOB_SIZE=16384
+```
+
+The patcher picks the payload by the ROM it is given, and `onescreen/origin.py` holds
+every address that differs from retail — each one checked against the ROM being
+patched before anything is written.
+
 ### The config block
 
 The hook does not hardcode the addresses it reads. `OneScreen_Config` at the top of

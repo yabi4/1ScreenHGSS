@@ -32,6 +32,10 @@ def main():
     ap.add_argument("--no-hook", action="store_true",
                     help="static screen flips only: no ITCM code, no automatic "
                          "battle swapping and no L+R toggle")
+    ap.add_argument("--no-battle-take-over", action="store_true",
+                    help="let the game run the battle by itself: the hook does "
+                         "not take over the battle application's exec pointer "
+                         "(a bisect aid)")
     ap.add_argument("--theme", default=themes.DEFAULT_THEME,
                     choices=sorted(themes.THEMES),
                     help="colour scheme for the menus this patch draws")
@@ -60,7 +64,8 @@ def main():
 
     print(f"1ScreenHGSS - patching {src.name}")
     out = onescreen_rom.patch(data, auto_battle=not args.no_hook,
-                              theme=args.theme)
+                              theme=args.theme,
+                              battle_take_over=not args.no_battle_take_over)
     dst.write_bytes(out)
     print(f"  Written  : {dst}  ({len(out):,} bytes)")
     print("\nDone. Put your .sav next to it with a matching name, and set your\n"

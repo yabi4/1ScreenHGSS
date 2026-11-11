@@ -403,6 +403,43 @@ ROW_H = 16                      # one glyph tall
 CELL_W = GRID_COLS * 8          # 112 px
 YN_CELL_W = YN_COLS * 8         # 24 px
 
+
+class Box:
+    """Where the four battle commands are drawn, and how big a cell is.
+
+    A box is a rectangle of the battle message window: `cols` tiles across,
+    `rows` tile rows tall, starting at column `base_col` of the window's line
+    `base_tile`. The window's lines are 27 tiles wide and start at tile 31, so
+    `base_tile` is 31 for its first line and 31 + 27*n for the nth.
+
+    Retail HGSS and Origin HeartGold place the commands in the same right-hand
+    columns, following the game's cursor grid (FIGHT across the top,
+    BAG/RUN/POKEMON along the bottom).
+    """
+
+    __slots__ = ("cols", "rows", "base_col", "base_tile", "layout")
+
+    def __init__(self, cols, rows, base_col, base_tile, layout):
+        self.cols = cols
+        self.rows = rows
+        self.base_col = base_col
+        self.base_tile = base_tile
+        self.layout = layout
+
+    @property
+    def width(self):
+        """The box's width in pixels."""
+        return self.cols * 8
+
+    @property
+    def height(self):
+        """The box's height in pixels."""
+        return self.rows * 8
+
+
+RETAIL_BOX = Box(GRID_COLS, GRID_ROWS, GRID_BASE_COL, WIN_BASE_TILE, "retail")
+ORIGIN_BOX = Box(GRID_COLS, GRID_ROWS, GRID_BASE_COL, WIN_BASE_TILE, "origin")
+
 BLOB_MAGIC = b"1SLB"
 
 # Image sets, referenced by the geometry records in the blob header so the hook
@@ -429,15 +466,27 @@ YN_IMAGES = 3
 # Precomputed so the resident code is a pair of copy loops with no
 # multiplication: a window row is contiguous but strides by the whole 27-tile
 # window width to reach the next one.
-def _row_addrs(char_base, base_tile, base_col):
+def _row_addrs(char_base, base_tile, base_col, rows=GRID_ROWS):
     """Absolute VRAM address of each tile row of a box.
 
     Absolute rather than an offset from one base, because the three boxes sit on
     three different character bases - the hook holds no address of its own and
     simply copies where it is told.
+
+    A box that is shorter than the window has fewer rows than the record's
+    table holds; the missing ones are left at 0, which the hook reads as "this
+    box has no such row".
     """
     return tuple((char_base + (base_tile + r * WIN_STRIDE + base_col) * 32)
-                 for r in range(GRID_ROWS))
+                 for r in range(rows))
+
+
+def _row_table(addrs):
+    """A box's rows, padded to the record's four slots with "no such row"."""
+    addrs = tuple(addrs)
+    if len(addrs) > GRID_ROWS:
+        raise LabelError(f"{len(addrs)} rows do not fit the record's {GRID_ROWS}")
+    return addrs + (0,) * (GRID_ROWS - len(addrs))
 
 
 OAK_IMAGES = 3                  # yes/no pair, wipe
@@ -544,6 +593,33 @@ class LabelError(Exception):
     """The labels could not be built from this ROM."""
 
 
+class MessageFiles:
+    """Which archive file holds each role's messages, in this ROM.
+
+    Retail HGSS names its message files after the archive they came from -
+    msg_0197 is the battle text, msg_0196 the start menu, msg_0191 the script
+    list menus. A ROM whose archive was rebuilt numbers them differently:
+    Origin HeartGold's comes from a Japanese base with a Chinese text, and
+    its files sit at other positions. What does NOT move are the message
+    indices INSIDE a file - Origin's file 195 holds exactly the entries
+    retail's msg_0197 holds, at exactly the same indices (924 FIGHT,
+    925 BAG, 927 RUN, 940 Yes, 941 No).
+
+    So this carries a translation from the retail number to this ROM's, and
+    every table in this module keeps speaking in retail numbers. The font is
+    here too: Origin's font archive holds the standard 509-glyph font at
+    index 3 rather than index 1.
+    """
+
+    def __init__(self, mapping=None, font_file=FONT_FILE):
+        self.mapping = dict(mapping or {})
+        self.font_file = font_file
+
+    def file(self, retail_id: int) -> int:
+        """The file number `retail_id` has in this ROM."""
+        return self.mapping.get(retail_id, retail_id)
+
+
 # ---------------------------------------------------------------------------
 # Archive reading
 # ---------------------------------------------------------------------------
@@ -620,13 +696,16 @@ class Font:
                 f"glyph={gw}x{gh} tiles (wanted 16 and 2x2)")
         self.glyph_size = gw * gh * 16
         expect = self.header_size + self.num_glyphs * self.glyph_size
-        if expect != self.width_start:
+        if expect > self.width_start:
             raise LabelError(
                 f"font header is inconsistent: {self.num_glyphs} glyphs of "
                 f"{self.glyph_size} bytes after a {self.header_size}-byte header "
                 f"ends at {expect}, but widthDataStart says {self.width_start}")
         if len(blob) < self.width_start + self.num_glyphs:
             raise LabelError("font file is shorter than its own width table")
+        # A gap between the glyphs and the width table is allowed: Origin's
+        # Chinese fonts put the kanji data there, and the glyphs themselves
+        # stay where the header says they are.
         self.blob = blob
 
     def _index(self, code: int) -> int:
@@ -764,8 +843,9 @@ def _layout_row(font: Font, items, cell_w):
     return out
 
 
-def _render(font: Font, placed, selected, width=CELL_W, invert=False):
-    """Return a `width` x CELL_H grid of palette indices.
+def _render(font: Font, placed, selected, width=CELL_W, height=CELL_H,
+            invert=False):
+    """Return a `width` x `height` grid of palette indices.
 
     `invert` makes selected ink white and suppresses its shadow. Every selected
     band uses index 12: battle/field already load their accent there, while the
@@ -773,10 +853,10 @@ def _render(font: Font, placed, selected, width=CELL_W, invert=False):
     """
     band = HILITE
     sel_rect = placed[selected][3] if selected is not None else None
-    canvas = [[PAPER] * width for _ in range(CELL_H)]
+    canvas = [[PAPER] * width for _ in range(height)]
     if sel_rect is not None:
         x0, y0, w, h = sel_rect
-        for y in range(y0, min(y0 + h, CELL_H)):
+        for y in range(y0, min(y0 + h, height)):
             for x in range(max(x0, 0), min(x0 + w, width)):
                 canvas[y][x] = band
     for x, y, codes, _rect in placed:
@@ -785,7 +865,7 @@ def _render(font: Font, placed, selected, width=CELL_W, invert=False):
             w = font.width(code)
             for gy in range(16):
                 ty = y + gy
-                if not 0 <= ty < CELL_H:
+                if not 0 <= ty < height:
                     continue
                 for gx in range(w):
                     tx = x + gx
@@ -823,21 +903,34 @@ def _band(canvas, rect):
     return out
 
 
-def _banded_set(font: Font, placed, width, cols):
+def _banded_set(font: Font, placed, width, cols, rows=GRID_ROWS, choices=None):
     """One plain image and a rectangle per choice - see BANDED.
+
+    `choices` may be more than there are words: a choice with no word of its own
+    gets an empty rectangle, so selecting it leaves the picture as it is.
+    Origin's command menu has one - INFO, above FIGHT - and the game's cursor
+    can sit on it.
 
     Raises LabelError unless banding the plain image reproduces _render's image
     of every choice exactly, so a set that does not have that shape (an inverted
     one, say) can never be stored this way.
     """
-    plain = _render(font, placed, None, width)
+    height = rows * 8
+    plain = _render(font, placed, None, width, height)
     rects = []
     for sel, item in enumerate(placed):
-        rect = _clip_rect(item[3], width)
-        if _band(plain, rect) != _render(font, placed, sel, width):
+        rect = _clip_rect(item[3], width, height)
+        if _band(plain, rect) != _render(font, placed, sel, width, height):
             raise LabelError(f"choice {sel} is not its plain image banded")
         rects.append(rect)
-    return _to_tiles(plain, cols), b"".join(struct.pack("<4B", *r) for r in rects)
+    if choices is None:
+        choices = len(placed)
+    if choices < len(placed):
+        raise LabelError(f"a set of {len(placed)} words cannot have {choices} "
+                         f"choices")
+    rects += [(0, 0, 0, 0)] * (choices - len(placed))
+    return (_to_tiles(plain, cols, rows),
+            b"".join(struct.pack("<4B", *r) for r in rects))
 
 
 def _render_strip(font: Font, codes, width, height):
@@ -986,10 +1079,12 @@ FRAME_SHAPES = (
 )
 
 
-def _startmenu_labels(archive):
+def _startmenu_labels(archive, mf=None):
     """Decode the start menu's words, in blob-slot order."""
+    mf = mf or MessageFiles()
     out = []
     for action, file_id, msg in STARTMENU_LABELS:
+        file_id = mf.file(file_id)
         if file_id >= len(archive):
             raise LabelError(f"{MSGDATA_NARC} has no file {file_id}")
         codes = _decode_message(archive[file_id], msg)
@@ -1009,15 +1104,17 @@ def _startmenu_cell_w(font: Font, labels) -> int:
     return cell_w
 
 
-def _optional_labels(font: Font, archive, cell_w: int):
+def _optional_labels(font: Font, archive, cell_w: int, mf=None):
     """The Union Room's CHAT / LOG, each only if it fits a cell as already sized.
 
     They are never allowed to widen the panel - the cells are sized by the
     labels every menu shows - and a missing one simply leaves the Union Room to
     swap, which is what it did before.
     """
+    mf = mf or MessageFiles()
     out = []
     for key, file_id, msg in OPTIONAL_LABELS:
+        file_id = mf.file(file_id)
         if file_id >= len(archive):
             continue
         try:
@@ -1055,16 +1152,33 @@ def _touch_plans(labels, layouts_ok: bool) -> bytes:
     return bytes(out)
 
 
-def touch_layouts_in(overlays) -> bool:
-    """Is the game's own layout table in this ROM's overlay 27, as expected?"""
-    try:
-        data = bytes(overlays[27].data)
-    except Exception:                                   # noqa: BLE001
-        return False
-    return bytes(b for row in TOUCH_LAYOUTS for b in row) in data
+def touch_layout_overlay_ids(overlays, overlay_ids=None):
+    """The overlays that hold the game's own touch-menu layout table.
+
+    The table lives in overlay 27 of the retail build. A ROM that numbers its
+    overlays differently keeps the table - it is the game's own data - but in
+    another one, so the caller may name the overlays to look in. `None` keeps
+    the retail answer.
+    """
+    ids = [27] if overlay_ids is None else list(overlay_ids)
+    table = bytes(b for row in TOUCH_LAYOUTS for b in row)
+    out = []
+    for oid in ids:
+        try:
+            data = bytes(overlays[oid].data)
+        except Exception:                                   # noqa: BLE001
+            continue
+        if table in data:
+            out.append(oid)
+    return out
 
 
-def _startmenu(font: Font, archive, off: int, layouts_ok: bool = True):
+def touch_layouts_in(overlays, overlay_ids=None) -> bool:
+    """Is the game's own layout table in this ROM, as expected?"""
+    return bool(touch_layout_overlay_ids(overlays, overlay_ids))
+
+
+def _startmenu(font: Font, archive, off: int, layouts_ok: bool = True, mf=None):
     """Return (record, payload, plans) for the overworld menu panel.
 
     One tile strip per label rather than one finished panel image, because the
@@ -1073,12 +1187,13 @@ def _startmenu(font: Font, archive, off: int, layouts_ok: bool = True):
     tilemap entries at the matching strip, leaving a gap where the touch menu
     leaves one.
     """
-    labels = _startmenu_labels(archive)
+    mf = mf or MessageFiles()
+    labels = _startmenu_labels(archive, mf)
     cell_w = _startmenu_cell_w(font, labels)
     strip_tiles = cell_w * SM_CELL_H
     # The Union Room's two only if the tile budget below 0x197 still holds with
     # them: the base strips, the blank one, the frame, and these.
-    optional = _optional_labels(font, archive, cell_w)
+    optional = _optional_labels(font, archive, cell_w, mf)
     budget = (0x197 - SM_BASE_TILE - len(FRAME_SHAPES)) // strip_tiles
     if len(labels) + len(optional) + 1 > budget:
         optional = []
@@ -1164,12 +1279,16 @@ def _startmenu(font: Font, archive, off: int, layouts_ok: bool = True):
             _touch_plans(labels, layouts_ok))
 
 
-def _self_pc_codes(archive, region: str):
+def _self_pc_codes(archive, region: str, mf=None):
     """"MON PC" / "MY PC", or the trainer card's word where that is unknown."""
+    mf = mf or MessageFiles()
     text = SELF_PC_TEXT.get(region)
     if text is not None:
         return _ascii_codes(text)
-    return _decode_message(archive[TRAINER_MSGDATA_FILE], TRAINER_MSG)
+    trainer = mf.file(TRAINER_MSGDATA_FILE)
+    if trainer >= len(archive):
+        raise LabelError(f"{MSGDATA_NARC} has no file {trainer}")
+    return _decode_message(archive[trainer], TRAINER_MSG)
 
 
 def _list_menu_record(strip_off, strip_tiles, n, cell_w, cell_h, n_cols, n_rows,
@@ -1193,7 +1312,7 @@ def _list_menu_record(strip_off, strip_tiles, n, cell_w, cell_h, n_cols, n_rows,
     return rec
 
 
-def _listmenu(font: Font, archive, off: int, region: str = ""):
+def _listmenu(font: Font, archive, off: int, region: str = "", mf=None):
     """Return (record, payload) for the script list menus.
 
     The pool is the nine border tiles followed by every supported menu's label
@@ -1201,9 +1320,11 @@ def _listmenu(font: Font, archive, off: int, region: str = ""):
     base tile, because two of these can never be open at once, and that is what
     keeps the panel inside the tiles free on MAIN_3.
     """
-    if LIST_MSGDATA_FILE >= len(archive):
-        raise LabelError(f"{MSGDATA_NARC} has no file {LIST_MSGDATA_FILE}")
-    src = archive[LIST_MSGDATA_FILE]
+    mf = mf or MessageFiles()
+    list_file = mf.file(LIST_MSGDATA_FILE)
+    if list_file >= len(archive):
+        raise LabelError(f"{MSGDATA_NARC} has no file {list_file}")
+    src = archive[list_file]
 
     # The border and each menu are packed SEPARATELY: only one menu's strips are
     # ever sent, and a single stream could not be decoded from the middle.
@@ -1234,9 +1355,10 @@ def _listmenu(font: Font, archive, off: int, region: str = ""):
         skip = 0
         for i, (file_id, msg) in enumerate(msgs):
             if file_id is SELF_PC:
-                entries.append(_self_pc_codes(archive, region))
+                entries.append(_self_pc_codes(archive, region, mf))
                 skip |= 1 << i
                 continue
+            file_id = mf.file(file_id)
             if file_id >= len(archive):
                 raise LabelError(f"{MSGDATA_NARC} has no file {file_id}")
             codes = _decode_message(archive[file_id], msg, keep_break=lines > 1)
@@ -1302,7 +1424,8 @@ def _listmenu(font: Font, archive, off: int, region: str = ""):
 # Entry point
 # ---------------------------------------------------------------------------
 
-def build(rom, log=print, theme=themes.DEFAULT_THEME, overlays=None) -> bytes:
+def build(rom, log=print, theme=themes.DEFAULT_THEME, overlays=None, mf=None,
+          box=None, layout_overlays=None, oak_gender_rows=None) -> bytes:
     """Return the label blob for this ROM.
 
     `rom` is an ndspy NintendoDSRom. Raises LabelError if anything about the
@@ -1312,7 +1435,24 @@ def build(rom, log=print, theme=themes.DEFAULT_THEME, overlays=None) -> bytes:
     `theme` only changes colour: the panels' two palettes are a fixed 64 bytes
     in the blob, so every offset, size and record field is identical whichever
     one is chosen.
+
+    `mf` says where this ROM keeps its message files, for a ROM that
+    renumbered them - see MessageFiles.
+
+    `box` says where the four battle commands go and which menus the ROM uses.
+    Origin uses the retail grid with an additional cursor position for INFO.
+
+    `layout_overlays` says which overlays hold the game's own touch-menu
+    layout table - see touch_layouts_in. The default is the retail one.
+
+    `oak_gender_rows` says how many tile rows of Oak's dialog window the
+    boy/girl words may cover, and adds a geometry of their own for them. It is
+    None for retail, whose window has the words to themselves, and a number for
+    Origin, whose window keeps its second line of text on screen while the
+    outfit picker is up - so its words stop after the first line.
     """
+    mf = mf or MessageFiles()
+    box = box or RETAIL_BOX
     chosen = _use_theme(theme)
     try:
         msg_id = rom.filenames.idOf(MSGDATA_NARC)
@@ -1323,35 +1463,40 @@ def build(rom, log=print, theme=themes.DEFAULT_THEME, overlays=None) -> bytes:
         raise LabelError(f"{MSGDATA_NARC} or {FONT_NARC} is missing")
 
     archive = _narc_files(bytes(rom.files[msg_id]))
-    if MSGDATA_FILE >= len(archive):
-        raise LabelError(f"{MSGDATA_NARC} has no file {MSGDATA_FILE}")
-    labels = [_decode_message(archive[MSGDATA_FILE], m) for m in LABEL_MSGS]
-    choices = [_decode_message(archive[MSGDATA_FILE], m) for m in YESNO_MSGS]
-    if OAK_MSGDATA_FILE >= len(archive):
-        raise LabelError(f"{MSGDATA_NARC} has no file {OAK_MSGDATA_FILE}")
-    oak = [_decode_message(archive[OAK_MSGDATA_FILE], m) for m in OAK_YESNO_MSGS]
-    if GENDER_MSGDATA_FILE >= len(archive):
-        raise LabelError(f"{MSGDATA_NARC} has no file {GENDER_MSGDATA_FILE}")
-    gender = [_decode_message(archive[GENDER_MSGDATA_FILE], m) for m in GENDER_MSGS]
+    battle_file = mf.file(MSGDATA_FILE)
+    if battle_file >= len(archive):
+        raise LabelError(f"{MSGDATA_NARC} has no file {battle_file}")
+    labels = [_decode_message(archive[battle_file], m) for m in LABEL_MSGS]
+    choices = [_decode_message(archive[battle_file], m) for m in YESNO_MSGS]
+    oak_file = mf.file(OAK_MSGDATA_FILE)
+    if oak_file >= len(archive):
+        raise LabelError(f"{MSGDATA_NARC} has no file {oak_file}")
+    oak = [_decode_message(archive[oak_file], m) for m in OAK_YESNO_MSGS]
+    gender_file = mf.file(GENDER_MSGDATA_FILE)
+    if gender_file >= len(archive):
+        raise LabelError(f"{MSGDATA_NARC} has no file {gender_file}")
+    gender = [_decode_message(archive[gender_file], m) for m in GENDER_MSGS]
     for msg, codes in zip(LABEL_MSGS + YESNO_MSGS + OAK_YESNO_MSGS + GENDER_MSGS,
                           labels + choices + oak + gender):
         if not codes:
             raise LabelError(f"message {msg} decoded to nothing")
 
     fonts = _narc_files(bytes(rom.files[font_id]))
-    if FONT_FILE >= len(fonts):
-        raise LabelError(f"{FONT_NARC} has no file {FONT_FILE}")
-    font = Font(fonts[FONT_FILE])
+    if mf.font_file >= len(fonts):
+        raise LabelError(f"{FONT_NARC} has no file {mf.font_file}")
+    font = Font(fonts[mf.font_file])
 
-    # Each image set: its layout, how many highlighted variants, pixel width,
-    # tile width, and whether it is banded (BANDED). A geometry then pairs one
-    # of those sets with its destination rows. Keeping those concepts separate
-    # lets the field yes/no geometry alias the battle yes/no images without
-    # copying them into the blob a second time. Every set is banded: one plain
-    # image and a rectangle per choice.
+    # Each image set: its layout, how many choices it has, pixel width, tile
+    # width, how many tile rows it is tall, and whether it is banded (BANDED). A
+    # geometry then pairs one of those sets with its destination rows. Keeping
+    # those concepts separate lets the field yes/no geometry alias the battle
+    # yes/no images without copying them into the blob a second time. Every set
+    # is banded: one plain image and a rectangle per choice.
+    # Origin's fifth cursor position, INFO above FIGHT, has an empty band.
+    command_choices = 4 if box.layout == "retail" else 5
     sets = [
-        (_layout(font, labels), 4, CELL_W, GRID_COLS, True),
-        (_layout_yesno(font, choices), 2, YN_CELL_W, YN_COLS, True),
+        (_layout(font, labels), command_choices, box.width, box.cols, box.rows, True),
+        (_layout_yesno(font, choices), 2, YN_CELL_W, YN_COLS, GRID_ROWS, True),
         # Oak's two prompts used to invert - white ink, no shadow - because the
         # band was whatever saturated colour his intro happened to be using, and
         # dark text vanished into it. A theme picks that colour now, and picks a
@@ -1359,11 +1504,12 @@ def build(rom, log=print, theme=themes.DEFAULT_THEME, overlays=None) -> bytes:
         # every other prompt. Inverting here is what made his selected choice
         # come out white while the rest came out black - and an inverted set
         # could not be banded.
-        (_layout_yesno(font, oak), 2, YN_CELL_W, YN_COLS, True),
+        (_layout_yesno(font, oak), 2, YN_CELL_W, YN_COLS, GRID_ROWS, True),
         (_layout_row(font, gender, GENDER_CELL_W), 2, GENDER_CELL_W, GENDER_COLS,
-         True),
+         GRID_ROWS, True),
     ]
-    battle_rows = _row_addrs(BATTLE_CHAR_BASE, WIN_BASE_TILE, GRID_BASE_COL)
+    battle_rows = _row_addrs(BATTLE_CHAR_BASE, box.base_tile, box.base_col,
+                             box.rows)
     geometries = [
         (0, battle_rows),
         (1, _row_addrs(BATTLE_CHAR_BASE, WIN_BASE_TILE, YN_BASE_COL)),
@@ -1379,7 +1525,7 @@ def build(rom, log=print, theme=themes.DEFAULT_THEME, overlays=None) -> bytes:
     # or a row it cannot fit, leaves that record empty, and the hook hands that
     # menu to the touch screen exactly as before.
     def words(msgs):
-        out = [_decode_message(archive[MSGDATA_FILE], m) for m in msgs]
+        out = [_decode_message(archive[battle_file], m) for m in msgs]
         if not all(out):
             raise LabelError(f"msg_0197 {msgs} has an empty entry")
         return out
@@ -1393,15 +1539,34 @@ def build(rom, log=print, theme=themes.DEFAULT_THEME, overlays=None) -> bytes:
     }
     extra_missing = []
     for name in EXTRA_GEOS:
+        if box.layout != "retail" and name != "cancel":
+            # Origin runs its own battle engine with its own menus. The only
+            # retail command menu that is one of them is the CANCEL variant:
+            # the game puts CANCEL where RUN usually is for the second
+            # battler of a double battle, and it says so in the menu items.
+            geometries.append((None, battle_rows))
+            extra_missing.append(f"{name} (not a retail menu)")
+            continue
         try:
             placed = extra_layouts[name]()
-            _banded_set(font, placed, CELL_W, GRID_COLS)
+            _banded_set(font, placed, box.width, box.cols, box.rows,
+                        command_choices)
         except (LabelError, IndexError, KeyError) as exc:
             extra_missing.append(f"{name} ({exc})")
             geometries.append((None, battle_rows))
             continue
-        sets.append((placed, 4, CELL_W, GRID_COLS, True))
+        sets.append((placed, command_choices, box.width, box.cols, box.rows, True))
         geometries.append((len(sets) - 1, battle_rows))
+
+    if oak_gender_rows is not None:
+        # Origin's own boy/girl geometry. The words are the same ones and they go
+        # into the same window - Origin's Oak dialog box is retail's, down to the
+        # tile it starts at - but they may only cover the first line of it,
+        # because the game keeps its second line on screen while the outfit
+        # picker is up. The rows it leaves out are marked by a zero address,
+        # which is how the hook reads "this box has no such row".
+        geometries.append((3, _row_addrs(OAK_CHAR_BASE, OAK_BASE_TILE,
+                                         GENDER_BASE_COL, oak_gender_rows)))
 
     # Allocate offsets only for unique image sets. Geometry 4 deliberately gets
     # the same offset as geometry 1, while retaining its own destination rows.
@@ -1409,15 +1574,17 @@ def build(rom, log=print, theme=themes.DEFAULT_THEME, overlays=None) -> bytes:
     # them came to 3840 bytes of 0xFF in a blob with no room to spare, so the hook
     # fills instead of copying when asked for the last image. The records still
     # count it, so nothing that asks for a wipe changed.
-    off = BLOB_HEADER
+    blob_header = EXTRA_GEO_OFF + GEO_RECORD * (len(geometries) - GEO_HEAD_COUNT)
+    off = blob_header
     set_offsets, set_data = [], []
-    for placed, variants, width, cols, banded in sets:
+    for placed, variants, width, cols, rows, banded in sets:
         set_offsets.append(off)
         if banded:
-            plain, rects = _banded_set(font, placed, width, cols)
+            plain, rects = _banded_set(font, placed, width, cols, rows, variants)
             data = plain + rects
         else:
-            data = b"".join(_to_tiles(_render(font, placed, sel, width), cols)
+            data = b"".join(_to_tiles(_render(font, placed, sel, width, rows * 8),
+                                      cols, rows)
                             for sel in range(variants))
         set_data.append(data)
         off += len(data)
@@ -1425,15 +1592,15 @@ def build(rom, log=print, theme=themes.DEFAULT_THEME, overlays=None) -> bytes:
     def record(set_id, addrs):
         if set_id is None:                          # a special menu left out
             return struct.pack("<IIHH", 0, 0, GRID_COLS * 32, 0) + \
-                struct.pack(f"<{GRID_ROWS}I", *addrs)
+                struct.pack(f"<{GRID_ROWS}I", *_row_table(addrs))
         if not 0 <= set_id < len(sets):
             raise LabelError(f"geometry references missing image set {set_id}")
-        _placed, variants, _width, cols, banded = sets[set_id]
+        _placed, variants, _width, cols, rows, banded = sets[set_id]
         row_bytes = cols * 32
-        image_bytes = row_bytes * GRID_ROWS
+        image_bytes = row_bytes * rows
         return struct.pack("<IIHH", set_offsets[set_id], image_bytes, row_bytes,
                            (variants + 1) | (BANDED if banded else 0)) + \
-            struct.pack(f"<{GRID_ROWS}I", *addrs)
+            struct.pack(f"<{GRID_ROWS}I", *_row_table(addrs))
 
     blob = bytearray(struct.pack("<4sBBH", BLOB_MAGIC, GRID_ROWS,
                                  len(geometries), 0))
@@ -1446,8 +1613,10 @@ def build(rom, log=print, theme=themes.DEFAULT_THEME, overlays=None) -> bytes:
 
     # `off` now points past the last image, which is where the panel's own data
     # goes, so the record can carry absolute blob offsets like the others.
-    layouts_ok = overlays is not None and touch_layouts_in(overlays)
-    sm_record, sm_payload, sm_plans = _startmenu(font, archive, off, layouts_ok)
+    layout_ids = touch_layout_overlay_ids(overlays, layout_overlays) \
+        if overlays is not None else []
+    layouts_ok = bool(layout_ids)
+    sm_record, sm_payload, sm_plans = _startmenu(font, archive, off, layouts_ok, mf)
     # The fourth letter of the game code is the region, which is the only thing
     # that decides your own PC's row - the one label not taken from the ROM.
     try:
@@ -1455,7 +1624,7 @@ def build(rom, log=print, theme=themes.DEFAULT_THEME, overlays=None) -> bytes:
     except Exception:                                   # noqa: BLE001
         region = ""
     list_record, list_payload = _listmenu(
-        font, archive, off + len(sm_payload), region)
+        font, archive, off + len(sm_payload), region, mf)
     blob += b"\0" * (SM_RECORD_OFF - len(blob))
     blob += sm_record
     blob += b"\0" * (LIST_RECORD_OFF - len(blob))
@@ -1469,23 +1638,25 @@ def build(rom, log=print, theme=themes.DEFAULT_THEME, overlays=None) -> bytes:
         raise LabelError(f"the layout plans end at {len(blob)}, not at the extra "
                          f"geometry records' {EXTRA_GEO_OFF}")
     blob += extra_records
-    if len(blob) != BLOB_HEADER:
-        raise LabelError(f"header is {len(blob)} bytes, expected {BLOB_HEADER}")
+    if len(blob) != blob_header:
+        raise LabelError(f"header is {len(blob)} bytes, expected {blob_header}")
 
     for data in set_data:
         blob += data
     images_bytes = sum(len(d) for d in set_data)
     blob += sm_payload
     blob += list_payload
-    expect = BLOB_HEADER + images_bytes + len(sm_payload) + len(list_payload)
+    expect = blob_header + images_bytes + len(sm_payload) + len(list_payload)
     if len(blob) != expect:
         raise LabelError(f"blob is {len(blob)} bytes, expected {expect}")
 
     fmt = lambda xs: [_text_width(font, c) for c in xs]
-    sm_labels = _startmenu_labels(archive)
+    sm_labels = _startmenu_labels(archive, mf)
     log(f"  Labels   : commands {fmt(labels)} px, battle yes/no {fmt(choices)} px, "
         f"field alias, Oak yes/no {fmt(oak)} px, gender {fmt(gender)} px, "
         f"{len(blob)} bytes")
+    log(f"  Battle   : {box.layout} command box - {box.cols}x{box.rows} tiles at "
+        f"column {box.base_col}, {command_choices} choices")
     drawn = [n for n in EXTRA_GEOS if not any(m.startswith(n + " ") for m in extra_missing)]
     log(f"  Battles  : also drawn - {', '.join(drawn) or 'none'}"
         + (f"; left to the touch screen - {'; '.join(extra_missing)}"
@@ -1498,19 +1669,26 @@ def build(rom, log=print, theme=themes.DEFAULT_THEME, overlays=None) -> bytes:
     drawn = [i for i in range(SM_N_LAYOUTS)
              if sm_plans[i * SM_CELLS] != SM_PLAN_UNDRAWABLE]
     log(f"  X menu   : touch layouts "
-        + ("confirmed in overlay 27" if layouts_ok else "NOT found - normal menu only")
+        + (f"confirmed in overlay {', '.join(str(i) for i in layout_ids)}"
+           if layouts_ok else "NOT found - normal menu only")
         + f", drawn for {drawn}")
     return bytes(blob)
 
 
-def preview(rom, path):
+def preview(rom, path, mf=None, box=None):
     """Write a PNG of all four selection states, for eyeballing a build."""
+    mf = mf or MessageFiles()
+    box = box or RETAIL_BOX
     archive = _narc_files(bytes(rom.files[rom.filenames.idOf(MSGDATA_NARC)]))
-    labels = [_decode_message(archive[MSGDATA_FILE], m) for m in LABEL_MSGS]
-    choices = [_decode_message(archive[MSGDATA_FILE], m) for m in YESNO_MSGS]
-    oak = [_decode_message(archive[OAK_MSGDATA_FILE], m) for m in OAK_YESNO_MSGS]
-    gender = [_decode_message(archive[GENDER_MSGDATA_FILE], m) for m in GENDER_MSGS]
-    font = Font(_narc_files(bytes(rom.files[rom.filenames.idOf(FONT_NARC)]))[FONT_FILE])
+    battle_file = mf.file(MSGDATA_FILE)
+    labels = [_decode_message(archive[battle_file], m) for m in LABEL_MSGS]
+    choices = [_decode_message(archive[battle_file], m) for m in YESNO_MSGS]
+    oak = [_decode_message(archive[mf.file(OAK_MSGDATA_FILE)], m)
+           for m in OAK_YESNO_MSGS]
+    gender = [_decode_message(archive[mf.file(GENDER_MSGDATA_FILE)], m)
+              for m in GENDER_MSGS]
+    font = Font(_narc_files(bytes(rom.files[rom.filenames.idOf(FONT_NARC)]))
+                [mf.font_file])
     placed = _layout(font, labels)
     placed_yn = _layout_yesno(font, choices)
     placed_oak = _layout_yesno(font, oak)
@@ -1520,16 +1698,17 @@ def preview(rom, path):
                PAPER: (255, 255, 255), HILITE: (255, 190, 190)}
     gap = (200, 200, 200)
     rows = []
-    plates = ([(placed, i, CELL_W) for i in range(4)]
-              + [(placed_yn, i, YN_CELL_W) for i in range(2)])
-    for which, sel, width in plates:
+    width = max(box.width, YN_CELL_W)
+    plates = ([(placed, i, box.width, box.height) for i in range(4)]
+              + [(placed_yn, i, YN_CELL_W, CELL_H) for i in range(2)])
+    for which, sel, plate_w, plate_h in plates:
         # Narrow plates are drawn at their real size and padded, so the preview
         # shows how little of the message window the prompt actually covers.
-        for line in _render(font, which, sel, width):
+        for line in _render(font, which, sel, plate_w, plate_h):
             px = [colours.get(v, (255, 0, 255)) for v in line]
-            px += [gap] * (CELL_W - width)
+            px += [gap] * (width - plate_w)
             rows.append(b"\0" + bytes(b for c in px for b in c))
-        rows.append(b"\0" + bytes([220, 220, 220] * CELL_W))
+        rows.append(b"\0" + bytes([220, 220, 220] * width))
 
     def chunk(tag, data):
         body = tag + data
@@ -1538,7 +1717,7 @@ def preview(rom, path):
 
     height = len(rows)
     png = (b"\x89PNG\r\n\x1a\n"
-           + chunk(b"IHDR", struct.pack(">IIBBBBB", CELL_W, height, 8, 2, 0, 0, 0))
+           + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
            + chunk(b"IDAT", zlib.compress(b"".join(rows), 9))
            + chunk(b"IEND", b""))
     with open(path, "wb") as fh:

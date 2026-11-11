@@ -26,6 +26,12 @@ jobs:
       - name: Byte-compile the patcher and tools
         run: python -m compileall -q patch.py patch-gui.py onescreen tools
 
+      # A numeric local label's `b` suffix means "the one ABOVE" and `f` means
+      # "the one BELOW". Getting that backwards jumps into another function and
+      # the assembler raises no error, so it is checked here.
+      - name: The hook's label references stay inside their function
+        run: python tools/check_labels.py
+
       - name: Rebuild the payload
         run: python tools/make_payload.py
 
@@ -37,3 +43,30 @@ jobs:
 
       - name: Emulated tests
         run: python tools/test_hook.py
+
+  origin-payload:
+    # Origin HeartGold's ARM9 keeps more of the ITCM for itself than retail
+    # does, so its payload is linked at another address and reserves another
+    # amount of room for the label blob. It is built and checked the same way.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install arm-none-eabi binutils and ndspy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y binutils-arm-none-eabi
+          python -m pip install --upgrade pip
+          python -m pip install ndspy
+
+      - name: Rebuild the Origin payload
+        run: |
+          python tools/make_payload.py --dest payload_origin \
+            --load-addr 0x01FF8FC0 --defsym LABEL_BLOB_SIZE=16384
+
+      - name: The committed Origin payload matches src/hook.s
+        run: git diff --exit-code -- onescreen/payload_origin

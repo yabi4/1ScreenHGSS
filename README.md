@@ -155,7 +155,74 @@ between the two freely.
 | `IPGF` | SoulSilver (France) | **play-tested** — the reference build |
 | `IPKF` | HeartGold (France) | **play-tested**, including a fresh start through Oak's speech |
 | `IPKE` | HeartGold (USA) | **play-tested** — the opening, the drawn menus and the themes |
+| `IPKJ` | Origin HeartGold (起源心金) v4.0.3 + English patch | **battle menu, X menu, field questions, shop list, Oak's questions and the onboarding play-tested** — see below |
 | other `IPGx` / `IPKx` | HGSS, other languages | untested — good chance of working |
+
+### Origin HeartGold
+
+Origin HeartGold is not a retail HeartGold build: it is a Chinese hack
+rebuilt over the *Japanese* HeartGold on its own engine (`hg-engine`), with 120
+overlays instead of 129, its own battle engine and its own main loop. The
+patcher identifies the supported v4.0.3 EN 1.0.0-rc8 ROM by SHA-1 and verifies
+the code it patches.
+
+What is ported and **play-tested** so far:
+
+- the **battle command menu**: As in retail, **FIGHT** sits above **BAG**,
+  **RUN** and **POKéMON**. The highlight follows the D-Pad. In doubles, the
+  second Pokémon gets **CANCEL** in place of **RUN**. The move list, target
+  grid, bag and party appear on top while active, and the battle scene
+  returns when they close.
+- **Battle questions**: The switch prompt and the move-learning questions
+  mirror the native Yes / No selection. Accepting opens the relevant Pokémon
+  or move list on the top screen.
+- the **overworld menu** (X): the panel is drawn on the top screen, with the same words in
+  the same cells as in the retail build.
+- the **field questions**: a binary prompt (YES / NO) is mirrored into the world's message
+  box on the top screen, and the band follows the game's own selection.
+- the **shop list**: the clerk's BUY / SELL / ASK A FRIEND menu and the list of goods
+  are on the top screen, with the prices, the page counter and the SELL button — the
+  shop's own list, moved up as the retail build moves it. (The New Bark Town shop only
+  opens once Elm's parcel for Professor Oak has been delivered, so this was checked with
+  a save from after that quest.)
+- the **touch menu's layouts**: the game's own layout table is the retail one, byte for
+  byte, and all seven of them (normal, Safari, Bug Contest, Pal Park, Union Room,
+  Colosseum, Battle Tower) are drawn.
+- the **onboarding**: the content warning, the intro text, the intro menu, Oak's
+  dialog and the name entry keep the screen with the text on top, as in the
+  unpatched game. The blanket flip had inverted the one routing site the
+  onboarding depends on, and the text came up on the touch screen instead.
+- **Oak's questions**: the words are drawn into Oak's own dialog box on the top
+  screen — BOY and GIRL side by side at the outfit picker, YES and NO one above
+  the other under "So... you're a boy then?" and under "Your name is ...?" — and
+  the band follows the cursor the game keeps for itself. Origin's Oak is the
+  intro application of overlay 49, not retail's Oak application, but his window
+  is retail's: the same 27 tiles of MAIN_0, the same base tile, the same
+  character base.
+- the **name entry**: hg-engine rewrote it, and both of its pieces come up on
+  the top screen — the list of outfits with the name field, and the keyboard
+  behind it, which sits on top with the name field at the bottom of the screen,
+  exactly where the retail build puts it.
+- the **evolution prompt**: hg-engine moved the evolution code in the ARM9 but
+  kept it — the app callback and the main-queue task are retail's own functions,
+  byte for byte, at other addresses. The patcher therefore takes over the task
+  the way the retail build does, and the YES / NO prompt of the move-learning
+  screen comes up on the top screen with the band on the selected answer.
+  Evolution stays on top after a win, a catch or an escape. The post-battle
+  evolution scan stops at the last occupied party slot.
+
+The **overlay numbers are not the retail ones**: hg-engine renumbered the
+overlays, so the Pokédex is overlay 5 here (retail: 18), the flight map is
+overlay 92 (retail: 101) and Oak's application is overlay 49 (retail: 53).
+The numbers are not guessed: hg-engine rewrote the overlay code but kept the
+large data tables, so the overlay that still holds a retail overlay's bytes is
+that application — `tools/ov_map_all.py` prints the whole map. Origin's overlay
+53 is retail's overlay 57, a different application, and the retail Oak hook is
+therefore *not* installed here: it expects retail's `OakSpeechData` layout and
+would read a stranger's data.
+
+The PC list is wired up but not play-tested yet; it still appears on the bottom
+screen until it is.
 
 Nothing is hardcoded per region. The patcher finds the code it edits by *instruction
 shape*, and every address the resident hook needs is resolved from the ROM being patched:

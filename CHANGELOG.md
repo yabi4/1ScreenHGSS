@@ -1,5 +1,134 @@
 # Changelog
 
+## Unreleased
+
+### Origin HeartGold
+
+- **Origin HeartGold is supported.** 起源心金 v4.0.3 with the English patch
+  1.0.0-rc8 is not a retail HeartGold build: hg-engine rebuilt it over the
+  Japanese one, with its own overlays, its own battle engine and its own ARM9.
+  The patcher now recognises it and patches it like any other build.
+  `onescreen/origin.py` holds everything that is specific to that ROM, and
+  every address in it is checked against the ROM being patched.
+- **The battle commands are drawn on the scene, in the message window's right-hand
+  columns.** Origin prints its prompt on one line where retail wraps onto two,
+  so the window's right-hand columns are free - and that is where the commands
+  go, in the same arrangement as in the retail build: FIGHT across the top line,
+  BAG / RUN / POKéMON along the bottom. Origin moves its cursor in the same 2×3
+  grid, so "up" from BAG lands on FIGHT above it, and the words mirror the
+  touch buttons the player presses.
+- **The highlight follows the game's own cursor.** Origin drives its command
+  menu itself, with the D-Pad and A, and draws its own touch buttons on the
+  bottom screen - so the hook does not drive anything and synthesises no
+  input. It reads the cursor the game keeps and bands the word it points at.
+- **The band behind the selected command no longer blinks out.** The band is
+  palette 11's colour 12 - the salmon the battle scene keeps there - and the
+  scene's own palette blink animates that colour through white every few
+  frames, which hid the band about once a second. The hook puts the colour
+  back every frame the menu is up.
+- **The battle scene stays on the top screen while the commands are up.** Origin puts it
+  there itself, so the battle overlay is not flipped and the hook never swaps the screens
+  during the command menu. The words go onto the scene rather than replacing it.
+- **The battle's touch UI takes the top screen, as it does in retail.** The move list, the
+  bag and the party are drawn on engine B, and the retail build hands the screen over to
+  them as soon as they open. Origin's battle overlay holds no display-routing site at all,
+  so the game never swaps by itself and the hook does it: the moment the move list or the
+  bag opens, the lower screen moves to the top, and the scene comes back when it closes.
+- **The battle scene comes back after an item is used.** Using an item in a battle - a
+  Poke Ball - used to leave the screen on engine B for the rest of the fight: the top
+  screen kept showing the ball's throw animation while the battle scene lay on the
+  bottom one. Origin keeps a flag for "a battle screen owns the screen", and it stays
+  set after an item is used - the game throws the ball with the flag still up - so the
+  hook believed it and never gave the screen back. The hook asks the battle's own state
+  first now, and believes the flag only while there is no state to ask.
+- **The field's yes/no prompts are drawn on the top screen, as in retail.** The two words
+  YES and NO are mirrored into the world's message box on the upper screen, and the band
+  follows the game's own selection. Origin keeps the retail offsets in the choice
+  controller - measured live: the state byte, the FieldSystem pointer and the selected
+  choice all answer where retail has them, and the choice menu's app id is 3 here as
+  well. Verified against the unpatched ROM, which leaves the two boxes the game draws
+  there empty.
+- **The touch menu's special layouts are found.** Safari, Bug Contest, Pal Park, Union
+  Room, Colosseum and Battle Tower are the game's own table, and Origin kept it byte for
+  byte - but in overlay 28 rather than the retail build's 27, so the patcher did not see
+  it and drew the normal layout alone. It is now looked for by its content, and all
+  seven layouts are drawn.
+- **The onboarding keeps the screen with the text on top.** In Origin the
+  content warning, the intro text, the intro menu, Oak's dialog and the name
+  entry draw their text on engine A, and the application that starts the
+  onboarding raises engine A. The blanket flip inverted that one site, and the
+  whole onboarding came up with the text on the touch screen. The site is now
+  kept, so the onboarding runs at POWCNT1 `0x820F` - exactly as the unpatched
+  build does - and the text is on the top screen from the content warning to
+  the name entry.
+- **Oak's questions are drawn in his own window, as in retail.** The three
+  prompts the opening asks for - BOY / GIRL at the outfit picker, YES / NO
+  under "So... you're a boy then?" and YES / NO under "Your name is ...?" -
+  get their words drawn into Oak's dialog box on the top screen, in the same
+  arrangement as in the retail build: BOY and GIRL side by side, YES and NO one
+  above the other, and the band on the word the game's own cursor points at.
+  Origin's Oak is not retail's Oak: it is the intro application of overlay 49,
+  its exec is a data word inside that overlay rather than an ARM9 template, and
+  its app object is eight bytes longer in front. The state numbers are the
+  retail ones - 65 for the outfit picker, 69 for the confirmation - except the
+  name question, which hg-engine pushed from 98 to 102.
+  The window is retail's too, down to the tile it starts at: the same 27 tiles
+  of MAIN_0, the same base tile 0x36D, the same character base 0x06018000 -
+  measured live, the window's first glyph sits at 0x06018000 + 0x36D * 32 and
+  paints the very first letter of Oak's line. The only difference is that
+  Origin keeps its second line of text on screen while the outfit picker is
+  up, so the boy/girl words stop after the first line instead of covering the
+  whole window.
+- **The name entry comes up on the top screen.** hg-engine rewrote the name
+  entry: the list of outfits is an overlay application of its own, and the
+  keyboard behind it is an ARM9 routine that is not retail's either - retail's
+  name entry is a single ARM9 routine, and that routine is what the retail app
+  table already sends to the top screen. The Origin app table now does the same
+  for both of hg-engine's pieces: the outfit list with the name field, and the
+  keyboard behind it, with the name field at the bottom of the screen and the
+  keyboard on top, exactly where the retail build puts it.
+- **The evolution prompt comes up on the top screen.** hg-engine moved the
+  evolution code in the ARM9, but it kept it: the application's vBlank callback
+  and the main-queue task that runs the move-learning screen are retail's own
+  functions, byte for byte, at other addresses (the task at 0x020743C0, the
+  pointer literal that starts it at 0x020743BC). The retail build takes that
+  task over by replacing the literal, and so does this one - the address is a
+  config field now, so the same payload serves both builds.
+- **The overlay numbers are not the retail ones.** hg-engine renumbered the
+  overlays: the Pokedex is overlay 5 here (retail: 18), the PC box is overlay 16
+  (retail: 14), the flight map is overlay 92 (retail: 101) and Oak's application
+  is overlay 49 (retail: 53). The numbers are not guessed - hg-engine rewrote the
+  overlay code but kept the large data tables, so the overlay that still holds a
+  retail overlay's bytes is that application, and `tools/ov_map_all.py` prints the
+  whole map. A second, independent proof comes from the entry points: an
+  `OverlayManagerTemplate`'s init/exec/exit pointers are offsets into their own
+  overlay, and the same program keeps them in the same places - retail's PC box
+  and Origin's have the very same three (`+0x0001`, `+0x006D`, `+0x0089`).
+  `tools/ov_exec_offsets.py` prints that comparison. Origin's overlay 53 is
+  retail's overlay 57, a different application, so the retail Oak hook is no
+  longer installed here: it expects retail's `OakSpeechData` layout and would
+  read a stranger's data.
+- **The emulated tests run again.** The payload the repository ships listed
+  only the routines whose name starts with `OneScreen_`, so the tests could not
+  find the words they drive - they write the game's key state into the pad
+  word, point the app callback at a test structure and read back what the hook
+  made of it. Forty-five of the fifty-eight tests died on a missing symbol
+  before they ran a single instruction. Every global symbol is in the symbol
+  table now, and the words the tests poke are exported: all 58 pass - 57 with a
+  stock Python, and the one that needs the ARM assembler on `PATH` in the Linux
+  CI.
+- **The field dialogue and the Pokemon Center work in Origin too.** The nurse's
+  dialogue and her YES / NO question are on the top screen in the Pokemon
+  Center as well, and the application the counter's machine starts comes up on
+  the top screen with this patch and on the bottom screen without it - checked
+  against the unpatched ROM with the same walk.
+- **The PC box works in Origin too.** The box in the Pokemon Center opens on the
+  top screen, with its option list and its grid where the retail build puts
+  them. hg-engine renumbered the overlays, so the take-over that used retail's
+  overlay 14 now points at Origin's overlay 16 - the same application, proved
+  twice: by the data blocks the two overlays share and by the entry points of
+  their `OverlayManagerTemplate` (`tools/ov_exec_offsets.py`).
+
 ## `V0.3`
 
 Built against the full decompilation of HeartGold/SoulSilver

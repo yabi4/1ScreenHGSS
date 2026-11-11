@@ -19,6 +19,7 @@ dist-gui/
 *.elf
 *.bin
 !onescreen/payload/hook.bin
+!onescreen/payload_origin/hook.bin
 
 # Python
 __pycache__/

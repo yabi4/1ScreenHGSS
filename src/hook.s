@@ -57,6 +57,62 @@ DEF_OPEN_LIST = 0               @ the native list needs; the patcher finds them
 DEF_STRING_WIDTH = 0            @ through the script command table, 0 = leave
 DEF_SETUP_NATIVE = 0            @ every script menu exactly as it was
 DEF_TUTOR_EXEC_ORIG = 0         @ ScrCmd_MoveTutorChooseMove, 0 = leave the tutors
+@ The three functions the hook calls on the game's behalf. They are the same in
+@ every retail region, but a ROM whose main loop or key reader was rewritten in
+@ C has its own - so they are config fields, filled in by the patcher, and the
+@ assembled defaults are the retail ones.
+DEF_ORIG_LOOP_FN = 0x0200110D   @ the main-loop call the hook displaces
+DEF_READ_KEYS_ORIG = 0x0201A4DD @ the game's own key reader
+DEF_APPLY_BUTTON_MODE = 0x0201A5E9 @ the game's "L is A" conversion, 0 = none
+@ The battle engine is a build's own. Retail HGSS runs the decomp's BattleSystem,
+@ whose menu id and cursor the hook reads out of the BattleInput; a ROM whose
+@ battle was rewritten (Origin HeartGold runs its own) has neither, and says so
+@ with its own words. cfg_battle_mode is 0 for the retail path and 1 for such a
+@ build, and the other fields are then read:
+@   cfg_origin_menu_ptr  the address of a pointer to the battle's menu object
+@   cfg_origin_menu_flag the offset of that object's "it is open" flag
+@   cfg_origin_cursor    the address of the selected entry
+@   cfg_origin_state     the offset of the battle scene's state in that object
+@   cfg_origin_battle_data address of the live battle engine's data pointer
+@   cfg_origin_prompt_cursor the address of the two-option prompt's own
+@                        cursor: the shared menu struct keeps one cursor per
+@                        screen, and the prompt is the fourth of them
+@   cfg_origin_cancel_flag the offset of the byte in the menu object that says
+@                        the command menu belongs to the player's SECOND
+@                        battler - the partner of a double battle, whose menu
+@                        shows CANCEL where RUN usually is
+@   cfg_origin_battle_vblank identifies the live battle renderer.
+@ All are 0 in an assembled (unconfigured) payload, which is the retail path.
+DEF_BATTLE_MODE = 0
+DEF_ORIGIN_MENU_PTR = 0
+DEF_ORIGIN_MENU_FLAG = 0
+DEF_ORIGIN_CURSOR = 0
+DEF_ORIGIN_STATE = 0
+DEF_ORIGIN_BATTLE_DATA = 0
+DEF_ORIGIN_PROMPT_CURSOR = 0
+DEF_ORIGIN_CANCEL_FLAG = 0
+DEF_ORIGIN_BATTLE_VBLANK = 0
+@ The highest command id the game writes: INFO, the entry above FIGHT. It has no
+@ word of its own, so the band simply disappears while the cursor is on it.
+ORIGIN_CURSOR_MAX = 4
+@ The battle scene's phases, read out of the menu object:
+@   1  the command menu is up
+@   2  the move list - the touch UI - has the screen
+@   3  target selection - on the same touch UI as the move list
+@   4  the game asks a question
+@ Closing a question clears its phase. Target selection can leave its phase
+@ behind, but frees and clears its target data at +0x3EC.
+ORIGIN_PHASE_COMMAND = 1
+ORIGIN_PHASE_MOVES = 2
+ORIGIN_PHASE_TARGET = 3
+ORIGIN_PHASE_ASK = 4
+ORIGIN_TARGET_DATA_OFF = 0x3EC
+ORIGIN_SUB_OVERLAY_OFF = 0x26C  @ overlay the battle engine currently drives
+ORIGIN_SUB_BAG_PARTY = 9
+ORIGIN_SUB_MOVE_SELECT = 12
+@ The colour of the band behind the selected command: palette 11 colour 12, the
+@ salmon the battle scene keeps there. BGR555 0x62FF is #f8b8c0.
+ORIGIN_BAND_COLOUR = 0x62FF
 
 KEY_A       = 0x001
 KEY_B       = 0x002
@@ -233,6 +289,10 @@ LABEL_GEO_SAFARI = 6            @ BALL / BAIT / MUD / RUN
 LABEL_GEO_BUG    = 7            @ BALL in BAG's place
 LABEL_GEO_PARK   = 8            @ Pal Park: BALL, and RUN below it
 LABEL_GEO_RIVAL  = 9            @ the first rival battle: FIGHT alone
+@ Origin's boy/girl words. They are the same words in the same window, but only
+@ the first line of it: Origin keeps its second line of text on screen while the
+@ outfit picker is up, and a word blitted over it would erase it.
+LABEL_GEO_ORIGIN_GENDER = 10
 @ A record's image count with this bit set is BANDED: one plain image, then one
 @ (x, y, w, h) byte rectangle per choice. Image i is the plain image with the
 @ paper inside rectangle i turned to band - see OneScreen_BandRect.
@@ -240,10 +300,15 @@ LABEL_GEO_BANDED = 0x8000
 @ Reserved space for the label images; the patcher refuses rather than overrun it.
 @ The ten geometry records, the start-menu and list records, the banded command
 @ sets and the yes/no sets fit here. The field geometry aliases the battle Yes/No.
+@ A ROM whose ITCM is mostly in use needs a smaller reservation, so the build
+@ sets it; the patcher then refuses a blob that does not fit.
+.ifndef LABEL_BLOB_SIZE
 LABEL_BLOB_SIZE = 20864         @ reserved; the patcher refuses rather than overrun it
+.endif
 
-@ The main-loop call we displace: `bl 0x0200110C` at 0x02000DB0.
-ORIG_LOOP_FN = 0x0200110C + 1   @ +1 = Thumb
+@ The main-loop call we displace: `bl 0x0200110C` at 0x02000DB0. A ROM whose
+@ main loop was rewritten keeps the call site but not the target, so the
+@ address is a config field - see cfg_orig_loop_fn.
 
 @ The one after it, at 0x02000DB4: `bl ReadKeypadAndTouchpad`, which turns the
 @ pad into gSystem's key words and then calls ApplyButtonModeToInput: under the
@@ -253,8 +318,11 @@ ORIG_LOOP_FN = 0x0200110C + 1   @ +1 = Thumb
 @ NORMAL or L=A.) Both are ARM9 code, at the same address in
 @ every region; inject.patch_key_read checks both before hooking. The words,
 @ as offsets from gSystem.heldKeysRaw - which is what cfg_pad_held points at:
-READ_KEYS_ORIG    = 0x0201A4DC + 1
-APPLY_BUTTON_MODE = 0x0201A5E8 + 1
+@ The reader's own address is a config field too (cfg_read_keys_orig): a ROM
+@ whose key reader was rewritten in C has its own, and the "L is A" conversion
+@ may live inside it rather than in a function of its own - then
+@ cfg_apply_button_mode is 0 and the call is skipped, the conversion having
+@ already run, on the pad as it was.
 PAD_XY_BUF  = 0x027FFFA8        @ bit 15 set: the lid is shut (PAD_DetectFold)
 GS_HELD_RAW = 0x00              @ the pad as it is, never touched: the next frame's
                                 @ edges and the soft reset (L+R+START+SELECT) read it
@@ -431,7 +499,19 @@ START_MENU_DATA_SIZE = 0x38C    @ sizeof(StartMenuTaskData)
 @ - against state 3 (HANDLE_INPUT) for a menu that is genuinely up and taking
 @ input. So the menu really is running during the flash, with the same task and
 @ the same env; only this field separates "up" from "on its way out".
-STARTMENU_STATE_OFF = 0x26
+@ The start menu's own two fields. Their offsets live in the game's struct, and a
+@ build that grew that struct moves them: hg-engine's Origin HeartGold added
+@ four bytes to StartMenuTaskData, so its state sits at +0x2A instead of +0x26
+@ and its inhibit flags at +0x350 instead of +0x34C. Both are measured live, and
+@ both are config fields so the retail path keeps its own values.
+DEF_STARTMENU_STATE_OFF = 0x26
+DEF_STARTMENU_INHIBIT_OFF = 0x34C
+@ Origin HeartGold runs its own Oak speech app, and its exec is not reached
+@ through an ARM9 template: the callback pointer is a data word inside the
+@ overlay. 0 = leave the app alone.
+DEF_ORIGIN_OAK_EXEC_ORIG = 0
+@ The start menu's state, read as a halfword: START_MENU_STATE_HANDLE_INPUT is
+@ the only state where the panel belongs on the screen.
 STARTMENU_EXIT_LO = 12          @ START_MENU_STATE_12: fade out
 STARTMENU_EXIT_HI = 13          @ START_MENU_STATE_13: jump to the exit task
 
@@ -463,7 +543,6 @@ STARTMENU_SAVE_HI = 7
 @                       source and is a trap: past the real entries it holds
 @                       zeros, which read as POKEDEX and drew that word twice.
 FS_START_MENU_CURSOR_OFF = 0xD3 @ FieldSystem.startMenuCursorPos
-SM_INHIBIT_OFF = 0x34C          @ StartMenuTaskData.inhibitIconFlags
 SM_NORMAL_MASK = 0x190          @ DISABLE_RETIRE | DISABLE_7 | DISABLE_SAVE
 SM_NORMAL_BITS = 0x180          @ what the normal layout sets of those three
 
@@ -714,6 +793,21 @@ OAK_CONFIRM_PRE_HI = 68
 OAK_NAME_PRE_LO    = 96
 OAK_NAME_PRE_HI    = 97
 
+@ Origin's Oak app keeps the retail state numbers, and its app object the
+@ retail layout, but everything in it sits eight bytes further on - the struct
+@ grew in front of the state byte. Measured live: the tutorial menu counts
+@ three options at +0x169 and moves its cursor at +0x16B, and the outfit picker
+@ moves the same cursor with LEFT and RIGHT, the yes/no with UP and DOWN.
+ORIGIN_OAK_NUMOPTS_OFF = 0x169
+ORIGIN_OAK_CURSOR_OFF  = 0x16B
+ORIGIN_OAK_PICKER      = 0x41   @ the outfit picker: boy or girl
+ORIGIN_OAK_CONFIRM     = 0x45   @ "So... you're a boy then?" - yes or no
+@ The name question is retail's CONFIRM_NAME_YESNO_HANDLE_INPUT, which is 98 -
+@ hg-engine put four states into Oak's speech before it, so it is 102 here.
+@ Measured live: the window reads "Your name is AAAAAAAA?" with the game's own
+@ two empty boxes at its right, and the app counts two options at +0x169.
+ORIGIN_OAK_CONFIRM_NAME = 0x66  @ "Your name is Leaf?" - yes or no
+
 @ The small DS focus indicator is the {YESNO 0} text control, not a separate
 @ menu. RunTextPrinter consumes it from the print-task queue after this exec hook
 @ returns, so an extra blit here cannot win the ordering race. In only the three
@@ -809,7 +903,9 @@ BLINK_SIZE          = 0x50
 BLINK_APPLY_OFF     = 0x04
 BLINK_PLTT_OFF      = 0x08
 BLINK_BYTES_OFF     = 0x4C      @ screen, palette, state, timer
+.ifndef BLINK_APPLY_MAIN_BG
 BLINK_APPLY_MAIN_BG = 0x020165A5 @ PaletteBlink_LoadMainBgPltt, Thumb
+.endif
 BLINK_RESTART       = 0
 BLINK_RUN           = 1
 BLINK_PAUSE         = 2
@@ -898,7 +994,11 @@ EVOLUTION_FORGET_INPUT  = 21
 EVOLUTION_GIVEUP_SETUP  = 34
 EVOLUTION_GIVEUP_INPUT  = 35
 EVOLUTION_STATE_HI      = 45
-EVOLUTION_TASK_ORIG     = 0x02075D09 @ sub_02075D08, Thumb
+@ The main-queue task that runs the post-evolution prompt. Its address is a build's
+@ own - a ROM whose ARM9 moved the evolution code has it elsewhere - so it is a
+@ config field, filled in by the patcher (cfg_evolution_task_orig). The assembled
+@ default is retail's.
+DEF_EVOLUTION_TASK_ORIG = 0x02075D09 @ sub_02075D08, Thumb
 
 
 @ --------------------------------------------------------------------------
@@ -938,6 +1038,71 @@ cfg_open_list:      .word DEF_OPEN_LIST
 cfg_string_width:   .word DEF_STRING_WIDTH
 cfg_setup_native:   .word DEF_SETUP_NATIVE
 cfg_tutor_exec_orig: .word DEF_TUTOR_EXEC_ORIG
+cfg_orig_loop_fn:   .word DEF_ORIG_LOOP_FN
+cfg_read_keys_orig: .word DEF_READ_KEYS_ORIG
+cfg_apply_button_mode: .word DEF_APPLY_BUTTON_MODE
+cfg_battle_mode:    .word DEF_BATTLE_MODE
+cfg_origin_menu_ptr: .word DEF_ORIGIN_MENU_PTR
+cfg_origin_menu_flag: .word DEF_ORIGIN_MENU_FLAG
+cfg_origin_cursor:  .word DEF_ORIGIN_CURSOR
+cfg_origin_state:   .word DEF_ORIGIN_STATE
+cfg_origin_battle_data: .word DEF_ORIGIN_BATTLE_DATA
+cfg_startmenu_state_off: .word DEF_STARTMENU_STATE_OFF
+cfg_startmenu_inhibit_off: .word DEF_STARTMENU_INHIBIT_OFF
+cfg_origin_oak_exec_orig: .word DEF_ORIGIN_OAK_EXEC_ORIG
+cfg_evolution_task_orig: .word DEF_EVOLUTION_TASK_ORIG
+cfg_origin_prompt_cursor: .word DEF_ORIGIN_PROMPT_CURSOR
+cfg_origin_cancel_flag: .word DEF_ORIGIN_CANCEL_FLAG
+cfg_origin_battle_vblank: .word DEF_ORIGIN_BATTLE_VBLANK
+cfg_origin_evo_get_mon: .word 0
+cfg_origin_evo_done: .word 0
+
+@ The emulated tests drive these words directly - they write the game's key
+@ state into the pad word, point the app callback at a test structure and read
+@ back what the hook made of it - so their addresses have to be in the symbol
+@ table the payload ships. Exporting a word costs nothing but its name.
+    .global  cfg_pad_held, cfg_app_callback, cfg_field_callback, cfg_ov12_lo
+    .global  cfg_ov12_hi, cfg_battle_state, cfg_dex_exec_orig, cfg_pc_exec_orig
+    .global  cfg_field_sys, cfg_screens_flip, cfg_map_exec_orig, cfg_start_menu_task
+    .global  cfg_oak_exec_orig, cfg_battle_exec_orig, cfg_intro_a_exec, cfg_intro_b_exec
+    .global  cfg_intro_c_exec, cfg_intro_clock, cfg_theme_band, cfg_menu_exec_orig
+    .global  cfg_open_list, cfg_string_width, cfg_setup_native, cfg_tutor_exec_orig
+    .global  cfg_orig_loop_fn, cfg_read_keys_orig, cfg_apply_button_mode, cfg_battle_mode
+    .global  cfg_origin_menu_ptr, cfg_origin_menu_flag, cfg_origin_cursor, cfg_origin_state
+    .global  cfg_origin_battle_data, cfg_startmenu_state_off, cfg_startmenu_inhibit_off
+    .global  cfg_origin_oak_exec_orig, cfg_evolution_task_orig
+    .global  cfg_origin_prompt_cursor, cfg_origin_cancel_flag, cfg_origin_battle_vblank
+    .global  cfg_origin_evo_get_mon, cfg_origin_evo_done
+    .global  pad_held, pad_new, menu_swapped, last_app
+    .global  bt_phase, bt_menu_last, bt_manual, bt_system
+    .global  bt_drawn, bt_lock, bt_origin, bt_origin_cur
+    .global  bt_origin_obj, bt_origin_flag, bt_origin_state, bt_origin_route
+    .global  bt_origin_img, bt_origin_set
+    .global  sm_drawn, sm_shown, list_ctrl, list_drawn
+    .global  list_rect, list_hold, wl_ret, wl_last
+    .global  bt_band, evo_band, lr_state, lr_pending
+    .global  lr_timer, evolution_app
+
+@ The hook's own routines are exported for the same reason: a test that calls
+@ one of them needs its address, and a symbol that is not exported cannot be
+@ found in the payload the repository ships. The names are the hook's public
+@ surface - everything OneScreen_ that is not a local helper.
+    .global  OneScreen_OriginBattle, OneScreen_OriginProbe, OneScreen_OriginBand
+    .global  OneScreen_BattleInput, OneScreen_BattleMenuId, OneScreen_BattleSubOpen
+    .global  OneScreen_BattleYesNo, OneScreen_BattleCursor, OneScreen_BattleImage
+    .global  OneScreen_GeoRecord, OneScreen_BattleWipe, OneScreen_BandRect
+    .global  OneScreen_BattleDraw, OneScreen_ResetBattleUi, OneScreen_PcHold
+    .global  OneScreen_MapHold, OneScreen_EvolutionChoice, OneScreen_EvolutionPrompt
+    .global  OneScreen_OakSuppressFocus, OneScreen_OakBlink, OneScreen_OakTheme
+    .global  OneScreen_BandBuffer, OneScreen_BattleBand, OneScreen_EvolutionBand
+    .global  OneScreen_OakDraw, OneScreen_TaskMan, OneScreen_FieldSys
+    .global  OneScreen_BottomApp, OneScreen_TouchMenu, OneScreen_StartMenuEnv
+    .global  OneScreen_MenuGone, OneScreen_ListMatch, OneScreen_ListHash
+    .global  OneScreen_ListOpen, OneScreen_ListRoom, OneScreen_ListFormat
+    .global  OneScreen_FmtCheck, OneScreen_FmtBuild, OneScreen_FmtWidth
+    .global  OneScreen_FmtMeasure, OneScreen_FmtStore, OneScreen_ListDraw
+    .global  OneScreen_ListClear, OneScreen_MainRamRange, OneScreen_FieldMode3
+    .global  OneScreen_FieldYesNoWipe, OneScreen_MenuTaking, OneScreen_IntroPast
 
 pad_held:       .word 0
 pad_new:        .word 0         @ newly pressed this frame
@@ -952,7 +1117,19 @@ bt_manual:      .word 0         @ 1 while an L+R override is holding, in battle
 bt_system:      .word 0         @ live BattleSystem*, or 0 outside a battle
 bt_drawn:       .word -1        @ label image currently blitted, -1 = nothing
 bt_lock:        .word -1        @ image frozen at the moment A was pressed, -1 = free
+bt_origin:      .word 0         @ this build's own battle engine: what the probe found
+bt_origin_cur:  .word -1        @ ...and the cursor it read
+bt_origin_obj:  .word 0         @ ...and the menu object it found
+bt_origin_flag: .word -1        @ ...and the flag byte inside it
+bt_origin_state: .word -1       @ ...and the battle scene's state in it
+bt_origin_route: .word 0        @ 1 while the hook holds the screen for the touch UI
+bt_origin_img:  .word -1       @ ...and the label image the menu calls for
+bt_origin_set:  .word 0        @ ...and the command menu's image set
+bt_origin_mask: .word 0        @ ...and which message ids the menu's items had
 oak_drawn:      .word -1        @ prompt image in Oak's dialog box, -1 = none
+oak_origin_drawn: .word -1      @ the same for Origin's Oak app, which is a
+                                @ different app and must not take the retail
+                                @ prompt down
 oak_data:       .word 0         @ diagnostics: OakSpeechData, its state,
 oak_state:      .word -1
 
@@ -1067,6 +1244,15 @@ palpad_app:
 rankings_app:
     .word   0, 0
 
+    @ A sixth slot, for a build whose name entry is not retail's. hg-engine rewrote
+    @ the name entry: the list of outfits is an overlay application of its own, and
+    @ the keyboard behind it is an ARM9 routine that is not retail's either - so
+    @ that build needs a slot of its own for it. The retail build leaves this slot
+    @ empty, and the retail entries keep their slots above.
+    @ ARM9 code, checked against its own bytes like the name entry's.
+name_list_app:
+    .word   0, 0
+
     @ Terminator. Every slot above is rewritten at patch time, and
     @ OneScreen_AppTableEnd bounds that write - one entry too many used to run
     @ straight into OneScreen_SetSwap below and black-screen the game on boot.
@@ -1157,8 +1343,12 @@ OneScreen_Toggle:
     .thumb_func
 OneScreen_ReadKeys:
     push    {r4, r5, r6, r7, lr}
-    ldr     r3, =READ_KEYS_ORIG
+    ldr     r3, =cfg_read_keys_orig
+    ldr     r3, [r3]
     blx     r3
+    push    {r0}                   @ the reader's own result: the main loop reads
+                                   @ it, and a ROM that returns something there
+                                   @ must not see the pad word instead
     ldr     r0, =PAD_XY_BUF
     ldrh    r0, [r0]
     lsls    r0, r0, #16
@@ -1244,9 +1434,13 @@ OneScreen_ReadKeys:
     orrs    r0, r7
     str     r0, [r4, #GS_REP_RAW]
     str     r0, [r4, #GS_REP]
-    ldr     r3, =APPLY_BUTTON_MODE
+    ldr     r3, =cfg_apply_button_mode
+    ldr     r3, [r3]
+    cmp     r3, #0
+    beq     99f                     @ this ROM has no separate function for it
     blx     r3                      @ the game's own L=A, if that option is on
-99: pop     {r4, r5, r6, r7, pc}
+99: pop     {r0}
+    pop     {r4, r5, r6, r7, pc}
     .align  2
     .pool
 
@@ -1300,6 +1494,12 @@ OneScreen_UpdatePad:
     .thumb_func
 OneScreen_AutoBattle:
     push    {r4, r5, lr}
+    ldr     r0, =cfg_battle_mode
+    ldr     r0, [r0]
+    cmp     r0, #0
+    bne     28f                     @ a build with its own battle engine: none
+                                    @ of the retail path below applies to it,
+                                    @ and none of it may touch the screens
     ldr     r4, =bt_phase
 
     ldr     r0, =cfg_app_callback
@@ -1329,6 +1529,8 @@ OneScreen_AutoBattle:
     @ savestates, so requiring it cannot stop a real battle from swapping.
     ldr     r0, =cfg_battle_state
     ldr     r0, [r0]
+    cmp     r0, #0
+    beq     phase_no_table          @ this ROM keeps no loaded-overlay table
     ldr     r1, [r0, #4]            @ sOverlayRegions[OVY_REGION_MAIN][3].active
     cmp     r1, #0
     beq     29f                     @ released: the battle proper has ended
@@ -1337,6 +1539,23 @@ OneScreen_AutoBattle:
     cmp     r0, #BATTLE_STATE_EXEC
     bne     20f
     movs    r5, #1                  @ executing
+    b       20f
+@ No table to read the phase from. The command menu says it instead: no live
+@ battle input at all means there is no battle, an open menu means the player
+@ is being asked for a command, and a menu id of zero means the menu is closed
+@ - the turn is running, or the battle's opening text is still playing.
+phase_no_table:
+    bl      OneScreen_BattleMenuId
+    cmp     r0, #0
+    bmi     phase_no_battle         @ -1: no live battle input
+    movs    r5, #0
+    cmp     r0, #0
+    beq     phase_running           @ closed: the turn is running
+    b       20f                     @ a menu is up: waiting for a command
+phase_no_battle:
+    b       29f                     @ no battle to speak of
+phase_running:
+    movs    r5, #1
 20: ldr     r1, [r4]
     cmp     r5, r1
     beq     21f                     @ same phase as last frame
@@ -1425,6 +1644,412 @@ OneScreen_AutoBattle:
     str     r0, [r1]
     bl      OneScreen_ResetBattleUi
 28: pop     {r4, r5, pc}
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ void OneScreen_OriginBattle(void)
+@
+@ Origin HeartGold's battle command menu.
+@
+@ Origin runs its own battle engine, so none of the retail plumbing exists here:
+@ there is no BattleSystem to ask for a menu id, and no BattleInput holding a
+@ cursor. What there is, measured live in this ROM:
+@
+@   cfg_origin_menu_ptr   the address of a pointer to the battle's menu object,
+@                         which is 0 while there is no menu at all
+@   object + flag         that object's own "it is open" flag
+@   cfg_origin_state      the offset of the battle scene's phase in that
+@                         object: 0 while nothing of the battle's is on the
+@                         screen, 1 at the command menu, 2 at the move list,
+@                         3 at the target grid, 4 while the game asks a question
+@   cfg_origin_cursor     the address of the selected entry, which the game
+@                         writes as its own command id:
+@                         0 FIGHT, 1 BAG, 2 POKEMON, 3 RUN, 4 INFO
+@   cfg_origin_prompt_cursor the address of the two-option prompt's cursor,
+@                         which the game keeps in its own slot of the shared
+@                         menu struct: 0 YES, 1 NO
+@   cfg_origin_cancel_flag the offset of the byte that says the command menu
+@                         belongs to the player's second battler - the partner
+@                         of a double battle, who is shown CANCEL instead of
+@                         RUN
+@   cfg_origin_battle_data the address of the live battle engine's data pointer
+@
+@ The game moves that cursor with the D-Pad and confirms it with A, and it
+@ draws its own touch buttons on the bottom screen - so the hook only MIRRORS
+@ it: the words go on the top screen, in the battle message window, and the
+@ band follows the cursor. Nothing is synthesised and nothing is driven.
+@
+@ The scene stays on the top screen while the command menu is up. Origin puts it
+@ there itself and the battle overlay is left unflipped (onescreen/table.py),
+@ so this draws onto the scene instead of taking the screen - which is also
+@ why the words sit in the window's second line, the one the single-line
+@ prompt leaves free.
+@
+@ The battle's touch UI is the other way round: the move list, the bag and the
+@ party are drawn on engine B, and the retail build hands the screen over to
+@ them as soon as they open. Origin's battle overlay holds no display-routing
+@ site at all, so the game never swaps by itself and the hook has to do it -
+@ see OneScreen_OriginRoute.
+@ ---------------------------------------------------------------------------
+    .thumb_func
+OneScreen_OriginBattle:
+    push    {r4, lr}
+    ldr     r0, =cfg_battle_mode
+    ldr     r0, [r0]
+    cmp     r0, #0
+    beq     ob_done                 @ a retail build: nothing to do here
+
+    bl      OneScreen_OriginBattleScene
+    cmp     r0, #0
+    beq     ob_release
+
+    @ The routing is the hook's business from the main loop: the game sets
+    @ POWCNT1 itself whenever it opens one of those screens, so ours has to be
+    @ re-applied every frame - but the WORDS are drawn from the battle app's
+    @ own exec, because the app repaints its message window whenever it
+    @ prints, and anything written before that is painted over.
+    bl      OneScreen_OriginProbe
+    movs    r0, r1                  @ the wanted routing
+    bl      OneScreen_OriginRoute
+ob_done:
+    pop     {r4, pc}
+ob_release:
+    @ A new scene owns the screens. The submenu byte can still be 1 after a
+    @ catch or escape, including while the battle overlay runs its exit
+    @ callback for evolution. Leave the new scene's routing in place.
+    ldr     r1, =bt_origin_route
+    str     r0, [r1]
+    pop     {r4, pc}
+    .align  2
+    .pool
+
+@ Whether the battle renderer still owns the scene, including its touch UI.
+    .thumb_func
+OneScreen_OriginBattleScene:
+    ldr     r0, =cfg_origin_battle_vblank
+    ldr     r0, [r0]
+    cmp     r0, #0
+    beq     ob_scene_done
+    ldr     r1, =cfg_app_callback
+    ldr     r1, [r1]
+    ldr     r1, [r1]
+    subs    r0, r1, r0
+    bne     ob_scene_inactive
+    movs    r0, #1
+    bx      lr
+ob_scene_inactive:
+    movs    r0, #0
+ob_scene_done:
+    bx      lr
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ int OneScreen_OriginProbe(void)
+@
+@ What the battle is showing right now. Returns:
+@
+@   r0 = 1 when a menu is up - the words belong on the scene
+@   r1 = 1 when the battle's touch UI wants the screen - the move list, the
+@        bag, the party - so the screen goes to engine B
+@
+@ and fills the bt_origin* diagnostic words with what it saw.
+@ bt_origin_img holds the label image the menu calls for: the command menu's
+@ own picture - the CANCEL variant, when the game puts CANCEL where RUN is -
+@ or the Oui/Non pair of a two-option prompt.
+@
+@ The game says what is on the screen itself. The menu object carries a phase
+@ byte, and the shared menu struct at the battle's root carries one cursor per
+@ screen:
+@
+@   phase 0  nothing of the battle's is on the screen
+@   phase 1  the command menu is up; its cursor is the first slot
+@   phase 2  the move list - the touch UI - has the screen
+@   phase 3  the native target grid is on the touch UI
+@   phase 4  the game asks a question: the trainer's "will you switch your
+@            Pokémon?", a two-option prompt whose cursor is the fourth slot
+@
+@ When the menu object is absent, the battle's loaded sub-overlay decides.
+@ ---------------------------------------------------------------------------
+    .thumb_func
+OneScreen_OriginProbe:
+    push    {r4, r5, r6, lr}
+    movs    r4, #0                  @ the kind of menu
+    movs    r5, #0                  @ the words
+    movs    r6, #0                  @ the routing
+    ldr     r0, =bt_origin
+    str     r4, [r0]                @ 0: this build's own battle engine
+    ldr     r0, =bt_origin_img
+    movs    r1, #0
+    mvns    r1, r1                  @ -1: no image yet
+    str     r1, [r0]
+
+    @ While the battle owns the menu object, its phase says what is on screen.
+    ldr     r0, =cfg_origin_menu_ptr
+    ldr     r0, [r0]                @ where the game keeps the pointer
+    ldr     r0, [r0]                @ the menu object, or 0
+    cmp     r0, #0
+    beq     ob_no_object
+    movs    r4, r0                  @ the menu object
+    ldr     r1, =ORIGIN_TARGET_DATA_OFF
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     ob_no_battle
+    ldr     r1, =bt_origin_obj
+    str     r4, [r1]
+
+    @ The phase: what the battle is showing.
+    ldr     r0, =cfg_origin_state
+    ldr     r0, [r0]
+    ldrb    r0, [r4, r0]
+    ldr     r1, =bt_origin_state
+    str     r0, [r1]
+
+    @ A question. The answer is the prompt's own cursor: the shared menu
+    @ struct keeps one cursor per screen, and the prompt is the fourth of
+    @ them. 0 YES, 1 NO.
+    cmp     r0, #ORIGIN_PHASE_ASK
+    bne     ob_command
+    ldr     r0, =cfg_origin_prompt_cursor
+    ldr     r0, [r0]
+    cmp     r0, #0
+    beq     ob_ask_stale             @ no cursor to read: draw nothing
+    ldrb    r0, [r0]
+    cmp     r0, #1
+    bhi     ob_ask_stale
+    ldr     r1, =LABEL_GEO_YN
+    lsls    r1, r1, #4
+    orrs    r0, r1
+    ldr     r1, =bt_origin_img
+    str     r0, [r1]
+    movs    r4, #7                  @ 7: a two-option prompt is up
+    movs    r5, #1                  @ the prompt: the words go onto the scene
+    b       ob_note
+
+ob_command:
+    @ The move list: the battle's touch UI has the screen, and the scene goes
+    @ down with the words still on it - the same picture the retail build
+    @ leaves on the bottom screen.
+    cmp     r0, #ORIGIN_PHASE_MOVES
+    beq     ob_moves
+    cmp     r0, #ORIGIN_PHASE_TARGET
+    beq     ob_target
+    cmp     r0, #ORIGIN_PHASE_COMMAND
+    bne     ob_no_battle
+
+    @ The command menu. It has to be open as well: the phase can outlive the
+    @ menu it belongs to.
+    ldr     r0, =cfg_origin_menu_flag
+    ldr     r0, [r0]
+    ldrb    r0, [r4, r0]            @ the object's own "it is open" flag
+    ldr     r1, =bt_origin_flag
+    str     r0, [r1]
+    cmp     r0, #0
+    beq     ob_not_open
+
+    @ The cursor. Only the game's own command ids are drawn; anything else
+    @ belongs to a menu this hook knows nothing about.
+    ldr     r0, =cfg_origin_cursor
+    ldr     r0, [r0]
+    ldrb    r0, [r0]
+    ldr     r1, =bt_origin_cur
+    str     r0, [r1]
+    cmp     r0, #ORIGIN_CURSOR_MAX
+    bhi     ob_bad_cursor
+
+    @ The word set. The game says which one it wants itself: it writes a byte
+    @ into the menu object when it creates the command menu, and that byte is
+    @ not zero when the menu belongs to the player's SECOND battler - the
+    @ partner of a double battle, who cannot run and is shown CANCEL instead.
+    ldr     r0, =cfg_origin_cancel_flag
+    ldr     r0, [r0]
+    cmp     r0, #0
+    beq     ob_words
+    ldrb    r0, [r4, r0]
+    cmp     r0, #0
+    beq     ob_words
+    movs    r0, #LABEL_GEO_CANCEL
+    b       ob_set
+ob_words:
+    movs    r0, #0                  @ FIGHT / BAG / POKEMON / RUN
+ob_set:
+    ldr     r1, =bt_origin_set
+    str     r0, [r1]
+    lsls    r0, r0, #4
+    ldr     r1, =bt_origin_cur
+    ldr     r1, [r1]
+    orrs    r0, r1
+    ldr     r1, =bt_origin_img
+    str     r0, [r1]
+    movs    r4, #6                  @ 6: the command menu is up
+    movs    r5, #1                  @ the words go onto the scene
+    b       ob_note
+
+ob_target:
+    ldr     r0, =ORIGIN_TARGET_DATA_OFF
+    ldr     r0, [r4, r0]
+    cmp     r0, #0
+    beq     ob_no_battle
+ob_moves:
+    movs    r6, #1
+    b       ob_note
+ob_ask_stale:
+    movs    r4, #5
+    b       ob_note
+ob_no_object:
+    @ The battle frees the menu object for full-screen sub-apps. The active
+    @ overlay (written by ov14 at 0x0221593A) detects these even when the old
+    @ submenu byte never changes, as when the player accepts a switch prompt.
+    ldr     r0, =cfg_origin_battle_data
+    ldr     r0, [r0]
+    ldr     r4, [r0]
+    movs    r0, r4
+    ldr     r1, =ORIGIN_SUB_OVERLAY_OFF
+    bl      OneScreen_MainRamRange
+    cmp     r0, #0
+    beq     ob_no_battle
+    ldr     r0, =ORIGIN_SUB_OVERLAY_OFF
+    ldr     r0, [r4, r0]
+    movs    r4, #2
+    cmp     r0, #ORIGIN_SUB_BAG_PARTY
+    beq     ob_submenu
+    cmp     r0, #ORIGIN_SUB_MOVE_SELECT
+    beq     ob_submenu
+    b       ob_note
+ob_submenu:
+    @ The battle's full-screen UI is drawn on engine B.
+    movs    r6, #1
+    b       ob_note
+ob_no_battle:
+    movs    r4, #3
+    b       ob_note
+ob_not_open:
+    movs    r4, #4
+    b       ob_note
+ob_bad_cursor:
+    movs    r4, #5
+ob_note:
+    ldr     r1, =bt_origin
+    str     r4, [r1]
+    movs    r0, r5
+    movs    r1, r6
+    pop     {r4, r5, r6, pc}
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ void OneScreen_OriginLabels(void)
+@
+@ Draw the battle's command words on the battle scene, and take them down
+@ again when the menu is gone.
+@
+@ This is called from the battle app's OWN exec, right after the app has run
+@ for the frame - the same place the retail build draws them, and for the same
+@ reason: the app repaints its message window whenever it prints, so labels
+@ written before that are painted over. That is failure class 4 in
+@ docs/AUDIT.md, the one that cost the PC box a hold.
+@ ---------------------------------------------------------------------------
+    .global OneScreen_OriginLabels
+    .thumb_func
+OneScreen_OriginLabels:
+    push    {r4, lr}
+    bl      OneScreen_OriginBattleScene
+    cmp     r0, #0
+    beq     ol_reset                @ the native battle window is gone
+
+    bl      OneScreen_OriginProbe
+    cmp     r0, #0
+    beq     ol_closed                @ no menu: the words come down
+
+    ldr     r0, =bt_origin_img
+    ldr     r0, [r0]                  @ pass the image code, not its address
+    ldr     r1, =bt_drawn
+    str     r0, [r1]
+    bl      OneScreen_BattleMenu
+    bl      OneScreen_OriginBand
+    pop     {r4, pc}
+
+ol_closed:
+    @ The menu is gone: take the words down, once. The box that is up is the
+    @ one the last image was drawn in - the command words and the Oui/Non pair
+    @ are different boxes.
+    ldr     r1, =bt_drawn
+    ldr     r2, [r1]
+    adds    r3, r2, #1
+    beq     ol_done                 @ -1: nothing of ours on screen
+    movs    r3, #0
+    mvns    r3, r3
+    str     r3, [r1]
+    lsrs    r0, r2, #4              @ the set that is up
+    bl      OneScreen_BattleWipe
+    bl      OneScreen_BattleMenu
+    b       ol_done
+ol_reset:
+    ldr     r1, =bt_drawn
+    mvns    r0, r0
+    str     r0, [r1]
+ol_done:
+    pop     {r4, pc}
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ void OneScreen_OriginRoute(int want)
+@
+@ Put the screen where the battle wants it: the touch UI - the move list, the
+@ bag, the party - on top when `want` is not 0, the battle scene on top
+@ otherwise.
+@
+@ The swap is made EVERY frame while the touch UI is up: those screens
+@ re-assert the routing themselves as they open, so a one-shot swap would be
+@ undone the moment the player goes a level deeper. It is undone only when the
+@ hook took the screen in the first place, so the field's own routing is never
+@ fought over.
+@ ---------------------------------------------------------------------------
+    .global OneScreen_OriginRoute
+    .thumb_func
+OneScreen_OriginRoute:
+    push    {r4, r5, lr}
+    ldr     r4, =bt_origin_route
+    ldr     r5, [r4]
+    cmp     r0, #0
+    beq     2f
+    movs    r5, #1
+    str     r5, [r4]
+    movs    r0, #1
+    bl      OneScreen_SetSwap
+    pop     {r4, r5, pc}
+2:  cmp     r5, #0
+    beq     3f                      @ the scene was on top already: nothing to undo
+    movs    r5, #0
+    str     r5, [r4]
+    movs    r0, #0
+    bl      OneScreen_SetSwap
+3:  pop     {r4, r5, pc}
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ void OneScreen_OriginBand(void)
+@
+@ The band behind the selected command is palette 11 colour 12 - the salmon the
+@ battle scene keeps there for its own highlights. The scene's palette blink
+@ animates colours 11 to 14 and runs colour 12 through white every few frames,
+@ and a white band on white paper is no band at all: the band blinks out once
+@ a second while the menu is up.
+@
+@ So the colour is put back, every frame the menu is up. Writing the palette
+@ RAM is enough here: the scene pushes its own palette buffer at the start of
+@ the frame, and the hook's write lands after that.
+@ ---------------------------------------------------------------------------
+    .thumb_func
+OneScreen_OriginBand:
+    push    {r4, lr}
+    ldr     r0, =BAND_DEST_BATTLE
+    ldr     r1, =ORIGIN_BAND_COLOUR
+    strh    r1, [r0]
+    pop     {r4, pc}
     .align  2
     .pool
 
@@ -1735,7 +2360,10 @@ OneScreen_BattleMenu:
     bhs     39f
     lsls    r0, r3, #2
     ldr     r0, [r7, r0]            @ absolute destination; the boxes sit on
-    movs    r2, r5                  @ different character bases
+    cmp     r0, #0                  @ different character bases
+    beq     39f                     @ A box shorter than the window leaves its
+                                    @ unused rows at 0, which ends the copy.
+    movs    r2, r5
     cmp     r4, #0
     beq     37f
 36: ldmia   r4!, {r1}
@@ -1864,6 +2492,9 @@ OneScreen_BandRect:
     lsrs    r1, r6, #3
     lsls    r1, r1, #2
     ldr     r0, [r0, r1]            @ this tile row's first tile
+    cmp     r0, #0
+    beq     29f                     @ no such row: the box is shorter than the
+                                    @ rectangle, and the band ends with it
     movs    r1, #7
     ands    r1, r6
     lsls    r1, r1, #2
@@ -2065,10 +2696,33 @@ BATTLE_DATA_OFF = 0x08          @ manager->data, from &proc_state (+0x14)
 OneScreen_BattleExec:
     push    {r4, r5, lr}
     movs    r4, r1                  @ &proc_state, to survive the call
+    @ r0 and r1 are the game's own arguments and have to reach the original
+    @ untouched: the original's second argument is &proc_state, and handing it
+    @ something else makes the battle app read the wrong state.
     ldr     r3, =cfg_battle_exec_orig
     ldr     r3, [r3]
     blx     r3
     movs    r5, r0                  @ keep its return value
+    ldr     r0, =cfg_battle_mode
+    ldr     r0, [r0]
+    cmp     r0, #0
+    beq     retail_battle            @ a retail build: the retail path below
+    @ Origin HeartGold runs its own battle engine: there is no retail
+    @ BattleSystem to publish and the retail command menu does not apply. What
+    @ there is, are the words for this build's own command menu - and they have
+    @ to be drawn HERE, right after the app has run for the frame, because the
+    @ app repaints its message window whenever it prints and would paint over
+    @ anything written before it.
+    bl      OneScreen_OriginLabels
+    b       45f                      @ FORWARD to the return: a numeric local
+                                    @ label's `b` suffix means "the one ABOVE",
+                                    @ and the `45:` above this line belongs to
+                                    @ OneScreen_BattleDraw - jumping there ran
+                                    @ into the middle of another function and
+                                    @ the battle app never got its return
+                                    @ value back, which froze the scene and
+                                    @ killed the input. See tools/check_labels.py.
+retail_battle:
     ldr     r0, [r4]                @ proc_state, after this frame's transition
     cmp     r0, #BSTATE_BATTLE_MAIN
     bne     44f
@@ -2545,12 +3199,35 @@ OneScreen_EvolutionTask:
     push    {r3, r4, r5, lr}        @ keep SP 8-byte aligned across both calls
     movs    r4, r0                  @ SysTask *
     movs    r5, r1                  @ EvolutionTaskData *
-    ldr     r3, =EVOLUTION_TASK_ORIG
+    ldr     r3, =cfg_evolution_task_orig
+    ldr     r3, [r3]                @ the game's own task, Thumb
+    cmp     r3, #0
+    beq     .Levo_task_done         @ no task in this ROM: nothing to wrap
     blx     r3
+.Levo_task_done:
     bl      OneScreen_EvolutionPrompt
     movs    r0, r4                  @ preserve the callback ABI defensively
     movs    r1, r5
     pop     {r3, r4, r5, pc}
+    .align  2
+    .pool
+
+@ Origin checks all six party slots for an evolution even in a smaller party.
+@ Called only from that scan. R0 is Party *, R1 is the slot. An absent slot
+@ ends the scan via its own "no evolution" epilogue.
+    .global OneScreen_OriginEvolutionPartyMon
+    .thumb_func
+OneScreen_OriginEvolutionPartyMon:
+    ldr     r2, [r0, #4]            @ PartyCore.curCount
+    cmp     r1, r2
+    bhs     origin_evo_done
+    ldr     r3, =cfg_origin_evo_get_mon
+    b       origin_evo_jump
+origin_evo_done:
+    ldr     r3, =cfg_origin_evo_done
+origin_evo_jump:
+    ldr     r3, [r3]
+    bx      r3
     .align  2
     .pool
 
@@ -3090,6 +3767,152 @@ OneScreen_OakExec:
     .pool
 
 @ ---------------------------------------------------------------------------
+@ void OneScreen_OriginOakExec(void *app)
+@ Origin HeartGold's Oak speech app.
+@
+@ The app is an ordinary application: gSystem.vBlankIntr points at its exec and
+@ gSystem.vBlankIntrArg at the app object, which is what the callback receives
+@ in r0. Its own exec is a thin wrapper - it updates the scene and draws it -
+@ so the hook runs after it and is the last word for the frame.
+@
+@ The app object keeps the retail OakSpeechData layout: its state byte is at
+@ +0x0C, the offset the retail build reads OakSpeechData.state from, and the
+@ state numbers are the retail ones. Measured live in this ROM: 3 is the
+@ tutorial menu, 0x2E..0x3C are Oak's speech pages, 0x3D the question that asks
+@ for a gender, 0x41 the outfit picker and 0x45 the yes/no that confirms it.
+@
+@ Only the tutorial menu swaps the screens. Its three options are drawn on
+@ engine B and do not fit beside Oak's question the way two words do, so for
+@ that state the menu takes the top screen. Every other state keeps Oak's own
+@ screen on top, which is what the patch's static flips already do elsewhere.
+@ ---------------------------------------------------------------------------
+    .global OneScreen_OriginOakExec
+    .thumb_func
+OneScreen_OriginOakExec:
+    push    {r3, r4, r5, lr}
+    movs    r4, r0                  @ the app object
+    ldr     r3, =cfg_origin_oak_exec_orig
+    ldr     r3, [r3]
+    cmp     r3, #0
+    beq     .Loak_origin_done      @ no original to call: leave the app alone
+    blx     r3                      @ the game's own exec
+    movs    r5, r0                  @ keep its return value
+    ldrb    r0, [r4, #OAK_STATE_OFF] @ the app's state
+    cmp     r0, #OAK_TUTORIAL_HI
+    bhi     .Loak_origin_state
+    movs    r0, #1                  @ the tutorial menu: engine B to the top
+    b       .Loak_origin_route
+.Loak_origin_state:
+    @ The two states that ask a question get the words in Oak's window.
+    cmp     r0, #ORIGIN_OAK_PICKER
+    beq     .Loak_origin_gender
+    cmp     r0, #ORIGIN_OAK_CONFIRM
+    beq     .Loak_origin_yesno
+    cmp     r0, #ORIGIN_OAK_CONFIRM_NAME
+    beq     .Loak_origin_yesno
+    @ Any other state takes our words down again, once.
+    movs    r0, #0
+    mvns    r0, r0
+    bl      OneScreen_OriginOakDraw
+    movs    r0, #0
+    b       .Loak_origin_route
+.Loak_origin_gender:
+    @ The outfit picker: the boy/girl words, with the game's own cursor on the
+    @ one it has selected.
+    movs    r0, #ORIGIN_OAK_PICKER
+    b       .Loak_origin_prompt
+.Loak_origin_yesno:
+    movs    r0, #ORIGIN_OAK_CONFIRM
+.Loak_origin_prompt:
+    @ The words are only drawn for the two-option menu the states really are:
+    @ the game counts its options, and the cursor tells which one is selected.
+    ldr     r2, =ORIGIN_OAK_NUMOPTS_OFF
+    ldrb    r1, [r4, r2]
+    cmp     r1, #2
+    bne     .Loak_origin_down
+    ldr     r2, =ORIGIN_OAK_CURSOR_OFF
+    ldrb    r1, [r4, r2]
+    cmp     r1, #1
+    bhi     .Loak_origin_down
+    cmp     r0, #ORIGIN_OAK_PICKER
+    beq     .Loak_origin_gender_set
+    movs    r0, #LABEL_GEO_OAK
+    b       .Loak_origin_draw
+.Loak_origin_gender_set:
+    movs    r0, #LABEL_GEO_ORIGIN_GENDER
+.Loak_origin_draw:
+    lsls    r0, r0, #4              @ the image code: which set, then which choice
+    adds    r0, r0, r1
+    bl      OneScreen_OriginOakDraw
+    movs    r0, #0
+    b       .Loak_origin_route
+.Loak_origin_down:
+    movs    r0, #0
+    mvns    r0, r0
+    bl      OneScreen_OriginOakDraw
+    movs    r0, #0
+.Loak_origin_route:
+    bl      OneScreen_SetSwap
+    movs    r0, r5
+.Loak_origin_done:
+    pop     {r3, r4, r5, pc}
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
+@ void OneScreen_OriginOakDraw(int code)
+@
+@ Put a prompt in Oak's dialog box, or pass a negative code to take it down.
+@ Active prompts are redrawn every frame after Oak's own work, because Oak
+@ paints the window as he builds each state and a draw-once would simply be
+@ painted over.
+@
+@ This is OneScreen_OakDraw's twin for Origin's Oak app, and it keeps a state
+@ word of its own: the retail Oak app and Origin's are two different apps, and
+@ one must not take the other's prompt down.
+@ ---------------------------------------------------------------------------
+    .global OneScreen_OriginOakDraw
+    .thumb_func
+OneScreen_OriginOakDraw:
+    push    {r4, r5, lr}
+    ldr     r4, =oak_origin_drawn
+    ldr     r1, [r4]                @ the code that is up, -1 = none
+    cmp     r0, #0
+    bge     .Loak_origin_draw_set
+    @ Take it down: wipe the set that is up, once.
+    adds    r2, r1, #1
+    beq     .Loak_origin_draw_done   @ already down
+    lsrs    r0, r1, #4              @ the set that is up
+    movs    r2, #0
+    mvns    r2, r2
+    str     r2, [r4]
+    bl      OneScreen_BattleWipe
+    bl      OneScreen_BattleMenu
+    b       .Loak_origin_draw_done
+.Loak_origin_draw_set:
+    @ A different set than the one that is up has to be taken down first: the
+    @ boy/girl box is ten tiles wide and the yes/no box three, so wiping the
+    @ wrong one leaves words behind.
+    movs    r5, r0                  @ the code to draw
+    adds    r2, r1, #1
+    beq     .Loak_origin_paint       @ nothing is up yet
+    lsrs    r2, r1, #4              @ the set that is up
+    lsrs    r0, r5, #4              @ the set wanted
+    cmp     r2, r0
+    beq     .Loak_origin_paint       @ the same set: paint over it
+    movs    r0, r2
+    bl      OneScreen_BattleWipe
+    bl      OneScreen_BattleMenu
+.Loak_origin_paint:
+    movs    r0, r5
+    str     r0, [r4]
+    bl      OneScreen_BattleMenu
+.Loak_origin_draw_done:
+    pop     {r4, r5, pc}
+    .align  2
+    .pool
+
+@ ---------------------------------------------------------------------------
 @ The field's running task. pret:
 @
 @     struct TaskManager { TaskManager *prev; TaskFunc func; u32 state;
@@ -3289,7 +4112,9 @@ OneScreen_MenuGone:
     bl      OneScreen_StartMenuEnv  @ the StartMenuTaskData, if it is the menu
     cmp     r0, #0
     beq     57f
-    ldrh    r0, [r0, #STARTMENU_STATE_OFF]
+    ldr     r1, =cfg_startmenu_state_off
+    ldr     r1, [r1]
+    ldrh    r0, [r0, r1]
     subs    r0, #STARTMENU_EXIT_LO
     cmp     r0, #(STARTMENU_EXIT_HI - STARTMENU_EXIT_LO)
     bhi     57f
@@ -3346,7 +4171,9 @@ OneScreen_StartMenu:
     bl      OneScreen_StartMenuEnv
     movs    r4, r0                  @ -> StartMenuTaskData
     beq     57f
-    ldrh    r0, [r4, #STARTMENU_STATE_OFF]
+    ldr     r1, =cfg_startmenu_state_off
+    ldr     r1, [r1]
+    ldrh    r0, [r4, r1]
     subs    r0, #STARTMENU_SAVE_LO
     cmp     r0, #(STARTMENU_SAVE_HI - STARTMENU_SAVE_LO)
     bhi     36f
@@ -3393,7 +4220,8 @@ OneScreen_StartMenu:
     lsls    r0, r1, #1
     ldr     r2, =sm_layout_class
     ldrh    r2, [r2, r0]
-    ldr     r0, =SM_INHIBIT_OFF
+    ldr     r0, =cfg_startmenu_inhibit_off
+    ldr     r0, [r0]
     ldr     r0, [r4, r0]
     ldr     r3, =SM_NORMAL_MASK
     ands    r0, r3
@@ -3439,7 +4267,8 @@ OneScreen_StartMenu:
     @
     @ so normal is exactly (flags & (SAVE | 7 | RETIRE)) == (7 | RETIRE); anything
     @ else returns 0 here and the caller swaps for that frame.
-50: ldr     r0, =SM_INHIBIT_OFF
+50: ldr     r0, =cfg_startmenu_inhibit_off
+    ldr     r0, [r0]
     ldr     r0, [r4, r0]
     str     r0, [sp, #8]
     ldr     r1, =SM_NORMAL_MASK
@@ -5330,7 +6159,9 @@ OneScreen_MenuTaking:
     bl      OneScreen_StartMenuEnv
     cmp     r0, #0
     beq     86f
-    ldrh    r0, [r0, #STARTMENU_STATE_OFF]
+    ldr     r1, =cfg_startmenu_state_off
+    ldr     r1, [r1]
+    ldrh    r0, [r0, r1]
     cmp     r0, #STARTMENU_TAKING
     bne     86f
     movs    r0, #1
@@ -5808,13 +6639,16 @@ OneScreen_IntroPast:
     .thumb_func
 OneScreen_Frame:
     push    {lr}
-    ldr     r3, =ORIG_LOOP_FN
-    blx     r3
+    ldr     r3, =cfg_orig_loop_fn
+    ldr     r3, [r3]
+    blx     r3                      @ the call we displaced, with the argument
+                                   @ the game passed it
     bl      OneScreen_UpdatePad
     bl      OneScreen_Intro
     bl      OneScreen_AppIntent
 .ifndef DISABLE_AUTO_BATTLE
     bl      OneScreen_AutoBattle
+    bl      OneScreen_OriginBattle
 .endif
     bl      OneScreen_Poll
     bl      OneScreen_MapHold

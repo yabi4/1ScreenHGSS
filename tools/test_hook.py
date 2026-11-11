@@ -693,6 +693,122 @@ def app_table_hook(entries):
     return h, gsys
 
 
+def origin_battle(h, gsys):
+    """The verified battle renderer and its shared touch menu state."""
+    from onescreen import origin
+
+    h.w32(gsys, origin.BATTLE_VBLANK)
+    for field, value in {
+        "battle_mode": origin.BATTLE_MODE,
+        "app_callback": gsys,
+        "origin_battle_vblank": origin.BATTLE_VBLANK,
+        "origin_menu_ptr": origin.MENU_PTR,
+        "origin_menu_flag": origin.MENU_FLAG,
+        "origin_state": origin.MENU_STATE,
+        "origin_battle_data": origin.BATTLE_DATA_PTR,
+        "origin_cursor": origin.CURSOR,
+        "origin_prompt_cursor": origin.PROMPT_CURSOR,
+        "origin_cancel_flag": origin.CANCEL_FLAG,
+    }.items():
+        h.w32(h.var(f"cfg_{field}"), value)
+    menu = h.alloc(0x420)
+    h.w32(origin.MENU_PTR, menu)
+    h.w8(menu + origin.MENU_FLAG, 1)
+    return menu
+
+
+def test_origin_battle_draws_commands_and_switch_prompt():
+    from onescreen import origin
+
+    h = Hook()
+    menu = origin_battle(h, h.alloc(0x80))
+    font, rows = put_command_sets(h)
+    h.w8(menu + origin.MENU_STATE, 1)
+    h.w8(origin.CURSOR, 3)
+    for cancel, geo in ((0, 0), (1, 5)):
+        h.w8(menu + origin.CANCEL_FLAG, cancel)
+        h.call("OneScreen_OriginLabels")
+        assert h.r32(h.var("bt_drawn")) == (geo << 4) | 3
+        expected = labels._render(font, command_layout(font, geo), 3, labels.CELL_W)
+        assert drawn_box(h, rows) == labels._to_tiles(expected, labels.GRID_COLS)
+
+    h.w8(menu + origin.MENU_STATE, 0)
+    h.call("OneScreen_OriginLabels")
+    h.w8(menu + origin.MENU_STATE, 4)
+    yn_rows = choice_rows(1)
+    for answer in (0, 1):
+        h.w8(origin.PROMPT_CURSOR, answer)
+        h.call("OneScreen_OriginLabels")
+        assert h.r32(h.var("bt_drawn")) == 0x10 | answer
+        placed, width, cols = choice_sets(font)[1]
+        expected = labels._render(font, placed, answer, width)
+        assert drawn_box(h, yn_rows, labels.YN_ROW_BYTES) == labels._to_tiles(expected, cols)
+
+    h.w8(origin.PROMPT_CURSOR, 2)
+    h.call("OneScreen_OriginLabels")
+    assert signed(h.r32(h.var("bt_drawn"))) == -1
+    assert drawn_box(h, yn_rows, labels.YN_ROW_BYTES) == b"\xff" * labels.YN_IMAGE_BYTES
+
+
+def test_origin_battle_releases_routing_when_targeting_or_battle_ends():
+    from onescreen import origin
+
+    evolution = origin.APP_TABLE[1][1]
+    h, gsys = app_table_hook([("name entry", 0, 0, False),
+                             ("evolution", evolution, 0, True)])
+    menu = origin_battle(h, gsys)
+    h.w8(menu + origin.MENU_STATE, 3)
+    h.w32(menu + 0x3EC, h.alloc(16))
+    h.w16(POWCNT1, 0x820F)
+    h.call("OneScreen_OriginBattle")
+    assert h.r16(POWCNT1) == 0x020F
+    h.call("OneScreen_OriginLabels")
+    assert signed(h.r32(h.var("bt_drawn"))) == -1
+
+    # Origin frees the target grid without clearing phase 3 or the open flag.
+    h.w32(menu + 0x3EC, 0)
+    h.call("OneScreen_OriginBattle")
+    assert h.r16(POWCNT1) == 0x820F
+
+    # A battle sub-app owns the screen even when the legacy flag stays clear.
+    h.w32(origin.MENU_PTR, 0)
+    battle_data = h.alloc(0x270)
+    h.w32(origin.BATTLE_DATA_PTR, battle_data)
+    for overlay in (9, 12):
+        h.w32(battle_data + 0x26C, overlay)
+        h.w16(POWCNT1, 0x820F)
+        h.call("OneScreen_OriginBattle")
+        assert h.r16(POWCNT1) == 0x020F
+
+    # The battle renderer gives way to evolution, even with stale battle data.
+    h.w32(gsys, evolution)
+    h.call("OneScreen_AppIntent")
+    h.call("OneScreen_OriginBattle")
+    assert h.r16(POWCNT1) == 0x820F
+    assert h.r32(h.var("bt_origin_route")) == 0
+
+    # A subsequent scene (or a manual swap in evolution) owns its own routing.
+    h.w16(POWCNT1, 0x020F)
+    h.call("OneScreen_OriginBattle")
+    assert h.r16(POWCNT1) == 0x020F
+
+
+def test_origin_evolution_scan_stops_at_party_count():
+    from onescreen import origin
+
+    h = Hook()
+    party = h.alloc(8)
+    h.w32(h.var("cfg_origin_evo_get_mon"), origin.EVOLUTION_PARTY_GET_MON)
+    h.w32(h.var("cfg_origin_evo_done"), origin.EVOLUTION_SCAN_DONE)
+    h.stub(origin.EVOLUTION_PARTY_GET_MON, lambda _h, p, i, *_: p + 8 + i * 0xEC)
+    h.stub(origin.EVOLUTION_SCAN_DONE, lambda *_: 0)
+    for count in range(7):
+        h.w32(party + 4, count)
+        for slot in range(6):
+            want = party + 8 + slot * 0xEC if slot < count else 0
+            assert h.call("OneScreen_OriginEvolutionPartyMon", party, slot) == want
+
+
 def test_app_table_puts_pal_pad_and_rankings_on_top():
     """Both send engine A - every window they have - to the touch screen
     through the shared helper; their entry puts it back on top."""
